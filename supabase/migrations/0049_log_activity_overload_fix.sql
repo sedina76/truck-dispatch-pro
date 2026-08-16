@@ -1,0 +1,34 @@
+-- =============================================================================
+-- 0049_log_activity_overload_fix.sql
+--
+-- REAL, LIVE BUG FOUND while testing the dispatch workflow upgrade (0048):
+-- 0044/0046 added a 5-parameter log_activity() overload (p_changes,
+-- p_organization_id both defaulted) via `create or replace function`. Since
+-- the parameter LIST differs from the original 4-parameter version (0009),
+-- Postgres treats this as a NEW, separate overload rather than a
+-- replacement -- both the 4-param and 5-param versions have coexisted ever
+-- since. Any caller supplying 3 or 4 arguments (matching both overloads'
+-- required parameters, via the newer one's defaults) now gets:
+--   "Could not choose the best candidate function... function
+--    public.log_activity(...) is not unique"
+--
+-- This is not cosmetic: `auto_generate_invoice_from_delivered_load()`
+-- (0022/0028)'s own internal call -- `perform public.log_activity('invoice',
+-- v_invoice_id, 'created')`, 3 positional args -- hits this ambiguity too,
+-- meaning the delivered-load -> auto-invoice trigger itself has been
+-- silently broken since 0046 was applied. Confirmed live: marking a
+-- dispatch delivered on a disposable test load failed with exactly this
+-- error. src/lib/actions/records.ts's generic logActivity() helper (used
+-- by every insertRecord/updateRecord/updateRecordInPlace/deleteRecord call
+-- across the whole app -- carriers, brokers, customers, drivers, trucks,
+-- trailers, loads, invoices, payments, settlements) calls with exactly 3
+-- named args and is equally affected.
+--
+-- Fix: drop the now-redundant 4-parameter overload. The 5-parameter
+-- version's behavior for 3/4-arg callers is identical (p_changes/
+-- p_organization_id already default to null / current_org_id()) -- this
+-- removes the ambiguity without changing behavior for any caller that
+-- already specifies 5 arguments.
+-- =============================================================================
+
+drop function if exists public.log_activity(public.entity_type, uuid, text, jsonb);

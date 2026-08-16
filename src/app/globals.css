@@ -1,0 +1,256 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: next-themes toggles `.dark` on <html>. Tailwind v4
+   needs this declared explicitly -- it no longer infers class-mode from
+   prefers-color-scheme alone. */
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+
+  /* Desktop ERP tokens (Truck Dispatch Pro redesign). A dedicated set
+     rather than reusing --primary/--muted everywhere directly: the shell
+     chrome (title bar, menu bar, section headers, grid header row, active
+     nav item) needs to hold a fixed "Windows blue" identity that reads
+     consistently even if --primary is ever retuned for something else,
+     and --desktop-header intentionally is NOT the same value as --primary
+     (a hair deeper) so a blue button sitting on a blue section header
+     still visibly separates. */
+  --color-desktop-bg: var(--desktop-bg);
+  --color-desktop-panel: var(--desktop-panel);
+  --color-desktop-border: var(--desktop-border);
+  --color-desktop-header: var(--desktop-header);
+  --color-desktop-header-text: var(--desktop-header-text);
+  --color-desktop-selection: var(--desktop-selection);
+  --color-desktop-text: var(--desktop-text);
+  --color-desktop-muted: var(--desktop-muted);
+  --color-desktop-danger: var(--desktop-danger);
+  --color-desktop-warning: var(--desktop-warning);
+  --color-desktop-success: var(--desktop-success);
+
+  --font-sans: var(--font-sans-family);
+
+  /* Windows control corner radius -- 2-5px, never the large "SaaS card"
+     radius the rest of the pre-redesign component set used. */
+  --radius-sm: 0.1875rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.3125rem;
+  --radius-xl: 0.375rem;
+
+  /* Flat by default -- desktop apps don't float every panel on a shadow.
+     Kept as faint 1px separation, not the soft "SaaS card" glow. */
+  --shadow-elevation-1: 0 1px 0 0 rgb(15 23 42 / 0.03);
+  --shadow-elevation-2: 0 1px 2px 0 rgb(15 23 42 / 0.08);
+  --shadow-elevation-3: 0 2px 6px -2px rgb(15 23 42 / 0.14);
+}
+
+:root {
+  --background: #e9edf3;
+  --foreground: #14202e;
+  --card: #ffffff;
+  --card-foreground: #14202e;
+  --popover: #ffffff;
+  --popover-foreground: #14202e;
+  --border: #c3ccd9;
+  --input: #b7c2d1;
+  --ring: #1c54b8;
+  --muted: #eef1f6;
+  --muted-foreground: #526278;
+
+  --primary: #1c54b8;
+  --primary-hover: #164291;
+  --primary-foreground: #ffffff;
+  --secondary: #46577a;
+  --secondary-foreground: #ffffff;
+  --success: #0e7a45;
+  --success-foreground: #ffffff;
+  --warning: #a15c00;
+  --warning-foreground: #ffffff;
+  --danger: #b3261e;
+  --danger-foreground: #ffffff;
+
+  --sidebar: #dde3ec;
+  --sidebar-foreground: #14202e;
+  --sidebar-border: #c3ccd9;
+  --sidebar-accent: #c8d5ec;
+
+  /* Desktop ERP tokens -- light (primary target theme for this redesign). */
+  --desktop-bg: #e9edf3;
+  --desktop-panel: #ffffff;
+  --desktop-border: #c3ccd9;
+  --desktop-header: #1a4fae;
+  --desktop-header-text: #ffffff;
+  --desktop-selection: #1c54b8;
+  --desktop-text: #14202e;
+  --desktop-muted: #eef1f6;
+  --desktop-danger: #b3261e;
+  --desktop-warning: #a15c00;
+  --desktop-success: #0e7a45;
+
+  --font-sans-family: "Segoe UI", Tahoma, Geneva, Verdana, var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Legacy aliases: the pre-redesign component set (still used verbatim by
+     several pages) reads these names directly via `bg-[var(--color-x)]`.
+     Keeping them in sync with the new tokens means every one of those
+     pages inherits the new palette/dark-navy theme without a mechanical
+     rename pass across the whole app. New components should use the
+     --background/--card/--primary tokens (and their Tailwind utilities)
+     above directly instead of these. */
+  --color-bg: var(--background);
+  --color-surface: var(--card);
+  --color-border: var(--border);
+  --color-text: var(--foreground);
+  --color-text-muted: var(--muted-foreground);
+  --color-brand: var(--primary);
+  --color-brand-foreground: var(--primary-foreground);
+}
+
+.dark {
+  --background: #0a0e1a;
+  --foreground: #e7eaf3;
+  --card: #10182b;
+  --card-foreground: #e7eaf3;
+  --popover: #10182b;
+  --popover-foreground: #e7eaf3;
+  --border: #2a3654;
+  --input: #2a3654;
+  --ring: #5b84f0;
+  --muted: #141d33;
+  --muted-foreground: #8b93ab;
+
+  --primary: #5b84f0;
+  --primary-hover: #4a72e0;
+  --primary-foreground: #050914;
+  --secondary: #8b7ef2;
+  --secondary-foreground: #050914;
+  --success: #22c58e;
+  --success-foreground: #04120b;
+  --warning: #f0ab2e;
+  --warning-foreground: #1c1000;
+  --danger: #f0555f;
+  --danger-foreground: #1c0507;
+
+  --sidebar: #0d1424;
+  --sidebar-foreground: #e7eaf3;
+  --sidebar-border: #2a3654;
+  --sidebar-accent: #1a2540;
+
+  /* Desktop ERP tokens -- dark. Same structural roles as the light set
+     above, not a separate design -- the shell keeps its identity, only
+     the palette inverts. */
+  --desktop-bg: #0a0e1a;
+  --desktop-panel: #10182b;
+  --desktop-border: #2a3654;
+  --desktop-header: #1a2f5c;
+  --desktop-header-text: #eaf0ff;
+  --desktop-selection: #2a4fa0;
+  --desktop-text: #e7eaf3;
+  --desktop-muted: #141d33;
+  --desktop-danger: #f0555f;
+  --desktop-warning: #f0ab2e;
+  --desktop-success: #22c58e;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 25%, transparent);
+  }
+
+  /* Slim, unobtrusive scrollbars that still respect the theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Hides the scrollbar on an explicitly-opted-in element while leaving
+     native scroll (wheel/trackpad/touch) fully intact -- used by the
+     dashboard's single-row KPI strip. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Invoice PDF export: the browser's native print dialog ("Save as PDF") on
+   /invoices/[id]/pdf. .no-print hides UI chrome (the print button itself,
+   app shell if ever visible) from the printed/saved output. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  .pdf-page {
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+  body {
+    background: white !important;
+  }
+}
