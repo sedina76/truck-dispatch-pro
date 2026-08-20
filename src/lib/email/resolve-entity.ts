@@ -156,7 +156,10 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
     case "carrier_settlement": {
       const { data: settlement } = await supabase
         .from("settlements")
-        .select("id, settlement_number, net_amount, payee_name, status, carriers(legal_name, email, factoring_company_name)")
+        // Phase 2G.12: factoring_company_name dropped -- confirmed unused
+        // anywhere below (dead select, not an actual reader); carriers'
+        // own copy is stale/scheduled for removal by 0069 regardless.
+        .select("id, settlement_number, net_amount, payee_name, status, carriers(legal_name, email)")
         .eq("id", entityId)
         .single();
       if (!settlement) return { error: "Settlement not found.", status: 404 };
@@ -165,7 +168,7 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
         net_amount: number;
         payee_name: string | null;
         status: string;
-        carriers: { legal_name: string; email: string | null; factoring_company_name: string | null } | null;
+        carriers: { legal_name: string; email: string | null } | null;
       };
       const orgName = await resolveOrgName(supabase);
       return {

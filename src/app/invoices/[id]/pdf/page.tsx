@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { PrintInvoiceButton } from "@/components/invoices/print-invoice-button";
 import { computePodStatus, POD_STATUS_LABEL } from "@/lib/documents/pod-status";
 import { getLatestDocument } from "@/lib/documents/latest-document";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 type LoadStop = {
   stop_type: "pickup" | "delivery";
@@ -10,9 +13,18 @@ type LoadStop = {
   city: string | null;
   state: string | null;
   scheduled_at: string | null;
+  timezone: string | null;
 };
 
 export default async function InvoicePdfPage({ params }: { params: Promise<{ id: string }> }) {
+  // Phase 2G.7 finding: this route lives outside (app) (see header
+  // reasoning in payments/[id]/receipt for why) and was therefore NOT
+  // covered by the invoices/layout.tsx guard added in Phase 2G.6 -- any
+  // authenticated staff session, any role, could load a full invoice PDF
+  // (rate, totals, balance) directly. Guarded here explicitly, the same
+  // FINANCIAL_ROLES tier as every other invoice surface.
+  await requireRole(FINANCIAL_ROLES);
+
   const { id } = await params;
   const supabase = await createClient();
 
@@ -22,14 +34,14 @@ export default async function InvoicePdfPage({ params }: { params: Promise<{ id:
   const [{ data: org }, { data: lineItems }, loadRes, dispatchRes] = await Promise.all([
     supabase
       .from("organizations")
-      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code")
+      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code, timezone")
       .eq("id", invoice.organization_id)
       .single(),
     supabase.from("invoice_line_items").select("*").eq("invoice_id", id).order("sort_order"),
     invoice.load_id
       ? supabase
           .from("loads")
-          .select("load_number, commodity, equipment_type, total_miles, rate_confirmation_number, load_stops(stop_type, facility_name, city, state, scheduled_at)")
+          .select("load_number, commodity, equipment_type, total_miles, rate_confirmation_number, load_stops(stop_type, facility_name, city, state, scheduled_at, timezone)")
           .eq("id", invoice.load_id)
           .single()
       : Promise.resolve({ data: null }),
@@ -75,6 +87,10 @@ export default async function InvoicePdfPage({ params }: { params: Promise<{ id:
 
   const pickup = load?.load_stops.find((s) => s.stop_type === "pickup") ?? null;
   const delivery = load?.load_stops.find((s) => s.stop_type === "delivery") ?? null;
+  // Stop's own timezone first, falling back to the org's -- never the
+  // render-environment's local timezone (see src/lib/timezone/resolve.ts).
+  const pickupTz = resolveStopTimezone(pickup?.timezone ?? null, org?.timezone ?? null).timezone;
+  const deliveryTz = resolveStopTimezone(delivery?.timezone ?? null, org?.timezone ?? null).timezone;
 
   return (
     <div className="min-h-screen bg-muted/30 py-8 print:bg-white print:py-0">
@@ -136,13 +152,13 @@ export default async function InvoicePdfPage({ params }: { params: Promise<{ id:
                 {pickup && (
                   <p>
                     Pickup: {[pickup.facility_name, pickup.city, pickup.state].filter(Boolean).join(", ") || "--"}
-                    {pickup.scheduled_at && ` (${new Date(pickup.scheduled_at).toLocaleDateString()})`}
+                    {pickup.scheduled_at && ` (${formatStopDateTime(pickup.scheduled_at, pickupTz, { dateOnly: true, includeYear: true })})`}
                   </p>
                 )}
                 {delivery && (
                   <p>
                     Delivery: {[delivery.facility_name, delivery.city, delivery.state].filter(Boolean).join(", ") || "--"}
-                    {delivery.scheduled_at && ` (${new Date(delivery.scheduled_at).toLocaleDateString()})`}
+                    {delivery.scheduled_at && ` (${formatStopDateTime(delivery.scheduled_at, deliveryTz, { dateOnly: true, includeYear: true })})`}
                   </p>
                 )}
               </div>

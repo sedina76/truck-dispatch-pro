@@ -30,7 +30,27 @@ export type LiveTrackingRouteInfo = {
   riskStatus: "unknown" | "on_time" | "at_risk" | "late" | "arrived";
   calculationStatus: string;
   calculatedAt: string | null;
+  // Phase 2D (0062_route_deviation.sql) -- null when the migration isn't
+  // applied, monitoring is off for this org, or nothing has evaluated yet
+  // (same degrade-to-null philosophy as everything else here).
+  deviation: {
+    state: "on_route" | "candidate" | "off_route" | "recovering" | "recovered";
+    calculationStatus: "ok" | "no_geometry" | "low_accuracy" | "stale_gps" | "arrived";
+    distanceFromRouteMeters: number | null;
+    confirmedAt: string | null;
+    recoveredAt: string | null;
+    dismissedAt: string | null;
+    // See board-actions.ts's RouteDeviationInfo.stale for why this is
+    // computed at read time rather than trusted from calculation_status.
+    stale: boolean;
+  } | null;
+  // Phase 2E (0063_operational_exceptions.sql) -- null when the migration
+  // isn't applied yet (spec section 41: existing systems, this one
+  // included, must keep working regardless).
+  exceptions: { activeCount: number; highestSeverity: string | null; highestTitle: string | null } | null;
 };
+
+const STALE_LOCATION_MINUTES = 5; // matches board-actions.ts's own constant
 
 // ---------------------------------------------------------------------------
 // getRouteIntelligenceForDispatch -- feeds the Live Tracking page's
@@ -83,6 +103,49 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
     targetStopTimezone = resolveStopTimezone(stopRow?.timezone ?? null, orgRow?.timezone ?? null).timezone;
   }
 
+  // Phase 2D -- same target stop, separate query (not bundled) so a
+  // not-yet-applied migration 0062 can never take the rest of the panel
+  // down with it.
+  let deviation: LiveTrackingRouteInfo["deviation"] = null;
+  if (routeRow?.target_stop_id) {
+    const { data: devRow } = await supabase
+      .from("dispatch_route_deviation_state")
+      .select("state, calculation_status, distance_from_route_m, confirmed_at, recovered_at, dismissed_at, last_location_at")
+      .eq("dispatch_id", dispatchId)
+      .eq("target_stop_id", routeRow.target_stop_id)
+      .maybeSingle();
+    if (devRow) {
+      const devAgeMinutes = devRow.last_location_at ? (Date.now() - new Date(devRow.last_location_at).getTime()) / 60_000 : null;
+      deviation = {
+        state: devRow.state,
+        calculationStatus: devRow.calculation_status,
+        distanceFromRouteMeters: devRow.distance_from_route_m,
+        confirmedAt: devRow.confirmed_at,
+        recoveredAt: devRow.recovered_at,
+        stale: devAgeMinutes != null && devAgeMinutes > STALE_LOCATION_MINUTES,
+        dismissedAt: devRow.dismissed_at,
+      };
+    }
+  }
+
+  // Phase 2E -- same separate-query/graceful-degrade pattern as deviation
+  // above (0063 landing independently of everything else must never take
+  // the panel down). Highest severity active exception summarized only --
+  // full detail lives in the Exception Center drawer via "View Exceptions".
+  let exceptions: LiveTrackingRouteInfo["exceptions"] = null;
+  {
+    const { data: excRows, error: excErr } = await supabase
+      .from("operational_exceptions")
+      .select("severity, title")
+      .eq("dispatch_id", dispatchId)
+      .neq("status", "resolved");
+    if (!excErr) {
+      const rank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+      const highest = (excRows ?? []).reduce((best: { severity: string; title: string } | null, r: { severity: string; title: string }) => (!best || rank[r.severity] > rank[best.severity] ? r : best), null);
+      exceptions = { activeCount: excRows?.length ?? 0, highestSeverity: highest?.severity ?? null, highestTitle: highest?.title ?? null };
+    }
+  }
+
   return {
     loadNumber: d.loads?.load_number ?? "Load",
     driverName: d.drivers ? `${d.drivers.first_name} ${d.drivers.last_name}` : "--",
@@ -99,6 +162,8 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
     riskStatus: (routeRow?.risk_status as LiveTrackingRouteInfo["riskStatus"]) ?? "unknown",
     calculationStatus: routeRow?.calculation_status ?? "no_target_stop",
     calculatedAt: routeRow?.calculated_at ?? null,
+    deviation,
+    exceptions,
   };
 }
 

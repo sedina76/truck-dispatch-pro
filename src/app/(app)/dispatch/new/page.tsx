@@ -13,6 +13,7 @@ import { DispatchForm } from "@/components/dispatch/dispatch-form";
 import { DispatchConflictAlert } from "@/components/dispatch/dispatch-conflict-alert";
 import { getLoadSummary, getAssignmentOptions, getRateConfirmation } from "../dispatch-data";
 import { createDispatch } from "../actions";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 const SECTION_DEFAULTS: Record<string, boolean> = {
   load_summary: true,
@@ -27,15 +28,26 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
   const { load_id } = await searchParams;
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
   // Step 1: no load chosen yet -- a plain GET selector, no assignment UI
   // rendered until a specific load is in scope (spec section 2: verify the
-  // trip before assigning equipment).
+  // trip before assigning equipment). Phase 2G.9: rate is only requested/
+  // shown in the picker label for financial roles -- this was a real gap
+  // (Dispatch is Operations, open to every role).
   if (!load_id) {
-    const { data: loads } = await supabase
-      .from("loads")
-      .select("id, load_number, rate")
-      .in("status", ["draft", "posted", "booked"])
-      .order("load_number");
+    // Phase 2G.12: `rate` dropped from this select -- load_financials is
+    // authoritative now (0068 writer cutover). Merged in below, fetched
+    // only for canSeeFinancials (unchanged from the 2G.9 gating already
+    // here -- only the SOURCE changes).
+    const { data: loadsData } = await supabase.from("loads").select("id, load_number").in("status", ["draft", "posted", "booked"]).order("load_number");
+    const loads = (loadsData ?? []) as { id: string; load_number: string }[];
+    const rateByLoadId = new Map<string, number>();
+    if (canSeeFinancials && loads.length > 0) {
+      const { data: lf } = await supabase.from("load_financials").select("load_id, rate").in("load_id", loads.map((l) => l.id));
+      for (const row of lf ?? []) rateByLoadId.set(row.load_id, Number(row.rate));
+    }
 
     return (
       <div className="space-y-3">
@@ -48,11 +60,14 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
               label="Load"
               name="load_id"
               required
-              options={(loads ?? []).map((l) => ({ value: l.id, label: `${l.load_number} -- $${Number(l.rate).toLocaleString()}` }))}
+              options={loads.map((l) => ({
+                value: l.id,
+                label: canSeeFinancials ? `${l.load_number} -- $${(rateByLoadId.get(l.id) ?? 0).toLocaleString()}` : l.load_number,
+              }))}
             />
             <Button type="submit">Continue</Button>
           </form>
-          {(!loads || loads.length === 0) && (
+          {loads.length === 0 && (
             <p className="mt-3 text-[12.5px] text-desktop-text-muted">
               No undispatched loads available. <Link href="/loads/new" className="font-medium text-primary hover:underline">Book a load</Link> first.
             </p>
@@ -65,7 +80,7 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
   const [summary, options, rateConDoc] = await Promise.all([
     getLoadSummary(supabase, load_id),
     getAssignmentOptions(supabase),
-    getRateConfirmation(supabase, load_id),
+    canSeeFinancials ? getRateConfirmation(supabase, load_id) : Promise.resolve(null),
   ]);
 
   if (!summary) {
@@ -111,20 +126,26 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
               <AssignmentFields carriers={options.carriers} drivers={options.drivers} trucks={options.trucks} trailers={options.trailers} />
             </DesktopCollapsibleSection>
 
-            <DesktopCollapsibleSection id="financials" title="Internal Financials" description="Never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
-              <InternalFinancialsPanel loadRate={null} feePercentage={10} feeAmount={null} carrierNet={null} />
-            </DesktopCollapsibleSection>
+            {canSeeFinancials && (
+              <DesktopCollapsibleSection id="financials" title="Internal Financials" description="Never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
+                <InternalFinancialsPanel loadRate={null} feePercentage={10} feeAmount={null} carrierNet={null} />
+              </DesktopCollapsibleSection>
+            )}
 
-            <DesktopCollapsibleSection id="rate_con" title="Rate Confirmation" description="Never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
-              <RateConfirmationIndicator doc={rateConDoc} loadId={load_id} />
-            </DesktopCollapsibleSection>
+            {canSeeFinancials && (
+              <DesktopCollapsibleSection id="rate_con" title="Rate Confirmation" description="Never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
+                <RateConfirmationIndicator doc={rateConDoc} loadId={load_id} />
+              </DesktopCollapsibleSection>
+            )}
 
-            <DesktopCollapsibleSection id="notes" title="Dispatch Notes" description="Internal staff notes -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
-              <DispatchNotesField />
-              <p className="mt-1.5 text-[11px] text-desktop-text-muted">
-                Driver-visible trip instructions belong on the Load itself (Special Instructions), not here -- this field is never sent to the Driver Portal.
-              </p>
-            </DesktopCollapsibleSection>
+            {canSeeFinancials && (
+              <DesktopCollapsibleSection id="notes" title="Dispatch Notes" description="Internal staff notes -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
+                <DispatchNotesField />
+                <p className="mt-1.5 text-[11px] text-desktop-text-muted">
+                  Driver-visible trip instructions belong on the Load itself (Special Instructions), not here -- this field is never sent to the Driver Portal.
+                </p>
+              </DesktopCollapsibleSection>
+            )}
           </div>
         </CollapsibleSectionsProvider>
 

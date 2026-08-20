@@ -11,18 +11,23 @@ import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 type Load = {
   id: string;
   load_number: string;
   status: string;
   equipment_type: string | null;
-  rate: number;
+  rate?: number;
   total_miles: number | null;
   brokers: { company_name: string } | null;
   customers: { company_name: string } | null;
 };
 
+// Phase 2G.9 (item 3): Loads is Operations (open to every role, no layout
+// guard) and previously select("...rate...")'d unconditionally -- a real
+// gap. rate is now only requested, and the Rate column/KPI only rendered,
+// for FINANCIAL_ROLES.
 export default async function LoadsPage({
   searchParams,
 }: {
@@ -32,15 +37,31 @@ export default async function LoadsPage({
   const podMissingOnly = pod_missing === "1";
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // POST-0069 finding: `rate` doesn't exist on `loads` at all anymore --
+  // this select unconditionally errored for canSeeFinancials (the WHOLE
+  // query, not just the rate value), which the un-checked `{ data }`
+  // destructure below silently turned into an empty Loads list for every
+  // financial role. load_financials is the sole authoritative source now,
+  // fetched separately and merged in by id, only for canSeeFinancials.
   let query = supabase
     .from("loads")
-    .select("id, load_number, status, equipment_type, rate, total_miles, brokers(company_name), customers(company_name)")
+    .select("id, load_number, status, equipment_type, total_miles, brokers(company_name), customers(company_name)")
     .order("created_at", { ascending: false });
   if (q) query = query.ilike("load_number", `%${q}%`);
   if (podMissingOnly) query = query.eq("status", "delivered");
 
-  const { data } = await query;
+  const { data, error: loadsError } = await query;
+  if (loadsError) console.error("[loads list] query failed:", loadsError);
   let loads = (data ?? []) as unknown as Load[];
+
+  if (canSeeFinancials && loads.length > 0) {
+    const { data: financialsRows } = await supabase.from("load_financials").select("load_id, rate").in("load_id", loads.map((l) => l.id));
+    const rateByLoadId = new Map((financialsRows ?? []).map((r) => [r.load_id, Number(r.rate)]));
+    loads = loads.map((l) => ({ ...l, rate: rateByLoadId.get(l.id) }));
+  }
 
   // Delivered Loads Missing POD filter, linked from the dashboard alert.
   // Same canonical helper as everywhere else POD status is derived --
@@ -57,14 +78,18 @@ export default async function LoadsPage({
   // result, which silently diverges from reality past PostgREST's default
   // row cap. The RPC computes SUM(rate) in Postgres over every matching row,
   // still scoped to the caller's own organization via the normal RLS policy
-  // on public.loads (see 0021_load_summary_aggregate.sql).
-  const [{ data: summaryData }, { count: activeCount }, { count: deliveredCount }] = await Promise.all([
-    supabase.rpc("get_load_summary", { p_search: q ?? null }).single(),
+  // on public.loads (see 0021_load_summary_aggregate.sql). Not called at
+  // all for driver/viewer -- Total Loads for them comes from a plain count
+  // query instead, so the RPC (which returns a real revenue aggregate) is
+  // never even invoked on their behalf.
+  const [{ data: summaryData }, { count: plainLoadCount }, { count: activeCount }, { count: deliveredCount }] = await Promise.all([
+    canSeeFinancials ? supabase.rpc("get_load_summary", { p_search: q ?? null }).single() : Promise.resolve({ data: null }),
+    canSeeFinancials ? Promise.resolve({ count: null }) : supabase.from("loads").select("id", { count: "exact", head: true }),
     supabase.from("loads").select("id", { count: "exact", head: true }).in("status", ACTIVE_LOAD_STATUSES),
     supabase.from("loads").select("id", { count: "exact", head: true }).in("status", COMPLETED_LOAD_STATUSES),
   ]);
   const summary = summaryData as unknown as { total_loads: number; total_rate_value: number } | null;
-  const totalCount = summary?.total_loads ?? 0;
+  const totalCount = summary?.total_loads ?? plainLoadCount ?? 0;
   const totalRateValue = Number(summary?.total_rate_value ?? 0);
 
   const columns: Column<Load>[] = [
@@ -72,7 +97,7 @@ export default async function LoadsPage({
     { header: "Source", cell: (row) => row.brokers?.company_name ?? row.customers?.company_name ?? "--" },
     { header: "Equipment", cell: (row) => row.equipment_type ?? "--" },
     { header: "Miles", cell: (row) => (row.total_miles ? Number(row.total_miles).toLocaleString() : "--") },
-    { header: "Rate", cell: (row) => `$${Number(row.rate).toLocaleString()}` },
+    ...(canSeeFinancials ? [{ header: "Rate", cell: (row: Load) => `$${Number(row.rate).toLocaleString()}` }] : []),
     { header: "Status", cell: (row) => <StatusBadge status={row.status} /> },
   ];
 
@@ -93,7 +118,7 @@ export default async function LoadsPage({
         <DesktopKpiBox label="Total Loads" value={totalCount ?? 0} />
         <DesktopKpiBox label="Active" value={activeCount ?? 0} />
         <DesktopKpiBox label="Delivered" value={deliveredCount ?? 0} tone="success" />
-        <DesktopKpiBox label="Total Rate Value" value={`$${totalRateValue.toLocaleString()}`} />
+        {canSeeFinancials && <DesktopKpiBox label="Total Rate Value" value={`$${totalRateValue.toLocaleString()}`} />}
       </DesktopKpiStrip>
 
       <SearchBar placeholder="Search loads by load number..." />

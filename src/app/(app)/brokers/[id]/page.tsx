@@ -8,7 +8,10 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { PartyArSection } from "@/components/finance/party-ar-section";
 import { BrokerProfitabilitySection } from "@/components/brokers/broker-profitability-section";
 import { updateBroker } from "../actions";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
+// Phase 2G.9 (item 3): same treatment as Customer Detail -- Brokers is
+// Business, open to every role, no layout guard.
 export default async function BrokerDetailPage({
   params,
 }: {
@@ -17,15 +20,35 @@ export default async function BrokerDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
   const { data: broker } = await supabase.from("brokers").select("*").eq("id", id).single();
   if (!broker) notFound();
 
-  const { data: loads } = await supabase
+  // Phase 2G.12: payment_terms_days moved to broker_financials (2G.10
+  // writer cutover) -- brokers' own copy is stale the moment it's edited.
+  // credit_rating has no reader anywhere in this app (confirmed by
+  // inspection) so there's nothing to display/cut over for it here.
+  const { data: brokerFinancials } = canSeeFinancials
+    ? await supabase.from("broker_financials").select("payment_terms_days").eq("broker_id", id).maybeSingle()
+    : { data: null };
+
+  // `rate` dropped from this select -- see identical fix/reasoning in
+  // customers/[id]/page.tsx.
+  const { data: loadsData } = await supabase
     .from("loads")
-    .select("id, load_number, status, rate")
+    .select("id, load_number, status")
     .eq("broker_id", id)
     .order("created_at", { ascending: false })
     .limit(10);
+  const loadsRaw = (loadsData ?? []) as { id: string; load_number: string; status: string }[];
+  const rateByLoadId = new Map<string, number>();
+  if (canSeeFinancials && loadsRaw.length > 0) {
+    const { data: lf } = await supabase.from("load_financials").select("load_id, rate").in("load_id", loadsRaw.map((l) => l.id));
+    for (const row of lf ?? []) rateByLoadId.set(row.load_id, Number(row.rate));
+  }
+  const loads = loadsRaw.map((l) => ({ ...l, rate: rateByLoadId.get(l.id) }));
 
   return (
     <div className="space-y-6">
@@ -44,12 +67,14 @@ export default async function BrokerDetailPage({
           <FormField label="Email" name="email" type="email" defaultValue={broker.email} />
           <FormField label="City" name="city" defaultValue={broker.city} />
           <FormField label="State" name="state" defaultValue={broker.state} />
-          <FormField
-            label="Payment terms (days)"
-            name="payment_terms_days"
-            type="number"
-            defaultValue={broker.payment_terms_days}
-          />
+          {canSeeFinancials && (
+            <FormField
+              label="Payment terms (days)"
+              name="payment_terms_days"
+              type="number"
+              defaultValue={brokerFinancials?.payment_terms_days}
+            />
+          )}
           <label className="flex items-center gap-2 text-sm font-medium sm:col-span-2">
             <input
               type="checkbox"
@@ -63,9 +88,9 @@ export default async function BrokerDetailPage({
         </FormGrid>
       </FormCard>
 
-      <PartyArSection brokerId={id} />
+      {canSeeFinancials && <PartyArSection brokerId={id} />}
 
-      <BrokerProfitabilitySection brokerId={id} />
+      {canSeeFinancials && <BrokerProfitabilitySection brokerId={id} />}
 
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
         <p className="text-sm font-medium">Recent loads</p>
@@ -78,7 +103,7 @@ export default async function BrokerDetailPage({
                 <Link href={`/loads/${load.id}`} className="font-medium text-[var(--color-brand)]">
                   {load.load_number}
                 </Link>
-                <span>${Number(load.rate).toLocaleString()}</span>
+                {canSeeFinancials && <span>${Number(load.rate ?? 0).toLocaleString()}</span>}
                 <StatusBadge status={load.status} />
               </li>
             ))}

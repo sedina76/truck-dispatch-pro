@@ -6,11 +6,7 @@ import { getDashboardData } from "@/lib/driver-portal/dashboard-data";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { LocationSharing } from "@/components/driver-portal/location-sharing";
 import { LogoutButton } from "@/components/driver-portal/logout-button";
-
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
+import { formatStopDateTime } from "@/lib/timezone/format";
 
 // Mobile-first dashboard (spec sections 1-3). Every counter comes from
 // getDashboardData()'s small fixed set of real queries -- never fabricated.
@@ -65,8 +61,8 @@ export default async function DriverPortalHomePage() {
           )}
 
           <div className="grid grid-cols-2 gap-y-2 text-sm">
-            <Field label="Pickup" value={fmtDateTime(pickup?.scheduled_at ?? null)} />
-            <Field label="Delivery" value={fmtDateTime(delivery?.scheduled_at ?? null)} />
+            <Field label="Pickup" value={pickup ? formatStopDateTime(pickup.scheduled_at, pickup.timezone) : "--"} />
+            <Field label="Delivery" value={delivery ? formatStopDateTime(delivery.scheduled_at, delivery.timezone) : "--"} />
             <Field label="Truck" value={dispatch.truck_unit ?? "--"} />
             <Field label="Trailer" value={dispatch.trailer_unit ?? "--"} />
           </div>

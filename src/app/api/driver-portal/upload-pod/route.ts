@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
+import { validateUploadedFile } from "@/lib/documents/validate-upload";
 
 const ALLOWED_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_BYTES = 15 * 1024 * 1024;
@@ -33,6 +35,12 @@ export async function POST(request: NextRequest) {
   }
   if (!ALLOWED_TYPES.has(file.type)) {
     return NextResponse.json({ error: "Unsupported file type. Use PDF, JPG, or PNG." }, { status: 400 });
+  }
+  // Real content check, not just the claimed MIME type (see
+  // validate-upload.ts's own header comment for why this exists).
+  const validation = await validateUploadedFile(file);
+  if (!validation.ok) {
+    return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
   const supabase = createServiceRoleClient();
@@ -78,6 +86,11 @@ export async function POST(request: NextRequest) {
   if (insertError) {
     return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
+
+  // Phase 2E push-hook -- the driver's own upload is a meaningful POD
+  // Missing transition too, same as the staff-side upload path. Isolated:
+  // must never fail the driver's own upload response.
+  syncExceptionsForDispatch(supabase, identity.organizationId, dispatch.id).catch((err) => console.warn("[driver-portal upload-pod] exception sync failed:", err));
 
   return NextResponse.json({ ok: true });
 }

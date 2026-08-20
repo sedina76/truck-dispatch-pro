@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Sidebar } from "@/components/nav/sidebar";
+import { MobileShell } from "@/components/nav/mobile-nav";
 import { CommandPalette } from "@/components/nav/command-palette";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DesktopTitleBar } from "@/components/desktop/title-bar";
@@ -65,15 +66,28 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               in-shell pages (Driver Profile, Profitability Report, etc.)
               without a dedicated print route, and also fixes the same gap
               for the carrier/driver-settlement PDF routes, which live
-              inside (app) unlike invoices/payments. */}
-          <div className="no-print"><DesktopTitleBar organizationName={organizationName} /></div>
-          <div className="no-print"><DesktopMenuBar /></div>
-          <div className="no-print"><DesktopToolbar notifications={notifications ?? []} /></div>
-          <div className="flex flex-1 overflow-hidden">
-            <div className="no-print"><Sidebar organizationName={organizationName} fullName={profile.full_name} role={profile.role} /></div>
-            <main className="flex-1 overflow-y-auto px-4 py-3 print:overflow-visible print:p-0">{children}</main>
+              inside (app) unlike invoices/payments.
+
+              Phase 2G.6: every desktop chrome element below is additionally
+              `hidden lg:flex`/`hidden lg:block` -- below 1024px NONE of
+              this renders at all, MobileShell (a single component: compact
+              header + bottom nav + "More" drawer) takes over instead. This
+              is a pure CSS split, not a JS viewport check -- both shells
+              exist in the DOM on every load, Tailwind decides which one is
+              visible, so there is no hydration-mismatch/flash risk and the
+              desktop shell's own markup/classes are completely untouched
+              at lg: and up. */}
+          <div className="no-print hidden lg:block"><DesktopTitleBar organizationName={organizationName} /></div>
+          <div className="no-print hidden lg:block"><DesktopMenuBar /></div>
+          <div className="no-print hidden lg:block"><DesktopToolbar notifications={notifications ?? []} /></div>
+          <div className="no-print">
+            <MobileShell organizationName={organizationName} fullName={profile.full_name} role={profile.role} notifications={notifications ?? []} />
           </div>
-          <div className="no-print"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} /></div>
+          <div className="flex flex-1 overflow-hidden">
+            <div className="no-print hidden lg:block"><Sidebar organizationName={organizationName} fullName={profile.full_name} role={profile.role} /></div>
+            <main className="flex-1 overflow-y-auto px-4 py-3 pb-20 lg:pb-3 print:overflow-visible print:p-0">{children}</main>
+          </div>
+          <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} /></div>
         </div>
         <CommandPalette />
       </DesktopActionsProvider>

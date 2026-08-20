@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import { RejectPodForm } from "@/components/loads/reject-pod-form";
 import { SimpleDocumentSlot } from "@/components/loads/simple-document-slot";
+import { UploadDocumentForm } from "@/components/loads/upload-document-form";
 import { LoadProfitabilitySection } from "@/components/loads/load-profitability-section";
 import { LoadExpensesSection } from "@/components/loads/load-expenses-section";
 import { LoadProfileSharingSection } from "@/components/loads/load-profile-sharing-section";
@@ -18,7 +19,38 @@ import { getLatestDocument } from "@/lib/documents/latest-document";
 import { updateLoad } from "../actions";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopCollapsibleSection, CollapsibleSectionsProvider, CollapsibleSectionsToolbar } from "@/components/desktop/collapsible-section";
-import { uploadPod, verifyPod, getPodSignedUrl } from "../pod-actions";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { verifyPod, getPodSignedUrl } from "../pod-actions";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+
+// Phase POST-0069 finding: rate/detention_rate/layover_rate were dropped
+// from `loads` entirely by 0069 -- this page's own select(canSeeFinancials
+// ? "*" : LOAD_SAFE_COLUMNS) was NEVER updated across 2G.9-2G.12's cutover
+// work (every OTHER reader of loads.rate got fixed; the load's own detail/
+// edit page -- arguably the single most important one -- did not). Before
+// 0069 this meant a silently stale/frozen loads.rate for every load
+// created/edited since 0068; after 0069 it means the Rate ($) field on
+// this exact page renders BLANK for every load, confirmed live. Fixed:
+// `"*"` no longer requested for either branch (rate/detention_rate/
+// layover_rate never existed as real columns to select in the first
+// place now) -- load_financials is fetched separately below, only for
+// canSeeFinancials.
+//
+// rate_confirmation_number is INCLUDED here (Phase 2G.9 item 2
+// reclassification): it's a plain text reference/tracking key ("RC-12345")
+// identifying which Rate Confirmation applies to a load, not a dollar
+// figure -- distinct from the Rate Confirmation DOCUMENT (the uploaded
+// file, which does contain the dollar rate and stays gated behind
+// getFinancialDocumentSignedUrl below). The Driver Portal already made
+// this exact distinction correctly (driver-portal/trip/page.tsx selects
+// only rate_confirmation_number, never rate/detention_rate/layover_rate) --
+// this page now matches that established, correct precedent instead of
+// contradicting it.
+const LOAD_SAFE_COLUMNS =
+  "id, organization_id, load_number, broker_id, customer_id, status, commodity, weight_lbs, equipment_type, total_miles, special_instructions, booked_by, rate_confirmation_number, created_at, updated_at";
+const INVOICE_SAFE_COLUMNS = "id, invoice_number, status, issue_date, due_date";
+const INVOICE_FULL_COLUMNS = "id, invoice_number, status, total_amount, amount_paid, balance_due, issue_date, due_date";
 
 // Load Information/Stops/Dispatch are the most operationally important --
 // open by default. Everything else (documents, financials, sharing,
@@ -57,9 +89,15 @@ export default async function LoadDetailPage({
   const { delivered, rate_con_upload_failed } = await searchParams;
   const supabase = await createClient();
 
-  const [{ data: load }, { data: brokers }, { data: customers }, { data: stops }, { data: dispatch }, { data: invoice }] =
+  // Phase 2G.7: resolved BEFORE the data Promise.all below, so the choice
+  // of which columns to even ask for is made up front -- never "fetch
+  // everything, decide what to show after."
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  const [{ data: load }, { data: brokers }, { data: customers }, { data: stops }, { data: dispatch }, { data: invoice }, { data: stopTzRows }, { data: orgTzRow }, { data: loadFinancials }] =
     await Promise.all([
-      supabase.from("loads").select("*").eq("id", id).single(),
+      supabase.from("loads").select(LOAD_SAFE_COLUMNS).eq("id", id).single(),
       supabase.from("brokers").select("id, company_name").order("company_name"),
       supabase.from("customers").select("id, company_name").order("company_name"),
       supabase
@@ -74,21 +112,71 @@ export default async function LoadDetailPage({
         .maybeSingle(),
       // Auto-generated on delivery by the auto_generate_invoice_on_delivery
       // trigger (0022_auto_invoice_on_delivery.sql) -- at most one per load,
-      // enforced by a partial unique index on invoices.load_id.
+      // enforced by a partial unique index on invoices.load_id. Amount
+      // columns only requested for financial roles -- see LOAD_SAFE_COLUMNS
+      // comment above for the same reasoning.
       supabase
         .from("invoices")
-        .select("id, invoice_number, status, total_amount, amount_paid, balance_due, issue_date, due_date")
+        .select(canSeeFinancials ? INVOICE_FULL_COLUMNS : INVOICE_SAFE_COLUMNS)
         .eq("load_id", id)
         .maybeSingle(),
+      // Phase 2C.1 -- separate, degradable query from the core stop fields
+      // above (same reasoning as every other split in this app: a
+      // not-yet-applied 0061 must never take the stop list down with it).
+      supabase.from("load_stops").select("id, timezone").eq("load_id", id),
+      supabase.from("organizations").select("timezone").single(),
+      // load_financials is the sole authoritative source for rate/
+      // detention_rate/layover_rate (0067/0068 cutover, 0069 dropped the
+      // old loads columns entirely) -- fetched only for canSeeFinancials,
+      // not merely hidden in JSX for driver/viewer.
+      canSeeFinancials
+        ? supabase.from("load_financials").select("rate, detention_rate, layover_rate").eq("load_id", id).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
   if (!load) notFound();
+
+  // Narrow-select rows come back typed as `never` by the query builder
+  // (it can't know the branch taken at runtime) -- cast once, right after
+  // the fetch, to the shape this page actually uses. Financial fields are
+  // `undefined` on the narrow branch, never a real value driver/viewer
+  // shouldn't see.
+  const loadRow = load as unknown as {
+    id: string;
+    load_number: string;
+    broker_id: string | null;
+    customer_id: string | null;
+    status: string;
+    commodity: string | null;
+    weight_lbs: number | null;
+    equipment_type: string | null;
+    total_miles: number | null;
+    special_instructions: string | null;
+    rate_confirmation_number: string | null;
+  };
+  const loadFinancialsRow = loadFinancials as { rate: number; detention_rate: number | null; layover_rate: number | null } | null;
+  const invoiceRow = invoice as unknown as {
+    id: string;
+    invoice_number: string;
+    status: string;
+    issue_date: string;
+    due_date: string | null;
+    total_amount?: number;
+    amount_paid?: number;
+    balance_due?: number;
+  } | null;
+
+  const stopTimezoneById = new Map((stopTzRows ?? []).map((row) => [row.id, row.timezone as string | null]));
+  const organizationTimezone = orgTzRow?.timezone ?? null;
 
   // POD status is always derived from this row (or its absence) -- see
   // src/lib/documents/pod-status.ts. Most recent one wins if a rejected POD
   // was replaced (the old row is kept for history, never edited in place).
   const [pod, rateConDoc, bolDoc, lumperDoc, detentionDoc, scaleTicketDoc, otherDoc] = await Promise.all([
     getLatestDocument(supabase, "load", id, "pod"),
-    getLatestDocument(supabase, "load", id, "rate_confirmation"),
+    // Phase 2G.7 (item 11): Rate Confirmation is financial -- not fetched
+    // at all for driver/viewer, matching the same "never in the render
+    // data" rule as loadRow.rate above.
+    canSeeFinancials ? getLatestDocument(supabase, "load", id, "rate_confirmation") : Promise.resolve(null),
     getLatestDocument(supabase, "load", id, "bol"),
     getLatestDocument(supabase, "load", id, "lumper_receipt"),
     getLatestDocument(supabase, "load", id, "detention_document"),
@@ -121,7 +209,7 @@ export default async function LoadDetailPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Loads", href: "/loads" }, { label: load.load_number, href: `/loads/${id}` }]} />
+      <DesktopWorkspaceTabs tabs={[{ label: "Loads", href: "/loads" }, { label: loadRow.load_number, href: `/loads/${id}` }]} />
       {rate_con_upload_failed === "1" && (
         <div className="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm">
           <AlertTriangle className="size-4 shrink-0 text-warning" />
@@ -132,24 +220,24 @@ export default async function LoadDetailPage({
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-success/30 bg-success/5 px-4 py-3">
           <p className="flex items-center gap-2 text-sm">
             <CheckCircle2 className="size-4 shrink-0 text-success" />
-            {invoice ? (
+            {invoiceRow ? (
               <>
-                Load marked delivered. Invoice <span className="font-semibold">{invoice.invoice_number}</span> has been created.
+                Load marked delivered. Invoice <span className="font-semibold">{invoiceRow.invoice_number}</span> has been created.
               </>
             ) : (
               "Load marked delivered. No invoice was created automatically -- add a broker or customer to this load, then create one manually."
             )}
           </p>
-          {invoice && (
+          {invoiceRow && (
             <div className="flex shrink-0 items-center gap-2">
               <Link
-                href={`/invoices/${invoice.id}`}
+                href={`/invoices/${invoiceRow.id}`}
                 className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary-hover"
               >
                 View Invoice
               </Link>
               <Link
-                href={`/invoices/${invoice.id}/pdf`}
+                href={`/invoices/${invoiceRow.id}/pdf`}
                 target="_blank"
                 className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
@@ -169,20 +257,20 @@ export default async function LoadDetailPage({
         </div>
 
         <div className="space-y-3">
-          <DesktopCollapsibleSection id="load_info" title={`${load.load_number} / Load Information`}>
+          <DesktopCollapsibleSection id="load_info" title={`${loadRow.load_number} / Load Information`}>
             <FormCard
-              title={load.load_number}
+              title={loadRow.load_number}
               description="Load profile. Changes save immediately."
               action={updateLoad.bind(null, id)}
               cancelHref="/loads"
               deleteAction={deleteRecord.bind(null, "loads", id, "/loads")}
             >
               <FormGrid>
-                <FormField label="Load number" name="load_number" defaultValue={load.load_number} required />
+                <FormField label="Load number" name="load_number" defaultValue={loadRow.load_number} required />
                 <FormSelect
                   label="Status"
                   name="status"
-                  defaultValue={load.status}
+                  defaultValue={loadRow.status}
                   options={[
                     { value: "draft", label: "Draft" },
                     { value: "posted", label: "Posted" },
@@ -199,21 +287,21 @@ export default async function LoadDetailPage({
                 <FormSelect
                   label="Broker"
                   name="broker_id"
-                  defaultValue={load.broker_id}
+                  defaultValue={loadRow.broker_id}
                   options={(brokers ?? []).map((b) => ({ value: b.id, label: b.company_name }))}
                 />
                 <FormSelect
                   label="Customer"
                   name="customer_id"
-                  defaultValue={load.customer_id}
+                  defaultValue={loadRow.customer_id}
                   options={(customers ?? []).map((c) => ({ value: c.id, label: c.company_name }))}
                 />
-                <FormField label="Commodity" name="commodity" defaultValue={load.commodity} />
-                <FormField label="Weight (lbs)" name="weight_lbs" type="number" defaultValue={load.weight_lbs} />
+                <FormField label="Commodity" name="commodity" defaultValue={loadRow.commodity} />
+                <FormField label="Weight (lbs)" name="weight_lbs" type="number" defaultValue={loadRow.weight_lbs} />
                 <FormSelect
                   label="Equipment type"
                   name="equipment_type"
-                  defaultValue={load.equipment_type}
+                  defaultValue={loadRow.equipment_type}
                   options={[
                     { value: "dry_van", label: "Dry Van" },
                     { value: "reefer", label: "Reefer" },
@@ -224,10 +312,19 @@ export default async function LoadDetailPage({
                     { value: "other", label: "Other" },
                   ]}
                 />
-                <FormField label="Total miles" name="total_miles" type="number" step="0.1" defaultValue={load.total_miles} />
-                <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={load.rate} required />
-                <FormField label="Rate confirmation #" name="rate_confirmation_number" defaultValue={load.rate_confirmation_number} />
-                <FormTextarea label="Special instructions" name="special_instructions" defaultValue={load.special_instructions} />
+                <FormField label="Total miles" name="total_miles" type="number" step="0.1" defaultValue={loadRow.total_miles} />
+                {/* Phase 2G.7/POST-0069: Rate ($) not rendered at all for
+                    driver/viewer -- load_financials (the sole source now)
+                    isn't even queried for that role, so there is nothing
+                    here to accidentally leak even if this condition were
+                    removed. */}
+                {canSeeFinancials && (
+                  <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadFinancialsRow?.rate} required />
+                )}
+                {/* Phase 2G.9 item 2: reclassified operational/safe -- see
+                    LOAD_SAFE_COLUMNS' header comment. Always rendered. */}
+                <FormField label="Rate confirmation #" name="rate_confirmation_number" defaultValue={loadRow.rate_confirmation_number} />
+                <FormTextarea label="Special instructions" name="special_instructions" defaultValue={loadRow.special_instructions} />
               </FormGrid>
             </FormCard>
           </DesktopCollapsibleSection>
@@ -252,7 +349,11 @@ export default async function LoadDetailPage({
                       </span>
                       <span className="text-right text-[var(--color-text-muted)]">
                         <span className="block">{stop.city}, {stop.state}</span>
-                        {stop.scheduled_at && <span className="block text-xs">{new Date(stop.scheduled_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>}
+                        {stop.scheduled_at && (
+                          <span className="block text-xs">
+                            {formatStopDateTime(stop.scheduled_at, resolveStopTimezone(stopTimezoneById.get(stop.id) ?? null, organizationTimezone).timezone, { includeYear: true })}
+                          </span>
+                        )}
                       </span>
                     </li>
                   ))}
@@ -265,7 +366,7 @@ export default async function LoadDetailPage({
                 <div className="space-y-2">
                   <p className="text-sm text-[var(--color-text-muted)]">Not yet dispatched.</p>
                   <Link
-                    href={`/dispatch/new?load_id=${load.id}`}
+                    href={`/dispatch/new?load_id=${loadRow.id}`}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover"
                   >
                     Create Dispatch
@@ -303,18 +404,7 @@ export default async function LoadDetailPage({
                 <p className="flex items-center gap-2 text-sm">
                   <StatusBadge status="missing" /> No POD on file yet.
                 </p>
-                <form action={uploadPod.bind(null, id)} className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="file"
-                    name="file"
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    required
-                    className="text-xs text-[var(--color-text-muted)] file:mr-2 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-                  />
-                  <Button type="submit" size="sm">
-                    Upload POD
-                  </Button>
-                </form>
+                <UploadDocumentForm loadId={id} documentType="pod" label="Upload POD" />
               </div>
             )}
 
@@ -353,18 +443,9 @@ export default async function LoadDetailPage({
                 </div>
 
                 {podStatus === "rejected" && (
-                  <form action={uploadPod.bind(null, id)} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-2">
-                    <input
-                      type="file"
-                      name="file"
-                      accept=".pdf,.jpg,.jpeg,.png"
-                      required
-                      className="text-xs text-[var(--color-text-muted)] file:mr-2 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground"
-                    />
-                    <Button type="submit" size="sm">
-                      Replace POD
-                    </Button>
-                  </form>
+                  <div className="border-t border-[var(--color-border)] pt-2">
+                    <UploadDocumentForm loadId={id} documentType="pod" label="Replace POD" />
+                  </div>
                 )}
               </div>
             )}
@@ -376,7 +457,7 @@ export default async function LoadDetailPage({
               that requires verification.
             </p>
             <div className="mt-3">
-              <SimpleDocumentSlot loadId={id} documentType="rate_confirmation" label="Rate Confirmation" doc={rateConDoc} />
+              {canSeeFinancials && <SimpleDocumentSlot loadId={id} documentType="rate_confirmation" label="Rate Confirmation" doc={rateConDoc} />}
               <SimpleDocumentSlot loadId={id} documentType="bol" label="Bill of Lading" doc={bolDoc} />
               <SimpleDocumentSlot loadId={id} documentType="lumper_receipt" label="Lumper Receipt" doc={lumperDoc} />
               <SimpleDocumentSlot loadId={id} documentType="detention_document" label="Detention Documentation" doc={detentionDoc} />
@@ -385,19 +466,32 @@ export default async function LoadDetailPage({
             </div>
           </DesktopCollapsibleSection>
 
-          <LoadProfitabilitySection loadId={id} />
-          <LoadExpensesSection loadId={id} />
+          {/* Phase 2G.7: not just visually hidden -- not rendered, so
+              neither component's own get_load_profitability()/expense
+              query ever runs for driver/viewer on this page. Profile
+              Sharing stays unconditional: it selects no financial columns
+              (confirmed by inspection) and already only offers
+              Phase 2F-safe document candidates. */}
+          {canSeeFinancials && <LoadProfitabilitySection loadId={id} />}
+          {canSeeFinancials && <LoadExpensesSection loadId={id} />}
           <LoadProfileSharingSection loadId={id} />
 
+          {/* Phase 2G.7: the whole section is financial (invoice amounts,
+              balance, payment terms) -- gated the same way as
+              Profitability/Expenses above, not just the Total/Balance rows
+              within it, since even the invoice-status badge is billing
+              context this page's own [id] route (now guarded, Phase 2G.6)
+              already keeps driver/viewer out of entirely. */}
+          {canSeeFinancials && (
           <DesktopCollapsibleSection
             id="invoice"
             title="Invoice"
-            badge={invoice ? `${invoice.invoice_number} · ${invoice.status.replace(/_/g, " ")}` : undefined}
+            badge={invoiceRow ? `${invoiceRow.invoice_number} · ${invoiceRow.status.replace(/_/g, " ")}` : undefined}
           >
-            {!invoice ? (
+            {!invoiceRow ? (
               <div className="space-y-2">
                 <p className="text-sm text-[var(--color-text-muted)]">
-                  {load.status === "delivered"
+                  {loadRow.status === "delivered"
                     ? "No invoice on file -- this load has no broker or customer set, so one couldn't be generated automatically. Set one, or create an invoice manually."
                     : "An invoice is created automatically once this load is marked Delivered. You can also create one manually now."}
                 </p>
@@ -410,49 +504,50 @@ export default async function LoadDetailPage({
               </div>
             ) : (
               <div className="space-y-2">
-                {podStatus !== "verified" && invoice.status === "draft" && (
+                {podStatus !== "verified" && invoiceRow.status === "draft" && (
                   <p className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/5 px-2.5 py-1.5 text-xs text-warning">
                     <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                     Proof of Delivery required before invoice can be sent.
                   </p>
                 )}
-                {invoice.status !== "draft" && (
+                {invoiceRow.status !== "draft" && (
                   <p className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/5 px-2.5 py-1.5 text-xs text-warning">
                     <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                    This invoice has already been {invoice.status.replace(/_/g, " ")}. Changing this load&apos;s rate will
+                    This invoice has already been {invoiceRow.status.replace(/_/g, " ")}. Changing this load&apos;s rate will
                     not update it automatically -- edit the invoice directly if it needs correcting.
                   </p>
                 )}
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
                   <span className="text-[var(--color-text-muted)]">Invoice #</span>
-                  <span className="text-right font-medium">{invoice.invoice_number}</span>
+                  <span className="text-right font-medium">{invoiceRow.invoice_number}</span>
                   <span className="text-[var(--color-text-muted)]">Total</span>
-                  <span className="text-right">${Number(invoice.total_amount).toLocaleString()}</span>
+                  <span className="text-right">${Number(invoiceRow.total_amount).toLocaleString()}</span>
                   <span className="text-[var(--color-text-muted)]">Status</span>
                   <span className="text-right">
-                    <StatusBadge status={invoice.status} />
+                    <StatusBadge status={invoiceRow.status} />
                   </span>
                   <span className="text-[var(--color-text-muted)]">Balance</span>
-                  <span className="text-right font-medium">${Number(invoice.balance_due).toLocaleString()}</span>
+                  <span className="text-right font-medium">${Number(invoiceRow.balance_due).toLocaleString()}</span>
                   <span className="text-[var(--color-text-muted)]">Due Date</span>
-                  <span className="text-right">{invoice.due_date ? new Date(invoice.due_date + "T00:00:00").toLocaleDateString() : "--"}</span>
+                  <span className="text-right">{invoiceRow.due_date ? new Date(invoiceRow.due_date + "T00:00:00").toLocaleDateString() : "--"}</span>
                   <span className="text-[var(--color-text-muted)]">Payment Terms</span>
                   {/* Derived display only, from the two dates already frozen on
                       the invoice at generation time -- never a live lookup of
                       the broker/customer's CURRENT terms, so this can never
                       silently change if their terms are edited later. */}
                   <span className="text-right">
-                    {invoice.issue_date && invoice.due_date
-                      ? `Net ${Math.round((new Date(invoice.due_date).getTime() - new Date(invoice.issue_date).getTime()) / 86400000)}`
+                    {invoiceRow.issue_date && invoiceRow.due_date
+                      ? `Net ${Math.round((new Date(invoiceRow.due_date).getTime() - new Date(invoiceRow.issue_date).getTime()) / 86400000)}`
                       : "--"}
                   </span>
                 </div>
-                <Link href={`/invoices/${invoice.id}`} className="inline-block text-xs font-medium text-[var(--color-brand)]">
+                <Link href={`/invoices/${invoiceRow.id}`} className="inline-block text-xs font-medium text-[var(--color-brand)]">
                   View invoice &rarr;
                 </Link>
               </div>
             )}
           </DesktopCollapsibleSection>
+          )}
         </div>
       </CollapsibleSectionsProvider>
     </div>

@@ -10,6 +10,11 @@ import { zonedDateTimeToUtc, validateWindowOrder } from "@/lib/timezone/convert"
 import { isValidIanaTimezone } from "@/lib/timezone/iana";
 import { formatStopDateTime } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
+import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
+import { isWithinActiveRetention, deliveredRetentionCountdown } from "@/lib/dispatch/board-retention";
+
+const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
 // ---------------------------------------------------------------------------
 // updateDispatchBoardStatus -- the Dispatch Board's own status-move action,
@@ -120,42 +125,43 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
     return data;
   }
 
+  // Phase 2I.1: the dedicated-timestamp-column half of this switch (which
+  // column gets stamped, only if not already set) is now the ONE shared
+  // computeOperationalTimestampUpdates() (src/lib/dispatch/operational-
+  // timestamps.ts) -- also used by updateDispatch() (dispatch/actions.ts)
+  // so the full edit-form path gets the identical bookkeeping this board
+  // move already had, closing the exact gap that left 3 live dispatches
+  // with delivered_at null (see the Phase 2I.1 pre-migration report). The
+  // load_stops arrived_at/departed_at half is a separate concern and
+  // stays inline here, unchanged.
+  if (timestampsAvailable) {
+    Object.assign(dispatchUpdates, computeOperationalTimestampUpdates(newStatus, priorTimestamps, now));
+  }
   switch (newStatus) {
-    case "en_route_to_pickup":
-      if (timestampsAvailable && !priorTimestamps.en_route_pickup_at) dispatchUpdates.en_route_pickup_at = now;
-      break;
     case "at_pickup": {
       const stop = await stopId("pickup");
       if (stop && !stop.arrived_at) pickupStopUpdate = { arrived_at: now };
       break;
     }
     case "loaded": {
-      if (timestampsAvailable && !priorTimestamps.loaded_at) dispatchUpdates.loaded_at = now;
       const stop = await stopId("pickup");
       if (stop && !stop.departed_at) pickupStopUpdate = { ...(pickupStopUpdate ?? {}), departed_at: now };
       break;
     }
-    case "en_route_to_delivery":
-      if (timestampsAvailable && !priorTimestamps.in_transit_at) dispatchUpdates.in_transit_at = now;
-      break;
     case "at_delivery": {
       const stop = await stopId("delivery");
       if (stop && !stop.arrived_at) deliveryStopUpdate = { arrived_at: now };
       break;
     }
     case "delivered": {
-      if (timestampsAvailable && !priorTimestamps.delivered_at) dispatchUpdates.delivered_at = now;
       const stop = await stopId("delivery");
       if (stop && !stop.departed_at) deliveryStopUpdate = { ...(deliveryStopUpdate ?? {}), departed_at: now };
       break;
     }
-    case "cancelled":
-      if (timestampsAvailable && !priorTimestamps.cancelled_at) dispatchUpdates.cancelled_at = now;
-      break;
-    // assigned/accepted/completed: no dedicated timestamp column -- see
-    // migration comment (dispatched_at already covers "assigned", and
-    // these two statuses fold visually into the Assigned/Delivered
-    // columns respectively).
+    // en_route_to_pickup/en_route_to_delivery/cancelled: dedicated-column
+    // bookkeeping only, already applied above. assigned/accepted/
+    // completed: no dedicated timestamp column and no stop-timestamp side
+    // effect (dispatched_at already covers "assigned").
   }
 
   const { error } = await supabase.from("dispatches").update(dispatchUpdates).eq("id", dispatchId);
@@ -216,6 +222,23 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
     if (stopSessionError) console.error("[dispatch board] auto-stop tracking session on delivery failed:", stopSessionError);
   }
 
+  // Phase 2E push-hook: the transition INTO a delivered-like status is the
+  // exact moment "POD Missing" first becomes operationally relevant (spec
+  // section 30 gates it on delivered status) -- reuses this already-
+  // existing, reliable status-change write path rather than inventing a
+  // new one. Off_route/late/at_risk are NOT re-synced here -- this is a
+  // manual status move, not one of their own meaningful transitions (see
+  // evaluate-route-deviation.ts / evaluate-route.ts for those). Also
+  // covers auto-resolution: moving OUT of a delivered-like status (a
+  // correction) drops this dispatch out of the pod_missing-eligible set on
+  // the next sync, which the org-wide scheduled/page-load safety net
+  // reconciles. Fire-and-forget + isolated -- must never break the status
+  // move itself, matching the same "secondary write" convention as the
+  // stop-timestamp writes above.
+  if (DELIVERED_LIKE_STATUSES.has(newStatus)) {
+    syncExceptionsForDispatch(createServiceRoleClient(), organizationId, dispatchId).catch((err) => console.warn("[dispatch board] exception sync on delivery failed:", err));
+  }
+
   revalidatePath("/dispatch/board");
   revalidatePath(`/dispatch/${dispatchId}`);
   return { ok: true };
@@ -245,7 +268,25 @@ export type DrawerActivity = {
   createdAt: string;
 };
 
+// Phase 2I.1 (Part B) -- one row of the Communication timeline's message
+// half (calls are drawn from `activity` -- action='call_logged' -- and
+// merged client-side, never duplicated into this array).
+export type DrawerMessage = {
+  id: string;
+  senderType: "staff" | "driver";
+  senderName: string | null;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+};
+
 export type DispatchDrawerData = {
+  // Phase 2I.1: the operational (owner/admin/dispatcher) write tier for
+  // THIS dispatch -- gates Call/Message send, call logging, and POD
+  // verify/reject in the new panels. See canManageDispatchOps's own
+  // definition above for why this is deliberately narrower than
+  // canSeeFinancials (accountant excluded).
+  canManageDispatchOps: boolean;
   dispatch: {
     id: string;
     status: string;
@@ -298,8 +339,60 @@ export type DispatchDrawerData = {
     stale: boolean;
   };
   routeIntelligence: RouteIntelligenceInfo | null;
+  routeDeviation: RouteDeviationInfo | null;
   documents: DrawerDocument[];
   activity: DrawerActivity[];
+  // Phase 2I.1 (Part C) -- the canonical get_load_billing_readiness() RPC
+  // result, mapped 1:1. Null only if the RPC itself couldn't be reached
+  // (never fabricated/re-derived).
+  billingReadiness: {
+    hasVerifiedPod: boolean;
+    hasBol: boolean;
+    bolRequired: boolean;
+    hasRateConfirmation: boolean;
+    rateConfirmationRequired: boolean;
+    readyToBill: boolean;
+  } | null;
+  // Phase 2I.1 (Part A4) -- null when this dispatch was never delivered-
+  // like; countdown is null specifically when delivered_at is unexpectedly
+  // missing (fail-open case -- still "within the active window" by
+  // definition, just nothing to count down from).
+  deliveredRetention: {
+    withinActiveWindow: boolean;
+    deliveredAtLabel: string | null;
+    countdown: { expired: boolean; compact: string; sentence: string } | null;
+  } | null;
+  // Phase 2I.1 (Part B) -- message half of the Communication timeline.
+  communication: {
+    messages: DrawerMessage[];
+    hasMoreMessages: boolean;
+  };
+};
+
+// Phase 2D (0062_route_deviation.sql). Null the same way routeIntelligence
+// degrades -- migration not applied, or no row exists yet (monitoring
+// disabled for this org, or nothing has evaluated yet).
+export type RouteDeviationInfo = {
+  targetStopId: string;
+  state: "on_route" | "candidate" | "off_route" | "recovering" | "recovered";
+  calculationStatus: "ok" | "no_geometry" | "low_accuracy" | "stale_gps" | "arrived";
+  distanceFromRouteMeters: number | null;
+  confirmedAt: string | null;
+  recoveredAt: string | null;
+  dismissedAt: string | null;
+  targetStopTimezone: string;
+  // Read-time freshness (spec section 8/58): the evaluation pipeline's own
+  // calculation_status:'stale_gps' can only ever be set from a ping's own
+  // recordedAt, which the API route always server-stamps at receipt (so it
+  // can never itself be "old") -- staleness in practice means "no NEW ping
+  // has arrived recently", which is only knowable by comparing the last
+  // evaluated ping's timestamp against now AT READ TIME, exactly like
+  // `tracking.stale` above already does off driver_latest_locations.
+  // Found live during Phase 2D verification: without this, the UI could
+  // keep showing a confident OFF ROUTE/ON ROUTE claim indefinitely after
+  // GPS reporting had actually stopped.
+  stale: boolean;
+  lastLocationAt: string | null;
 };
 
 // Phase 2C (0060_route_intelligence.sql). Road-route ETA/miles/risk for the
@@ -366,13 +459,20 @@ export type StopGeofenceInfo = {
   statusApplied: boolean;
 };
 
+// Phase 2I.1: fixed to exactly match LOAD_DOCUMENT_TYPES (src/app/(app)/
+// loads/pod-actions.ts) -- the canonical set the upload action itself
+// actually accepts. Previously included 'fuel_receipt' (not a real load-
+// document type -- that's Fuel/Expenses domain) and was missing
+// 'detention_document' (a real, live document_type value, added 0024,
+// that the upload action has always accepted but this drawer never
+// offered).
 const DOC_TYPES: { type: string; label: string }[] = [
   { type: "rate_confirmation", label: "Rate Confirmation" },
   { type: "bol", label: "Bill of Lading" },
   { type: "pod", label: "Proof of Delivery" },
   { type: "lumper_receipt", label: "Lumper Receipt" },
+  { type: "detention_document", label: "Detention Documentation" },
   { type: "scale_ticket", label: "Scale Ticket" },
-  { type: "fuel_receipt", label: "Fuel Receipt" },
   { type: "other", label: "Other" },
 ];
 
@@ -436,12 +536,22 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
 
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
   const role = profile?.role ?? null;
-  // The one org_role this spec explicitly excludes from financial data.
-  // Every other staff role (owner/admin/dispatcher/accountant/viewer) can
-  // see it, matching how internal financials are already treated
-  // everywhere else in this app (Load Detail profitability, Carrier
-  // Settlement's "Internal Revenue -- Staff Only" section, etc.).
-  const canSeeFinancials = role !== "driver";
+  // Phase 2G.7 final role decision: FINANCIAL = owner/admin/dispatcher/
+  // accountant; NON-FINANCIAL = viewer AND driver. Previously only driver
+  // was excluded here (viewer could see financials, matching two other
+  // surfaces at the time) -- that inconsistency is resolved now, in the
+  // same pass that aligned Load Detail and Dispatch Detail to the same
+  // rule. See src/lib/auth/require-role.ts's FINANCIAL_ROLES for the
+  // single source of truth this mirrors.
+  const canSeeFinancials = role === "owner" || role === "admin" || role === "dispatcher" || role === "accountant";
+  // Phase 2I.1: the OPERATIONAL write tier for this dispatch -- matches
+  // dispatches_insert/dispatches_update (0010) exactly, i.e. the same
+  // roles who can already drag a card or edit the dispatch itself.
+  // Distinct from canSeeFinancials (which also includes accountant) --
+  // sending a driver message, logging a call, or verifying/rejecting a
+  // POD are operational actions, not financial ones, and accountant has
+  // never had operational dispatch-write access in this schema.
+  const canManageDispatchOps = role === "owner" || role === "admin" || role === "dispatcher";
 
   // Split into two queries on purpose. Everything in this first one
   // existed before 0057 -- a valid, real dispatch must always be able to
@@ -455,10 +565,17 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   // migrated column bundled into a single .select() string fails the
   // ENTIRE query, even though the core dispatch/load/driver/truck/carrier
   // data is completely healthy).
+  // Phase 2G.11: load_rate/dispatch_fee_percentage/dispatch_fee_amount/
+  // carrier_net_amount/notes dropped from this select -- 0068's writer
+  // cutover stopped populating them on `dispatches` (dispatch_financials/
+  // dispatch_internal_notes are authoritative now), and they were being
+  // fetched here unconditionally for every role regardless of
+  // canSeeFinancials, not just displayed unconditionally -- fetched below,
+  // gated, only when canSeeFinancials is true.
   const { data: dispatch, error: dispatchError } = await supabase
     .from("dispatches")
     .select(
-      "id, status, load_id, carrier_id, truck_id, trailer_id, driver_id, dispatched_at, notes, load_rate, dispatch_fee_percentage, dispatch_fee_amount, carrier_net_amount, carriers(legal_name), trucks(unit_number, make, model, year), trailers(unit_number), drivers(first_name, last_name, phone, status)"
+      "id, status, load_id, carrier_id, truck_id, trailer_id, driver_id, dispatched_at, carriers(legal_name), trucks(unit_number, make, model, year), trailers(unit_number), drivers(first_name, last_name, phone, status)"
     )
     .eq("id", dispatchId)
     .eq("organization_id", organizationId)
@@ -503,6 +620,20 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   }
   const ts = (timestamps ?? {}) as { en_route_pickup_at?: string | null; loaded_at?: string | null; in_transit_at?: string | null; delivered_at?: string | null; cancelled_at?: string | null };
 
+  // Phase 2G.11: dispatch_financials/dispatch_internal_notes are the
+  // authoritative source for these fields now -- queried only when
+  // canSeeFinancials, so the query for a protected row is never even
+  // issued for driver/viewer (RLS on both tables would also block it,
+  // but there's no reason to ask in the first place).
+  const [{ data: financialsRow, error: financialsError }, { data: notesRow, error: notesError }] = canSeeFinancials
+    ? await Promise.all([
+        supabase.from("dispatch_financials").select("load_rate, dispatch_fee_percentage, dispatch_fee_amount, carrier_net_amount").eq("dispatch_id", dispatchId).maybeSingle(),
+        supabase.from("dispatch_internal_notes").select("notes").eq("dispatch_id", dispatchId).maybeSingle(),
+      ])
+    : [{ data: null, error: null }, { data: null, error: null }];
+  if (financialsError) console.warn(`[dispatch drawer] dispatch_financials unavailable for dispatch ${dispatchId}:`, financialsError);
+  if (notesError) console.warn(`[dispatch drawer] dispatch_internal_notes unavailable for dispatch ${dispatchId}:`, notesError);
+
   const d = {
     ...(dispatch as unknown as {
       id: string;
@@ -510,16 +641,16 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       load_id: string;
       driver_id: string;
       dispatched_at: string;
-      notes: string | null;
-      load_rate: number;
-      dispatch_fee_percentage: number;
-      dispatch_fee_amount: number;
-      carrier_net_amount: number;
       carriers: { legal_name: string } | null;
       trucks: { unit_number: string; make: string | null; model: string | null; year: number | null } | null;
       trailers: { unit_number: string } | null;
       drivers: { first_name: string; last_name: string; phone: string | null; status: string } | null;
     }),
+    notes: notesRow?.notes ?? null,
+    load_rate: financialsRow?.load_rate ?? 0,
+    dispatch_fee_percentage: financialsRow?.dispatch_fee_percentage ?? 0,
+    dispatch_fee_amount: financialsRow?.dispatch_fee_amount ?? 0,
+    carrier_net_amount: financialsRow?.carrier_net_amount ?? 0,
     en_route_pickup_at: ts.en_route_pickup_at ?? null,
     loaded_at: ts.loaded_at ?? null,
     in_transit_at: ts.in_transit_at ?? null,
@@ -536,6 +667,8 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     docs,
     { data: orgTz, error: orgTzError },
     { data: stopTimezones, error: stopTzError },
+    billingReadinessResult,
+    messagesResult,
   ] = await Promise.all([
     supabase
       .from("loads")
@@ -580,6 +713,24 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     // applied migration must never take the Pickup/Delivery sections down
     // with it.
     supabase.from("load_stops").select("id, timezone, timezone_source").eq("load_id", d.load_id),
+    // Phase 2I.1 (Part C): the canonical billing-readiness RPC (0065,
+    // live) -- never re-derived here. Degradable the same way every
+    // other optional section already is: a query failure just means the
+    // banner shows nothing rather than a fabricated readiness state.
+    supabase.rpc("get_load_billing_readiness", { p_load_id: d.load_id }).maybeSingle(),
+    // Phase 2I.1 (Part B): latest 50 messages for this dispatch, newest
+    // first (reversed to chronological order below for display) -- same
+    // bounded-pagination convention as every other "recent activity"
+    // list in this app. Degradable: dispatch_messages is a brand-new
+    // table (0080) -- until that migration is applied, this section is
+    // simply empty, never a broken drawer, matching every other
+    // not-yet-applied-migration query in this exact file.
+    supabase
+      .from("dispatch_messages")
+      .select("id, sender_type, sender_profile_id, body, created_at, read_at, profiles(full_name)")
+      .eq("dispatch_id", dispatchId)
+      .order("created_at", { ascending: false })
+      .limit(51),
   ]);
 
   // The load itself is required -- everything below it (stops, detention
@@ -595,6 +746,8 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   if (locationError) console.warn(`[dispatch drawer] driver_latest_locations query failed for dispatch ${dispatchId}:`, locationError);
   if (orgTzError) console.warn(`[dispatch drawer] organization timezone query failed for org ${organizationId}:`, orgTzError);
   if (stopTzError) console.warn(`[dispatch drawer] stop timezone query failed for dispatch ${dispatchId} (likely migration 0061 not applied yet):`, stopTzError);
+  if (billingReadinessResult.error) console.warn(`[dispatch drawer] billing readiness unavailable for dispatch ${dispatchId}:`, billingReadinessResult.error);
+  if (messagesResult.error) console.warn(`[dispatch drawer] dispatch_messages unavailable for dispatch ${dispatchId} (likely migration 0080 not applied yet):`, messagesResult.error);
 
   const loadRow = load as unknown as {
     id: string;
@@ -723,13 +876,93 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     createdAt: a.created_at,
   }));
 
+  // Phase 2I.1 (Part B): messages, newest-first from the query above,
+  // reversed to chronological for display (oldest first, matching how a
+  // conversation reads). Fetched 51 to detect a 51st-and-beyond row
+  // without a second count query; only the 50 most recent are ever
+  // returned to the caller. Driver-sent rows are attributed to THIS
+  // dispatch's own driver (a conversation has exactly one possible driver
+  // participant) -- no join needed for that name.
+  const rawMessages = (messagesResult.data ?? []) as unknown as { id: string; sender_type: string; sender_profile_id: string | null; body: string; created_at: string; read_at: string | null; profiles: { full_name: string } | null }[];
+  const hasMoreMessages = rawMessages.length > 50;
+  const driverName = d.drivers ? `${d.drivers.first_name} ${d.drivers.last_name}` : null;
+  const messages: DrawerMessage[] = rawMessages
+    .slice(0, 50)
+    .reverse()
+    .map((m) => ({
+      id: m.id,
+      senderType: m.sender_type as "staff" | "driver",
+      senderName: m.sender_type === "driver" ? driverName : (m.profiles?.full_name ?? null),
+      body: m.body,
+      createdAt: m.created_at,
+      readAt: m.read_at,
+    }));
+
+  // Phase 2I.1 (Part C): the canonical billing-readiness RPC's own column
+  // names, mapped 1:1 -- never re-derived or renamed into a different
+  // shape that could drift from what the RPC actually returns.
+  const readiness = billingReadinessResult.data as {
+    has_verified_pod: boolean;
+    has_bol: boolean;
+    bol_required: boolean;
+    has_rate_confirmation: boolean;
+    rate_confirmation_required: boolean;
+    ready_to_bill: boolean;
+  } | null;
+  const billingReadiness: DispatchDrawerData["billingReadiness"] = readiness
+    ? {
+        hasVerifiedPod: readiness.has_verified_pod,
+        hasBol: readiness.has_bol,
+        bolRequired: readiness.bol_required,
+        hasRateConfirmation: readiness.has_rate_confirmation,
+        rateConfirmationRequired: readiness.rate_confirmation_required,
+        readyToBill: readiness.ready_to_bill,
+      }
+    : null;
+
+  // Phase 2I.1 (Part A4): delivered-retention display, using the ONE
+  // shared rule/helper the board query itself filters on -- never a
+  // second interpretation. Null when this dispatch was never delivered-
+  // like at all (nothing to show). deliveredAtLabel is formatted here
+  // (server-side, through the exact same resolved delivery-stop timezone
+  // the countdown itself uses) rather than left to the client to render
+  // via the browser's own local timezone -- "Use timezone-correct
+  // display based on the existing stop/org timezone architecture."
+  const deliveryStopTimezone = resolveStopTimezone(stopTimezoneById.get(deliveryStop?.id ?? "") ?? null, organizationTimezone).timezone;
+  const deliveredRetention: DispatchDrawerData["deliveredRetention"] =
+    d.status === "delivered" || d.status === "completed"
+      ? {
+          withinActiveWindow: isWithinActiveRetention(d.status, d.delivered_at),
+          deliveredAtLabel: d.delivered_at ? formatStopDateTime(d.delivered_at, deliveryStopTimezone) : null,
+          countdown: d.delivered_at ? deliveredRetentionCountdown(d.delivered_at, deliveryStopTimezone) : null,
+        }
+      : null;
+
   // Staff drawer always shows real availability -- documents.visibility
   // (0057) governs what a driver/carrier-facing surface may return, not
   // what an authenticated staff user sees here.
-  const documents: DrawerDocument[] = DOC_TYPES.map((dt, i) => ({
+  //
+  // Phase 2I.1 live-verification defect fix: rate_confirmation is the one
+  // document type in this list that's financial (it carries the agreed
+  // rate), the exact reason getFinancialDocumentSignedUrl() gates its
+  // signed URL to FINANCIAL_ROLES and /loads/[id]/page.tsx's own Billing
+  // Documents section has always omitted this one slot entirely for
+  // driver/viewer (see that page's DOC_TYPES construction). This drawer's
+  // Documents panel is new (Part C) and initially reused DOC_TYPES
+  // unfiltered, which rendered a "View"/"Replace" row for rate_confirmation
+  // to every role -- not a data leak (getFinancialDocumentSignedUrl()'s own
+  // requireRole() still blocked the read, and load_documents_insert's
+  // Storage RLS -- owner/admin/dispatcher only -- still blocked the write),
+  // but "View" for a non-financial role redirected the whole page to
+  // /access-denied, and the row was misleading regardless. Filtering it
+  // out here, before it ever reaches DrawerDocument/DocumentsPanel, matches
+  // the Load Detail page's own established behavior exactly and is the
+  // smallest fix -- documentsRequiredCounts() (the toolbar's N/M count)
+  // reads billingReadiness directly, never this array, so it's unaffected.
+  const documents: DrawerDocument[] = DOC_TYPES.filter((dt) => dt.type !== "rate_confirmation" || canSeeFinancials).map((dt) => ({
     type: dt.type,
     label: dt.label,
-    doc: docs[i] as DocumentRow | null,
+    doc: docs[DOC_TYPES.findIndex((x) => x.type === dt.type)] as DocumentRow | null,
   }));
 
   const grossRevenue = Number(d.load_rate);
@@ -779,7 +1012,40 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     };
   }
 
+  // Phase 2D (0062_route_deviation.sql) -- same target stop routeIntelligence
+  // just resolved, same degrade-to-null philosophy. Deliberately a SEPARATE
+  // query from dispatch_route_intelligence above, not bundled -- migration
+  // 0062 landing independently of 0060 must never take the ETA/risk section
+  // down with it.
+  let routeDeviation: RouteDeviationInfo | null = null;
+  if (routeRow?.target_stop_id) {
+    const { data: devRow, error: devError } = await supabase
+      .from("dispatch_route_deviation_state")
+      .select("state, calculation_status, distance_from_route_m, confirmed_at, recovered_at, dismissed_at, last_location_at")
+      .eq("dispatch_id", dispatchId)
+      .eq("target_stop_id", routeRow.target_stop_id)
+      .maybeSingle();
+    if (devError) {
+      console.warn(`[dispatch drawer] route deviation state unavailable for dispatch ${dispatchId} (likely migration 0062 not applied yet):`, devError);
+    } else if (devRow) {
+      const devAgeMinutes = devRow.last_location_at ? (Date.now() - new Date(devRow.last_location_at).getTime()) / 60_000 : null;
+      routeDeviation = {
+        targetStopId: routeRow.target_stop_id,
+        state: devRow.state,
+        calculationStatus: devRow.calculation_status,
+        distanceFromRouteMeters: devRow.distance_from_route_m,
+        confirmedAt: devRow.confirmed_at,
+        recoveredAt: devRow.recovered_at,
+        dismissedAt: devRow.dismissed_at,
+        targetStopTimezone: routeIntelligence?.targetStopTimezone ?? "UTC",
+        stale: devAgeMinutes != null && devAgeMinutes > STALE_LOCATION_MINUTES,
+        lastLocationAt: devRow.last_location_at,
+      };
+    }
+  }
+
   return {
+    canManageDispatchOps,
     dispatch: {
       id: d.id,
       status: d.status,
@@ -825,8 +1091,12 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     },
     tracking: buildTrackingInfo(latestLocation, dispatchId),
     routeIntelligence,
+    routeDeviation,
     documents,
     activity,
+    billingReadiness,
+    deliveredRetention,
+    communication: { messages, hasMoreMessages },
   };
 }
 
@@ -878,6 +1148,197 @@ export async function addDispatchQuickNote(dispatchId: string, note: string): Pr
   revalidatePath("/dispatch/board");
   revalidatePath(`/dispatch/${dispatchId}`);
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2I.1 (Part B) -- Call logging + internal driver messaging. Both
+// share the same operational write tier as the board itself
+// (owner/admin/dispatcher -- see canManageDispatchOps in
+// getDispatchDrawerData for the exact reasoning) and the same "resolve
+// org, re-verify the dispatch belongs to it" pattern as every action
+// above. A friendly pre-check is done here (not left to RLS alone) so an
+// unauthorized caller gets the same clear message this app's other
+// role-gated actions already give, rather than a raw Postgres RLS error.
+// ---------------------------------------------------------------------------
+
+async function requireDispatchOpsAccess(dispatchId: string): Promise<
+  | { ok: true; supabase: Awaited<ReturnType<typeof createClient>>; organizationId: string; loadId: string; driverId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not authenticated." };
+
+  let organizationId: string;
+  try {
+    organizationId = await getCurrentOrgId();
+  } catch {
+    return { ok: false, error: "No organization on this account." };
+  }
+
+  const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+  const role = profile?.role ?? null;
+  if (role !== "owner" && role !== "admin" && role !== "dispatcher") {
+    return { ok: false, error: "You do not have permission to manage driver communication." };
+  }
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id, load_id, driver_id").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
+  if (!dispatch) return { ok: false, error: "Dispatch not found." };
+  if (!dispatch.driver_id) return { ok: false, error: "This dispatch has no driver assigned." };
+
+  return { ok: true, supabase, organizationId, loadId: dispatch.load_id, driverId: dispatch.driver_id };
+}
+
+// Reuses log_activity (activity_logs) -- see the Phase 2I.1 pre-
+// implementation audit for why this needs no new table: a call has
+// exactly one actor (staff), no reply, no body beyond a short outcome
+// label, and this exact table/RPC already renders in the drawer's
+// existing Activity section. Merged into the Communication timeline
+// client-side by filtering action='call_logged', never duplicated into
+// dispatch_messages.
+const CALL_OUTCOMES = new Set(["initiated", "reached_driver", "no_answer", "left_voicemail", "follow_up_needed"]);
+
+export async function logDriverCall(dispatchId: string, outcome?: string): Promise<BoardStatusResult> {
+  const access = await requireDispatchOpsAccess(dispatchId);
+  if (!access.ok) return access;
+  const { supabase, organizationId } = access;
+
+  const resolvedOutcome = outcome && CALL_OUTCOMES.has(outcome) ? outcome : "initiated";
+
+  const { error } = await supabase.rpc("log_activity", {
+    p_entity_type: "dispatch",
+    p_entity_id: dispatchId,
+    p_action: "call_logged",
+    p_changes: { outcome: resolvedOutcome },
+    p_organization_id: organizationId,
+  });
+  if (error) {
+    console.error("[dispatch board] call log failed:", error);
+    return { ok: false, error: "Unable to log this call. Please try again." };
+  }
+
+  revalidatePath(`/dispatch/${dispatchId}`);
+  return { ok: true };
+}
+
+// Staff -> driver message. Driver Portal's own send path
+// (driver-portal/actions.ts) is the driver -> staff direction, using
+// service-role + explicit driver_id ownership instead of this RLS-scoped
+// client -- see that file for the full reasoning (Driver Portal has no
+// Supabase Auth session to run RLS against at all).
+export async function sendDispatchMessage(dispatchId: string, body: string): Promise<BoardStatusResult> {
+  const trimmed = body.trim();
+  if (!trimmed) return { ok: false, error: "Message cannot be empty." };
+  if (trimmed.length > 2000) return { ok: false, error: "Message is too long (2000 characters max)." };
+
+  const access = await requireDispatchOpsAccess(dispatchId);
+  if (!access.ok) return access;
+  const { supabase, organizationId, loadId, driverId } = access;
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { error } = await supabase.from("dispatch_messages").insert({
+    organization_id: organizationId,
+    dispatch_id: dispatchId,
+    load_id: loadId,
+    driver_id: driverId,
+    sender_type: "staff",
+    sender_profile_id: user?.id ?? null,
+    // body is rendered as plain text everywhere it's displayed (React's
+    // default text-node escaping, both here and in the Driver Portal) --
+    // never dangerouslySetInnerHTML -- so no HTML/script sanitization is
+    // needed at write time.
+    body: trimmed,
+  });
+  if (error) {
+    console.error("[dispatch board] send message failed:", error);
+    return { ok: false, error: "Unable to send message. Please try again." };
+  }
+
+  revalidatePath(`/dispatch/${dispatchId}`);
+  return { ok: true };
+}
+
+// "Request from Driver" (Part C4) is this same action with a prefilled
+// body -- deliberately not a second system, per the approved design.
+export async function requestPodFromDriver(dispatchId: string, loadNumber: string): Promise<BoardStatusResult> {
+  return sendDispatchMessage(dispatchId, `Please upload the POD for Load ${loadNumber}.`);
+}
+
+export async function markDispatchMessagesRead(dispatchId: string): Promise<BoardStatusResult> {
+  const access = await requireDispatchOpsAccess(dispatchId);
+  if (!access.ok) return access;
+  const { supabase } = access;
+
+  // Narrow, column-specific update -- only ever sets read_at, matching
+  // the RLS policy's own scope (dispatch_messages_update_read, 0080:
+  // driver-sent rows only) and this app's established convention of
+  // trusting the action's own narrow column list rather than relying on
+  // RLS to restrict which columns an UPDATE may touch (verifyPod()/
+  // rejectPod(), pod-actions.ts, do the same).
+  const { error } = await supabase
+    .from("dispatch_messages")
+    .update({ read_at: new Date().toISOString() })
+    .eq("dispatch_id", dispatchId)
+    .eq("sender_type", "driver")
+    .is("read_at", null);
+  if (error) {
+    console.warn("[dispatch board] mark messages read failed:", error);
+    return { ok: false, error: "Unable to update read status." };
+  }
+
+  revalidatePath(`/dispatch/${dispatchId}`);
+  return { ok: true };
+}
+
+// "Load More" (Part H) -- older messages, one bounded page at a time,
+// never the full history. Same 50-per-page size as the drawer's initial
+// load in getDispatchDrawerData.
+export async function loadMoreDispatchMessages(dispatchId: string, beforeCreatedAt: string): Promise<{ ok: true; messages: DrawerMessage[]; hasMore: boolean } | { ok: false; error: string }> {
+  const access = await requireDispatchOpsAccess(dispatchId);
+  if (!access.ok) return access;
+  const { supabase } = access;
+
+  const { data, error } = await supabase
+    .from("dispatch_messages")
+    .select("id, sender_type, sender_profile_id, body, created_at, read_at, profiles(full_name), drivers(first_name, last_name)")
+    .eq("dispatch_id", dispatchId)
+    .lt("created_at", beforeCreatedAt)
+    .order("created_at", { ascending: false })
+    .limit(51);
+  if (error) {
+    console.error("[dispatch board] load more messages failed:", error);
+    return { ok: false, error: "Unable to load earlier messages." };
+  }
+
+  const rows = (data ?? []) as unknown as {
+    id: string;
+    sender_type: string;
+    sender_profile_id: string | null;
+    body: string;
+    created_at: string;
+    read_at: string | null;
+    profiles: { full_name: string } | null;
+    drivers: { first_name: string; last_name: string } | null;
+  }[];
+  const hasMore = rows.length > 50;
+  const messages: DrawerMessage[] = rows
+    .slice(0, 50)
+    .reverse()
+    .map((m) => ({
+      id: m.id,
+      senderType: m.sender_type as "staff" | "driver",
+      senderName: m.sender_type === "driver" ? (m.drivers ? `${m.drivers.first_name} ${m.drivers.last_name}` : null) : (m.profiles?.full_name ?? null),
+      body: m.body,
+      createdAt: m.created_at,
+      readAt: m.read_at,
+    }));
+
+  return { ok: true, messages, hasMore };
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1508,74 @@ export async function setStopTimezone(dispatchId: string, stopId: string, timezo
     p_entity_id: dispatchId,
     p_action: "stop_timezone_set",
     p_changes: { stop_type: stop.stop_type, timezone, note: "Display timezone only -- the stored appointment instant was not changed." },
+    p_organization_id: organizationId,
+  });
+
+  revalidatePath("/dispatch/board");
+  revalidatePath(`/dispatch/${dispatchId}`);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// dismissRouteDeviation (Phase 2D, spec section 37) -- office-only
+// acknowledgement that a confirmed OFF ROUTE exception is a false positive.
+// Deliberately narrow: records actor + timestamp, keeps the underlying GPS
+// state/evidence completely untouched (spec section 36: acknowledging must
+// never mark a truck back on route -- recovery is GPS-driven only), and
+// only suppresses the BOARD's badge for this episode. The Drawer keeps
+// showing full detail either way, matching "do not delete GPS evidence".
+// ---------------------------------------------------------------------------
+export async function dismissRouteDeviation(dispatchId: string, targetStopId: string): Promise<BoardStatusResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not authenticated." };
+
+  let organizationId: string;
+  try {
+    organizationId = await getCurrentOrgId();
+  } catch {
+    return { ok: false, error: "No organization on this account." };
+  }
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
+  if (!dispatch) return { ok: false, error: "Dispatch not found." };
+
+  const { data: profile } = await supabase.from("profiles").select("id").eq("id", user.id).maybeSingle();
+
+  // dispatch_route_deviation_state (0062) has NO client write policy -- by
+  // design, same trust model as dispatch_geofence_state/dispatch_route_
+  // intelligence (every write there goes through service-role after
+  // server-side verification, never the RLS-scoped client). Ownership was
+  // already independently verified above (dispatch belongs to this org);
+  // the actual write uses the service-role client, exactly like every
+  // other GPS/route table in this app. Using the RLS-scoped client here
+  // would silently affect zero rows (no error, no match) since no UPDATE
+  // policy exists for staff on this table -- caught live during
+  // verification (the dismiss button appeared to work, but dismissed_at
+  // never actually persisted).
+  const serviceSupabase = createServiceRoleClient();
+  const { data: updated, error } = await serviceSupabase
+    .from("dispatch_route_deviation_state")
+    .update({ dismissed_at: new Date().toISOString(), dismissed_by: profile?.id ?? null })
+    .eq("dispatch_id", dispatchId)
+    .eq("target_stop_id", targetStopId)
+    .eq("organization_id", organizationId)
+    .select("id");
+  if (error) {
+    console.error("[dispatch drawer] dismissRouteDeviation failed:", error);
+    return { ok: false, error: "Could not dismiss this exception. Please try again." };
+  }
+  if (!updated || updated.length === 0) {
+    return { ok: false, error: "No active route deviation exception found for this stop." };
+  }
+
+  await supabase.rpc("log_activity", {
+    p_entity_type: "dispatch",
+    p_entity_id: dispatchId,
+    p_action: "route_deviation_dismissed",
+    p_changes: { stop_id: targetStopId, note: "Marked as a false positive by staff -- GPS state was not changed." },
     p_organization_id: organizationId,
   });
 

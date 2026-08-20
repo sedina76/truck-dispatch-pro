@@ -2,6 +2,8 @@ import "server-only";
 import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from "pdf-lib";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestDocument } from "@/lib/documents/latest-document";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 const PAGE_WIDTH = 612; // US Letter, points
 const PAGE_HEIGHT = 792;
@@ -53,7 +55,9 @@ export type LoadContext = {
   origin: string | null;
   destination: string | null;
   pickup_scheduled: string | null;
+  pickup_scheduled_timezone: string | null;
   delivery_scheduled: string | null;
+  delivery_scheduled_timezone: string | null;
   truck_unit: string | null;
   trailer_unit: string | null;
 };
@@ -116,7 +120,7 @@ export async function computeProfileShareData(params: {
   const [{ data: stops }, { data: dispatch }, { data: org }] = await Promise.all([
     supabase
       .from("load_stops")
-      .select("stop_type, stop_sequence, city, state, scheduled_at")
+      .select("stop_type, stop_sequence, city, state, scheduled_at, timezone")
       .eq("load_id", loadId)
       .order("stop_sequence"),
     supabase
@@ -126,7 +130,7 @@ export async function computeProfileShareData(params: {
       .order("dispatched_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    supabase.from("organizations").select("name, business_phone, business_email, address_line1, city, state, postal_code").single(),
+    supabase.from("organizations").select("name, business_phone, business_email, address_line1, city, state, postal_code, timezone").single(),
   ]);
 
   const pickup = (stops ?? []).filter((s) => s.stop_type === "pickup").sort((a, b) => a.stop_sequence - b.stop_sequence)[0];
@@ -145,7 +149,9 @@ export async function computeProfileShareData(params: {
     origin: pickup ? [pickup.city, pickup.state].filter(Boolean).join(", ") || null : null,
     destination: delivery ? [delivery.city, delivery.state].filter(Boolean).join(", ") || null : null,
     pickup_scheduled: pickup?.scheduled_at ?? null,
+    pickup_scheduled_timezone: resolveStopTimezone(pickup?.timezone ?? null, org?.timezone ?? null).timezone,
     delivery_scheduled: delivery?.scheduled_at ?? null,
+    delivery_scheduled_timezone: resolveStopTimezone(delivery?.timezone ?? null, org?.timezone ?? null).timezone,
     truck_unit: dispatchRow?.trucks?.unit_number ?? null,
     trailer_unit: dispatchRow?.trailers?.unit_number ?? null,
   };
@@ -239,7 +245,9 @@ export function buildSnapshot(data: ProfileShareData) {
     origin: data.load.origin,
     destination: data.load.destination,
     pickup_scheduled: data.load.pickup_scheduled,
+    pickup_scheduled_timezone: data.load.pickup_scheduled_timezone,
     delivery_scheduled: data.load.delivery_scheduled,
+    delivery_scheduled_timezone: data.load.delivery_scheduled_timezone,
     truck_unit: data.load.truck_unit,
     trailer_unit: data.load.trailer_unit,
     driver: data.driver
@@ -325,8 +333,8 @@ export async function renderProfileSharePdf(data: ProfileShareData): Promise<Uin
   y -= 14;
   drawKV(
     page, y, font, bold,
-    "Pickup Scheduled", data.load.pickup_scheduled ? new Date(data.load.pickup_scheduled).toLocaleString() : "--",
-    "Delivery Scheduled", data.load.delivery_scheduled ? new Date(data.load.delivery_scheduled).toLocaleString() : "--"
+    "Pickup Scheduled", formatStopDateTime(data.load.pickup_scheduled, data.load.pickup_scheduled_timezone, { includeYear: true }),
+    "Delivery Scheduled", formatStopDateTime(data.load.delivery_scheduled, data.load.delivery_scheduled_timezone, { includeYear: true })
   );
   y -= 24;
 

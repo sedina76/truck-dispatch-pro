@@ -7,6 +7,7 @@ import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 type Broker = {
   id: string;
@@ -14,11 +15,15 @@ type Broker = {
   mc_number: string | null;
   contact_name: string | null;
   phone: string | null;
-  payment_terms_days: number | null;
-  average_days_to_pay: number | null;
+  payment_terms_days?: number | null;
+  average_days_to_pay?: number | null;
   is_blacklisted: boolean;
 };
 
+// Phase 2G.10 (item 6 full search): Brokers list is Business, open to
+// every role, no layout guard -- payment_terms_days/average_days_to_pay
+// were unconditional (list page, missed in the 2G.9 sweep which only
+// covered /brokers/[id]).
 export default async function BrokersPage({
   searchParams,
 }: {
@@ -27,14 +32,37 @@ export default async function BrokersPage({
   const { q } = await searchParams;
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // Phase 2G.12: payment_terms_days/average_days_to_pay dropped from this
+  // select -- broker_financials is authoritative now (2G.10 writer
+  // cutover for payment_terms_days; average_days_to_pay has never had a
+  // writer in either location, but must still be read from the extension
+  // table since brokers.average_days_to_pay is scheduled for removal by
+  // 0069). Merged in below, issued only for canSeeFinancials.
   let query = supabase
     .from("brokers")
-    .select("id, company_name, mc_number, contact_name, phone, payment_terms_days, average_days_to_pay, is_blacklisted")
+    .select("id, company_name, mc_number, contact_name, phone, is_blacklisted")
     .order("company_name");
   if (q) query = query.ilike("company_name", `%${q}%`);
 
   const { data } = await query;
-  const brokers = (data ?? []) as Broker[];
+  const brokersRaw = (data ?? []) as unknown as Omit<Broker, "payment_terms_days" | "average_days_to_pay">[];
+
+  const financialsByBrokerId = new Map<string, { payment_terms_days: number | null; average_days_to_pay: number | null }>();
+  if (canSeeFinancials && brokersRaw.length > 0) {
+    const { data: financialsRows } = await supabase
+      .from("broker_financials")
+      .select("broker_id, payment_terms_days, average_days_to_pay")
+      .in("broker_id", brokersRaw.map((b) => b.id));
+    for (const row of financialsRows ?? []) financialsByBrokerId.set(row.broker_id, row);
+  }
+  const brokers: Broker[] = brokersRaw.map((b) => ({
+    ...b,
+    payment_terms_days: financialsByBrokerId.get(b.id)?.payment_terms_days ?? null,
+    average_days_to_pay: financialsByBrokerId.get(b.id)?.average_days_to_pay ?? null,
+  }));
 
   const { count: totalCount } = await supabase
     .from("brokers")
@@ -46,7 +74,7 @@ export default async function BrokersPage({
 
   const daysToPayValues = brokers
     .map((b) => b.average_days_to_pay)
-    .filter((v): v is number => v !== null);
+    .filter((v): v is number => v != null);
   const avgDaysToPay =
     daysToPayValues.length > 0
       ? (daysToPayValues.reduce((a, b) => a + b, 0) / daysToPayValues.length).toFixed(1)
@@ -57,8 +85,12 @@ export default async function BrokersPage({
     { header: "MC #", cell: (row) => row.mc_number ?? "--" },
     { header: "Contact", cell: (row) => row.contact_name ?? "--" },
     { header: "Phone", cell: (row) => row.phone ?? "--" },
-    { header: "Terms", cell: (row) => (row.payment_terms_days ? `${row.payment_terms_days}d` : "--") },
-    { header: "Avg Days to Pay", cell: (row) => row.average_days_to_pay ?? "--" },
+    ...(canSeeFinancials
+      ? [
+          { header: "Terms", cell: (row: Broker) => (row.payment_terms_days ? `${row.payment_terms_days}d` : "--") },
+          { header: "Avg Days to Pay", cell: (row: Broker) => row.average_days_to_pay ?? "--" },
+        ]
+      : []),
     {
       header: "Status",
       cell: (row) => <StatusBadge status={row.is_blacklisted ? "cancelled" : "active"} />,
@@ -76,7 +108,7 @@ export default async function BrokersPage({
 
       <DesktopKpiStrip>
         <DesktopKpiBox label="Total Brokers" value={totalCount ?? 0} />
-        <DesktopKpiBox label="Avg Days to Pay" value={avgDaysToPay} />
+        {canSeeFinancials && <DesktopKpiBox label="Avg Days to Pay" value={avgDaysToPay} />}
         <DesktopKpiBox label="Blacklisted" value={blacklistedCount ?? 0} tone={blacklistedCount ? "danger" : "neutral"} />
         <DesktopKpiBox label="In Good Standing" value={(totalCount ?? 0) - (blacklistedCount ?? 0)} />
       </DesktopKpiStrip>

@@ -4,7 +4,7 @@ import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 
@@ -64,7 +64,7 @@ export default async function PaymentsPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Payments", href: "/payments" }]} />
+      <BillingSubnav />
       <RegisterDesktopActions title="Payments" exportOptions={[{ label: "Export CSV (Filtered)", href: `/payments/export${q ? `?q=${encodeURIComponent(q)}` : ""}` }]} />
 
       <PageHeader

@@ -4,10 +4,34 @@ import { NextResponse, type NextRequest } from "next/server";
 const PUBLIC_PATHS = [
   "/login",
   "/signup",
+  // Auth redesign: verify-email/forgot-password/reset-password/forgot-email
+  // must be reachable with NO session at all (that's the entire point of
+  // each of them), and /auth/callback is the PKCE code-exchange endpoint a
+  // password-recovery email link lands on before any session exists yet.
+  // /reset-password specifically also needs to stay public so an
+  // already-expired/already-used recovery link can render its OWN honest
+  // "link expired" message (spec section 13) instead of being
+  // 307-redirected to /login before the page ever gets a chance to check.
+  "/verify-email",
+  "/forgot-password",
+  "/reset-password",
+  "/forgot-email",
+  "/auth/callback",
   "/driver-portal",
   "/api/driver-portal",
   "/driver-application",
   "/api/driver-application",
+  // Phase 2F: Resend's webhook POST carries no Supabase session cookie at
+  // all -- it authenticates via its own Svix signature (see
+  // src/app/api/webhooks/resend/route.ts), never a logged-in user. Found
+  // live: without this exemption, the middleware 307-redirected every
+  // webhook delivery to /login before it ever reached the route handler,
+  // meaning delivery-status tracking would have silently never worked in
+  // production. Scoped to exactly this one route (not a broader
+  // /api/webhooks prefix, spec review item 7) -- there is no general
+  // webhook-auth architecture in this app yet, so this stays as narrow as
+  // what actually exists.
+  "/api/webhooks/resend",
 ];
 
 // Paths that must stay reachable even for a blocked (past_due/paused/

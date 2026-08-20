@@ -145,7 +145,12 @@ export function LiveMap({
 
   const ROUTE_LINE_SOURCE_ID = "calculated-route-line";
 
-  function drawRouteLine(geometry: [number, number][] | null) {
+  // Phase 2D: the line color itself flags an active deviation exception
+  // (spec section 33 -- "indication that a deviation exception is active"),
+  // cheap to do since this is the same one line already drawn. Still the
+  // CALCULATED route (current position -> target stop) either way, never
+  // raw GPS breadcrumb history (spec section 20).
+  function drawRouteLine(geometry: [number, number][] | null, offRoute: boolean) {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     if (!geometry || geometry.length < 2) {
@@ -153,10 +158,12 @@ export function LiveMap({
       if (map.getSource(ROUTE_LINE_SOURCE_ID)) map.removeSource(ROUTE_LINE_SOURCE_ID);
       return;
     }
+    const lineColor = offRoute ? "#dc2626" : "#7c3aed";
     const data = { type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: geometry } };
     const source = map.getSource(ROUTE_LINE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
     if (source) {
       source.setData(data);
+      map.setPaintProperty(`${ROUTE_LINE_SOURCE_ID}-line`, "line-color", lineColor);
     } else {
       map.addSource(ROUTE_LINE_SOURCE_ID, { type: "geojson", data });
       map.addLayer({
@@ -167,7 +174,7 @@ export function LiveMap({
         // Solid, distinct from the dashed geofence circles and from
         // driver marker dots -- this is the CALCULATED route, never raw
         // GPS breadcrumb history (spec section 20 -- no route playback).
-        paint: { "line-color": "#7c3aed", "line-width": 4, "line-opacity": 0.85 },
+        paint: { "line-color": lineColor, "line-width": 4, "line-opacity": 0.85 },
       });
     }
   }
@@ -179,11 +186,11 @@ export function LiveMap({
     setSelectedLoading(false);
     if ("error" in result) {
       setSelectedInfo(null);
-      drawRouteLine(null);
+      drawRouteLine(null, false);
       return;
     }
     setSelectedInfo(result);
-    drawRouteLine(result.routeGeometry);
+    drawRouteLine(result.routeGeometry, result.deviation?.state === "off_route" && result.deviation.calculationStatus === "ok");
   }
 
   async function handleRefreshSelected() {
@@ -447,7 +454,7 @@ export function LiveMap({
           onClose={() => {
             setSelectedDispatchId(null);
             setSelectedInfo(null);
-            drawRouteLine(null);
+            drawRouteLine(null, false);
           }}
         />
       )}
@@ -462,6 +469,16 @@ const RISK_TONE: Record<string, string> = {
   at_risk: "border-warning/40 bg-warning/10 text-warning",
   late: "border-danger/40 bg-danger/10 text-danger",
   arrived: "border-success/40 bg-success/10 text-success",
+};
+// Phase 2D -- deliberately a separate label/tone set from RISK_* above:
+// route status and schedule risk are independent dimensions (spec section
+// 56) and are never merged into one badge.
+const DEVIATION_LABEL_PANEL: Record<string, string> = { candidate: "ROUTE CHECK", off_route: "OFF ROUTE", recovering: "RETURNING TO ROUTE", recovered: "RECOVERED" };
+const DEVIATION_TONE_PANEL: Record<string, string> = {
+  candidate: "border-desktop-border bg-desktop-muted/50 text-muted-foreground",
+  off_route: "border-danger/40 bg-danger/10 text-danger",
+  recovering: "border-warning/40 bg-warning/10 text-warning",
+  recovered: "border-success/40 bg-success/10 text-success",
 };
 const STATUS_LABEL_PANEL: Record<string, string> = {
   assigned: "Assigned",
@@ -543,6 +560,36 @@ function SelectedTruckPanel({
             <p className="text-muted-foreground">Route ETA unavailable.</p>
           )}
 
+          {/* Phase 2D -- deliberately its own block, independent of the ETA/
+              risk display above (spec section 56: never conflate the two
+              dimensions). No false precision (spec section 34): "1.3 mi",
+              never a raw meters/decimal value. */}
+          {info.deviation && info.deviation.calculationStatus === "ok" && info.deviation.state !== "on_route" && (
+            <div className={cn("rounded-sm border px-2 py-1.5 font-semibold", DEVIATION_TONE_PANEL[info.deviation.state])}>
+              <div className="flex items-center justify-between">
+                <span>{DEVIATION_LABEL_PANEL[info.deviation.state]}</span>
+                {info.deviation.distanceFromRouteMeters != null && <span>{formatMiles(info.deviation.distanceFromRouteMeters)}</span>}
+              </div>
+              {info.deviation.confirmedAt && (
+                <p className="mt-0.5 text-[11px] font-normal opacity-80">Since {formatStopDateTime(info.deviation.confirmedAt, info.targetStopTimezone, { timeOnly: true })}</p>
+              )}
+              {info.deviation.stale && <p className="mt-0.5 text-[11px] font-normal opacity-80">Not current -- GPS hasn&apos;t reported recently.</p>}
+            </div>
+          )}
+
+          {/* Phase 2E (spec section 33) -- summary only, does not rebuild
+              the tracking map or duplicate the Exception Center's own
+              table/drawer. Absent entirely (not "0") when migration 0063
+              isn't applied yet. */}
+          {info.exceptions && info.exceptions.activeCount > 0 && (
+            <div className="rounded-sm border border-desktop-border bg-desktop-muted/40 px-2 py-1.5">
+              <p className="font-semibold text-desktop-text">
+                Active Exceptions: {info.exceptions.activeCount}
+              </p>
+              {info.exceptions.highestTitle && <p className="mt-0.5 text-[11px] text-muted-foreground">{info.exceptions.highestTitle}</p>}
+            </div>
+          )}
+
           <div className="flex gap-2 border-t border-desktop-border pt-2">
             <Link href={`/dispatch/${dispatchId}`} className="flex-1 rounded-sm border border-desktop-border px-2 py-1.5 text-center text-[12px] font-medium hover:bg-desktop-muted">
               Open Dispatch
@@ -556,6 +603,11 @@ function SelectedTruckPanel({
               <RefreshCw className={cn("size-3", refreshing && "animate-spin")} /> Refresh ETA
             </button>
           </div>
+          {info.exceptions && info.exceptions.activeCount > 0 && (
+            <Link href="/dispatch/exceptions" className="block rounded-sm border border-desktop-border px-2 py-1.5 text-center text-[12px] font-medium hover:bg-desktop-muted">
+              View Exceptions
+            </Link>
+          )}
         </div>
       )}
     </div>

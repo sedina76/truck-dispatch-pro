@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
+import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 // Expense & Cost Management (0040_expense_cost_management.sql). Bespoke
 // actions, not the generic insertRecord/updateRecord helper -- the
@@ -173,7 +174,9 @@ export async function uploadExpenseReceipt(expenseId: string, documentType: stri
   revalidatePath(`/expenses/${expenseId}`);
 }
 
+// Phase 2G.9 (item 10): same gap class as getPodSignedUrl -- no role check.
 export async function getExpenseReceiptSignedUrl(storagePath: string, download: boolean): Promise<string> {
+  await requireRole(FINANCIAL_ROLES);
   const supabase = await createClient();
   const { data, error } = await supabase.storage
     .from("expense-documents")

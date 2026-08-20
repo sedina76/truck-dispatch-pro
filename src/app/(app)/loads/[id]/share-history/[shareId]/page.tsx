@@ -14,7 +14,9 @@ type Snapshot = {
   origin: string | null;
   destination: string | null;
   pickup_scheduled: string | null;
+  pickup_scheduled_timezone: string | null;
   delivery_scheduled: string | null;
+  delivery_scheduled_timezone: string | null;
   truck_unit: string | null;
   trailer_unit: string | null;
   driver: {

@@ -12426,3 +12426,1328 @@ comment on table public.dispatch_route_intelligence is
 create trigger dispatch_route_intelligence_set_updated_at
   before update on public.dispatch_route_intelligence
   for each row execute function public.set_updated_at();
+
+
+-- =============================================================================
+-- 0061_stop_timezone_correctness.sql
+-- =============================================================================
+
+-- =============================================================================
+-- 0061_stop_timezone_correctness.sql
+-- Phase 2C.1: Stop Timezone Correctness & Appointment Timestamp Integrity.
+-- Purely additive on top of 0057-0060. Does not modify, drop, or rename
+-- anything from those migrations, and does NOT rewrite any existing
+-- scheduled_at/scheduled_window_end value -- there is no reliable way to
+-- know whether a historical instant was entered correctly, so none are
+-- touched (spec section 19).
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- load_stops.timezone: the IANA identifier (e.g. 'America/Chicago') the
+-- stop's own scheduled_at/scheduled_window_end were converted from at
+-- entry time. NULL for every existing row (spec section 19) -- the app
+-- layer falls back to organizations.timezone at read time
+-- (resolveStopTimezone(), src/lib/timezone/resolve.ts) rather than this
+-- migration guessing a value it can't verify. Deliberately a plain text
+-- column, not a Postgres enum -- IANA's zone list changes over time and a
+-- Postgres enum would need a migration for every addition; application-
+-- layer validation (isValidIanaTimezone(), backed by
+-- Intl.supportedValuesOf('timeZone')) is authoritative, matching spec
+-- section 34's explicit instruction not to encode the IANA database as a
+-- CHECK constraint.
+-- ---------------------------------------------------------------------------
+alter table public.load_stops
+  add column if not exists timezone text,
+  add column if not exists timezone_source text;
+
+alter table public.load_stops
+  add constraint load_stops_timezone_not_blank
+    check (timezone is null or length(trim(timezone)) > 0);
+
+alter table public.load_stops
+  add constraint load_stops_timezone_source_check
+    check (timezone_source is null or timezone_source in ('manual', 'organization_default', 'geocoded', 'legacy'));
+
+comment on column public.load_stops.timezone is 'IANA identifier (e.g. America/Chicago) this stop''s scheduled_at/scheduled_window_end were converted from. NULL means unknown/legacy -- never fabricated by this migration. Falls back to organizations.timezone at display/edit time.';
+comment on column public.load_stops.timezone_source is 'How .timezone was set: manual (dispatcher picked it), organization_default (defaulted from the org at entry time), geocoded (reserved for a future coordinate-based lookup, not implemented this phase), legacy (backfilled by the office repair flow without reinterpreting the stored instant).';
+
+comment on column public.organizations.timezone is 'IANA identifier, used as the fallback stop timezone when a stop has none of its own (spec section 3''s priority order). Existing rows default to America/Chicago from column creation, not a verified-correct value for that organization -- see Settings > Organization for validated editing (isValidIanaTimezone()) added in Phase 2C.1.';
+
+-- ---------------------------------------------------------------------------
+-- create_load_with_stops(): extended (create or replace, same function
+-- signature -- see 0044_driver_portal_upgrade.sql for the identical
+-- precedent of extending an existing function via a later migration
+-- without touching the file that first defined it) to also persist
+-- timezone/timezone_source per stop. The conversion from local wall time
+-- to the correct UTC instant happens entirely in the application layer
+-- (src/lib/timezone/convert.ts) BEFORE this function is ever called --
+-- p_stops already carries real timestamptz-parseable UTC strings in
+-- scheduled_at/scheduled_window_end, exactly as before. This function's
+-- only change is no longer silently dropping the timezone that instant
+-- was converted from.
+-- ---------------------------------------------------------------------------
+create or replace function public.create_load_with_stops(
+  p_load jsonb,
+  p_stops jsonb
+)
+returns uuid
+language plpgsql
+as $$
+declare
+  v_org_id uuid;
+  v_load_id uuid;
+  v_stop jsonb;
+  v_stop_count integer;
+begin
+  v_org_id := public.current_org_id();
+  if v_org_id is null then
+    raise exception 'Could not determine the current organization for this user.';
+  end if;
+
+  v_stop_count := coalesce(jsonb_array_length(p_stops), 0);
+  if v_stop_count = 0 then
+    raise exception 'At least a pickup and a delivery stop are required.';
+  end if;
+
+  insert into public.loads (
+    organization_id, load_number, broker_id, customer_id, status, commodity,
+    weight_lbs, equipment_type, total_miles, rate, rate_confirmation_number,
+    special_instructions, booked_by
+  )
+  values (
+    v_org_id,
+    p_load ->> 'load_number',
+    nullif(p_load ->> 'broker_id', '')::uuid,
+    nullif(p_load ->> 'customer_id', '')::uuid,
+    coalesce(nullif(p_load ->> 'status', ''), 'draft')::public.load_status,
+    nullif(p_load ->> 'commodity', ''),
+    nullif(p_load ->> 'weight_lbs', '')::integer,
+    nullif(p_load ->> 'equipment_type', ''),
+    nullif(p_load ->> 'total_miles', '')::numeric,
+    coalesce(nullif(p_load ->> 'rate', '')::numeric, 0),
+    nullif(p_load ->> 'rate_confirmation_number', ''),
+    nullif(p_load ->> 'special_instructions', ''),
+    auth.uid()
+  )
+  returning id into v_load_id;
+
+  for v_stop in select * from jsonb_array_elements(p_stops)
+  loop
+    insert into public.load_stops (
+      organization_id, load_id, stop_type, stop_sequence, facility_name,
+      address_line1, address_line2, city, state, postal_code, country,
+      contact_name, contact_phone, scheduled_at, scheduled_window_end,
+      reference_number, notes, timezone, timezone_source
+    )
+    values (
+      v_org_id,
+      v_load_id,
+      (v_stop ->> 'stop_type')::public.stop_type,
+      (v_stop ->> 'stop_sequence')::integer,
+      nullif(v_stop ->> 'facility_name', ''),
+      nullif(v_stop ->> 'address_line1', ''),
+      nullif(v_stop ->> 'address_line2', ''),
+      v_stop ->> 'city',
+      v_stop ->> 'state',
+      nullif(v_stop ->> 'postal_code', ''),
+      coalesce(nullif(v_stop ->> 'country', ''), 'US'),
+      nullif(v_stop ->> 'contact_name', ''),
+      nullif(v_stop ->> 'contact_phone', ''),
+      nullif(v_stop ->> 'scheduled_at', '')::timestamptz,
+      nullif(v_stop ->> 'scheduled_window_end', '')::timestamptz,
+      nullif(v_stop ->> 'reference_number', ''),
+      nullif(v_stop ->> 'notes', ''),
+      nullif(v_stop ->> 'timezone', ''),
+      nullif(v_stop ->> 'timezone_source', '')
+    );
+  end loop;
+
+  perform public.log_activity('load'::public.entity_type, v_load_id, 'created', p_load, v_org_id);
+
+  return v_load_id;
+end;
+$$;
+
+grant execute on function public.create_load_with_stops(jsonb, jsonb) to authenticated;
+
+
+-- =============================================================================
+-- 0062_route_deviation.sql
+-- =============================================================================
+
+-- =============================================================================
+-- 0062_route_deviation.sql
+-- Phase 2D: Route Deviation Detection, Dispatcher Exception Automation &
+-- Recovery. Purely additive on top of 0057-0061. Does not modify, drop, or
+-- rename anything from those migrations. dispatch_status is NOT modified.
+-- No historical GPS or route-intelligence records are rewritten.
+--
+-- Reuses, rather than duplicates:
+--   - notifications / activity_logs (0007_productivity.sql) for alerts and
+--     history -- no new exception/incident table architecture is created.
+--   - dispatch_route_intelligence (0060) as the route geometry source; this
+--     migration never stores its own copy of route geometry.
+--   - current_org_id() / has_role() (0002) for RLS, identical to every
+--     other Phase 2A-2C.1 table's policy shape.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Org-level feature toggle + thresholds. Conservative default (spec section
+-- 39): route_deviation_enabled defaults to FALSE for every organization,
+-- existing and new alike -- this is a new automated alerting system that
+-- can imply something operationally/reputationally sensitive ("this driver
+-- went off route"), so it stays opt-in rather than silently active the
+-- moment this migration lands. Stored in meters (spec section 40); the
+-- settings UI converts to/from miles for display/entry.
+-- ---------------------------------------------------------------------------
+alter table public.organizations
+  add column if not exists route_deviation_enabled boolean not null default false,
+  add column if not exists route_deviation_warning_m integer not null default 805,    -- ~0.5 mi
+  add column if not exists route_deviation_confirmed_m integer not null default 1609, -- ~1.0 mi
+  add column if not exists route_deviation_recovery_m integer not null default 402;   -- ~0.25 mi
+
+alter table public.organizations
+  add constraint organizations_route_deviation_threshold_check
+    check (
+      route_deviation_recovery_m > 0
+      and route_deviation_recovery_m < route_deviation_warning_m
+      and route_deviation_warning_m <= route_deviation_confirmed_m
+    );
+
+comment on column public.organizations.route_deviation_enabled is 'Phase 2D. Default false for every organization, including pre-existing ones -- a new automated exception/alert system is opt-in, never silently activated by this migration (spec section 39).';
+comment on column public.organizations.route_deviation_warning_m is 'Distance (meters) beyond which a ping enters informational "candidate" territory. Never alerts by itself -- see route_deviation_confirmed_m.';
+comment on column public.organizations.route_deviation_confirmed_m is 'Distance (meters) beyond which sustained pings (see src/lib/tracking/route-deviation.ts) confirm OFF ROUTE and trigger a dispatcher alert.';
+comment on column public.organizations.route_deviation_recovery_m is 'Distance (meters) a confirmed-off-route truck must sustain to be marked RECOVERED. Deliberately smaller than the warning distance (hysteresis, spec section 11) so a truck near a boundary does not flap between states.';
+
+-- ---------------------------------------------------------------------------
+-- dispatch_route_deviation_state: one CURRENT row per (dispatch, target
+-- stop) -- exact same "advance to a new row on target-stop change" shape as
+-- dispatch_route_intelligence (0060), which is what naturally prevents a
+-- prior stop's deviation evidence from ever contaminating the next stop's
+-- evaluation (spec section 14/54): a new target stop has no existing row,
+-- so it always starts at the 'on_route' default.
+--
+-- This table intentionally holds only the CURRENT/latest episode's state,
+-- not a full event history -- activity_logs (written by the orchestrator,
+-- src/lib/tracking/evaluate-route-deviation.ts) is the historical record
+-- (spec section 22), matching how detention/geofence events already work.
+-- ---------------------------------------------------------------------------
+create type public.route_deviation_state as enum ('on_route', 'candidate', 'off_route', 'recovering', 'recovered');
+create type public.route_deviation_calc_status as enum ('ok', 'no_geometry', 'low_accuracy', 'stale_gps', 'arrived');
+
+create table public.dispatch_route_deviation_state (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  dispatch_id uuid not null references public.dispatches (id) on delete cascade,
+  target_stop_id uuid not null references public.load_stops (id) on delete cascade,
+
+  state public.route_deviation_state not null default 'on_route',
+  -- Records WHY the state machine did/didn't run on the most recent ping
+  -- (spec section 6: "store/record why evaluation was skipped"). When not
+  -- 'ok', `state` above is left untouched -- it keeps showing the last
+  -- known state (with calculation_status telling the UI that's stale/not
+  -- currently evaluated), never silently reset to a false "on_route".
+  calculation_status public.route_deviation_calc_status not null default 'ok',
+  distance_from_route_m numeric(10, 2),
+
+  candidate_started_at timestamptz,
+  candidate_ping_count integer not null default 0,
+  confirmed_at timestamptz,
+
+  recovery_started_at timestamptz,
+  recovery_ping_count integer not null default 0,
+  recovered_at timestamptz,
+
+  -- Route-version awareness (spec section 15, called out as critical): which
+  -- dispatch_route_intelligence row this state was last evaluated against.
+  -- The orchestrator resets in-progress (not yet confirmed) candidate
+  -- evidence when this changes, so a route recalculation can never let
+  -- old-route evidence silently confirm a deviation against new geometry
+  -- (spec section 55). A CONFIRMED off_route episode is left alone on a
+  -- route-version change -- recalculating the route around a truck that has
+  -- already deviated does not un-happen that fact (spec section 16); the
+  -- normal recovery hysteresis is what clears it, never an instant reset.
+  route_intelligence_id uuid references public.dispatch_route_intelligence (id) on delete set null,
+  route_calculated_at timestamptz,
+
+  last_evaluated_at timestamptz,
+  last_location_at timestamptz,
+  last_accuracy_m numeric(8, 2),
+
+  -- Manual office-only "false positive" dismissal (spec section 37).
+  -- Deliberately does NOT touch `state`/confirmed_at/recovery fields --
+  -- dismissal is acknowledgement, not a claim about GPS reality (spec
+  -- section 36: acknowledging must never mark a truck back on route).
+  dismissed_at timestamptz,
+  dismissed_by uuid references public.profiles (id) on delete set null,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (dispatch_id, target_stop_id)
+);
+
+create index dispatch_route_deviation_state_org_idx on public.dispatch_route_deviation_state (organization_id);
+create index dispatch_route_deviation_state_dispatch_idx on public.dispatch_route_deviation_state (dispatch_id);
+
+alter table public.dispatch_route_deviation_state enable row level security;
+
+alter publication supabase_realtime add table public.dispatch_route_deviation_state;
+
+create policy "org staff can view route deviation state"
+  on public.dispatch_route_deviation_state for select
+  using (
+    organization_id = public.current_org_id()
+    and public.has_role(array['owner', 'admin', 'dispatcher']::public.org_role[])
+  );
+
+-- No client write policy -- written only by the location-ping route
+-- (service-role, after a trusted GPS ping) and the dispatcher-facing
+-- dismiss action, both after independently verifying ownership/context
+-- server-side. Same trust model as dispatch_geofence_state (0059) and
+-- dispatch_route_intelligence (0060).
+
+comment on table public.dispatch_route_deviation_state is
+  'One current row per (dispatch, target stop): how far the truck''s trustworthy GPS is from the CALCULATED route geometry to its current target stop, and the sustained-confirmation/recovery state machine over that distance. See src/lib/tracking/route-deviation.ts for the state machine and src/lib/tracking/evaluate-route-deviation.ts for the orchestration (gating, notifications, forced ETA recalculation, activity log).';
+
+create trigger dispatch_route_deviation_state_set_updated_at
+  before update on public.dispatch_route_deviation_state
+  for each row execute function public.set_updated_at();
+
+-- =============================================================================
+-- 0063_operational_exceptions.sql
+-- Phase 2E: Dispatcher Exception Center. Purely additive on top of 0057-0062.
+-- Does not modify, drop, or rename anything from those migrations. No
+-- historical GPS/route-intelligence/geofence/detention/document data is
+-- rewritten.
+--
+-- ARCHITECTURE (revised after architecture review -- see the Phase 2E
+-- revised pre-migration report for full reasoning): persisted exception
+-- EPISODES, not dynamically computed rows. Existing detection systems
+-- remain the sole source of truth for whether a condition is CURRENTLY
+-- true:
+--   - route deviation:  dispatch_route_deviation_state        (0062)
+--   - ETA / late-risk:  dispatch_route_intelligence            (0060)
+--   - detention:        load_stops arrival/departure + organization
+--                        detention settings
+--   - GPS freshness:    driver_latest_locations.recorded_at    (0058)
+--   - POD:              documents / getLatestDocument()/computePodStatus()
+--                        (0005/existing)
+--   - compliance:       compliance_items.expiry_date           (0005)
+--
+-- SYNCHRONIZATION IS SPLIT BY KIND, NOT ONE ENGINE:
+--   EVENT-DRIVEN (off_route, late, at_risk, pod_missing) -- each has a
+--   real "meaningful transition" write path elsewhere in the app that
+--   calls into src/lib/exceptions/sync.ts right after it happens:
+--     off_route/late/at_risk: evaluate-route-deviation.ts / evaluate-route.ts
+--     pod_missing: loads/pod-actions.ts (upload/verify/reject),
+--                  driver-portal/upload-pod route, and board-actions.ts's
+--                  delivered-status transition.
+--
+--   TIME-DRIVEN (detention, gps_stale, compliance) -- none of these has a
+--   reliable event to hook: the condition becomes true because time
+--   passed while nothing happened, which no ping/upload/status-change can
+--   announce. These are owned ENTIRELY by the scheduled SQL function
+--   below (public.sync_time_based_exceptions()), run via pg_cron every 5
+--   minutes -- the one piece of scheduling infrastructure this project
+--   already has enabled (pg_cron, since 0001) but had never actually
+--   scheduled anything with (compliance's own refresh_compliance_
+--   statuses(), 0009, has sat unscheduled since it was written -- its
+--   cron.schedule call exists only inside a SQL comment). This migration
+--   is what actually turns pg_cron on for the first time in this project.
+--
+--   Both engines read ONLY the existing trusted source tables/columns
+--   listed above and write to the SAME operational_exceptions table via
+--   the SAME dedup mechanism (the partial unique index below) -- there is
+--   no risk of the two disagreeing about what "currently open" means,
+--   because they own strictly disjoint exception_type values and never
+--   write the same row.
+--
+--   Page-load reconciliation (Exception Center's own page load, still
+--   calling syncExceptionsForOrganization()) remains as an ADDITIONAL,
+--   SECONDARY safety net for the event-driven types only -- it is no
+--   longer the only mechanism for anything.
+-- =============================================================================
+
+create type public.exception_type as enum (
+  'off_route', 'late', 'at_risk', 'detention', 'gps_stale', 'pod_missing', 'compliance'
+);
+create type public.exception_severity as enum ('low', 'medium', 'high', 'critical');
+create type public.exception_status as enum ('open', 'acknowledged', 'resolved');
+
+create table public.operational_exceptions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+
+  -- Generalized source identity -- see the revised report's full source
+  -- identity matrix. Deliberately NOT one shape for every type:
+  --   off_route / late / at_risk : source_type='dispatch',    source_id=dispatches.id
+  --   pod_missing                : source_type='load',        source_id=loads.id
+  --   detention                  : source_type='load_stop',   source_id=load_stops.id
+  --   gps_stale                  : source_type='dispatch',    source_id=dispatches.id
+  --   compliance                 : source_type='compliance_item', source_id=compliance_items.id
+  -- detention is intentionally load_stop-scoped, NOT dispatch-scoped, so
+  -- that two different stops on the same multi-stop dispatch can never
+  -- collapse into a single active exception (a truck can only physically
+  -- occupy one stop at a time, but a dispatch-scoped key would still make
+  -- pickup-then-delivery detention episodes indistinguishable from each
+  -- other while the first is still resolving). No text/enum CHECK
+  -- constraint on source_type -- keeps this additive/extensible for a
+  -- future exception type without another migration.
+  source_type text not null,
+  source_id uuid not null,
+  -- Denormalized convenience columns for the common dispatch/load-scoped
+  -- cases -- fast filtering/joins on the Exception Center table without a
+  -- source_type branch in every query. Both null for compliance
+  -- exceptions (attached to a driver/truck/carrier, not a dispatch/load).
+  dispatch_id uuid references public.dispatches (id) on delete cascade,
+  load_id uuid references public.loads (id) on delete cascade,
+
+  exception_type public.exception_type not null,
+  severity public.exception_severity not null default 'medium',
+  status public.exception_status not null default 'open',
+
+  title text not null,
+  summary text,
+
+  -- Episode timing (spec section 7/21): first_detected_at is the episode's
+  -- age anchor and is NEVER updated after creation; last_detected_at
+  -- advances on every re-sync confirmation while still active.
+  first_detected_at timestamptz not null default now(),
+  last_detected_at timestamptz not null default now(),
+
+  acknowledged_at timestamptz,
+  acknowledged_by uuid references public.profiles (id) on delete set null,
+
+  assigned_to uuid references public.profiles (id) on delete set null,
+  assigned_at timestamptz,
+  assigned_by uuid references public.profiles (id) on delete set null,
+
+  resolved_at timestamptz,
+  resolved_by uuid references public.profiles (id) on delete set null,
+  -- Free text, not an enum: the spec's "possible reasons" list (driver
+  -- contacted, dispatch corrected, ...) is illustrative, not exhaustive --
+  -- the UI offers those as quick-picks plus a custom "Other" entry.
+  -- 'auto_resolved' is the one value the system itself ever writes.
+  resolution_code text,
+  resolution_note text,
+
+  -- Denormalized, informational-only snapshot for fast table rendering
+  -- (e.g. {"distance_from_route_m": 2092}). The detail drawer always
+  -- re-fetches live from the real source table for anything it displays
+  -- as current fact -- this column is never treated as authoritative
+  -- (spec section 3/26-30: "do not fabricate data").
+  metadata jsonb not null default '{}'::jsonb,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- The core dedup guarantee (spec section 7): at most one ACTIVE
+-- (non-resolved) episode per (source, exception_type). A re-sync while a
+-- matching active row exists only UPDATEs it (last_detected_at/severity/
+-- metadata) -- never inserts a second row. Once resolved, the row is
+-- excluded from this constraint, so a later recurrence creates a
+-- genuinely NEW episode row while the old one remains, untouched, as
+-- history. Same partial-unique-index idiom already proven in this
+-- codebase by driver_tracking_sessions (0058) and dispatch_route_
+-- deviation_state (0062). Both the TypeScript reconciler and the
+-- scheduled SQL function below rely on this SAME index (via ON CONFLICT)
+-- to stay correct, since they own disjoint exception_type values.
+create unique index operational_exceptions_one_active_per_source
+  on public.operational_exceptions (source_type, source_id, exception_type)
+  where status <> 'resolved';
+
+create index operational_exceptions_org_idx on public.operational_exceptions (organization_id);
+create index operational_exceptions_dispatch_idx on public.operational_exceptions (dispatch_id);
+create index operational_exceptions_org_status_idx on public.operational_exceptions (organization_id, status);
+create index operational_exceptions_active_sort_idx
+  on public.operational_exceptions (organization_id, severity, first_detected_at)
+  where status <> 'resolved';
+create index operational_exceptions_assigned_idx on public.operational_exceptions (organization_id, assigned_to) where status <> 'resolved';
+
+alter table public.operational_exceptions enable row level security;
+
+-- SELECT scope matches every other Phase 2A-2D operational table exactly
+-- (dispatch_geofence_state/dispatch_route_intelligence/dispatch_route_
+-- deviation_state all use this identical role set).
+create policy "org staff can view operational exceptions"
+  on public.operational_exceptions for select
+  using (
+    organization_id = public.current_org_id()
+    and public.has_role(array['owner', 'admin', 'dispatcher']::public.org_role[])
+  );
+
+-- No client write policy -- every write (open/update/acknowledge/assign/
+-- resolve) goes through server actions or the scheduled function below,
+-- both using the service-role client (or, for the scheduled function,
+-- running as its definer) after independently verifying organization/
+-- dispatch ownership server-side, identical trust model to every write
+-- path in Phases 2A-2D.
+
+create trigger operational_exceptions_set_updated_at
+  before update on public.operational_exceptions
+  for each row execute function public.set_updated_at();
+
+comment on table public.operational_exceptions is
+  'Phase 2E. One row per exception EPISODE: open while the underlying condition is active, frozen once resolved, never reused for a later recurrence. Written by two disjoint engines: src/lib/exceptions/sync.ts (event-driven: off_route/late/at_risk/pod_missing) and public.sync_time_based_exceptions() (time-driven: detention/gps_stale/compliance, via pg_cron). Detection/business logic is never duplicated between them.';
+
+-- ---------------------------------------------------------------------------
+-- operational_exception_notes: internal, office-only free-text notes.
+-- Separate from activity_logs.changes -- notes are staff commentary
+-- dispatchers browse as their own list; activity_logs still records a
+-- lightweight "exception_note_added" event (no note body) for the unified
+-- timeline. Never queried by any Driver Portal code path.
+-- ---------------------------------------------------------------------------
+create table public.operational_exception_notes (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  exception_id uuid not null references public.operational_exceptions (id) on delete cascade,
+  author_id uuid references public.profiles (id) on delete set null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
+create index operational_exception_notes_exception_idx on public.operational_exception_notes (exception_id);
+
+alter table public.operational_exception_notes enable row level security;
+
+create policy "org staff can view exception notes"
+  on public.operational_exception_notes for select
+  using (
+    organization_id = public.current_org_id()
+    and public.has_role(array['owner', 'admin', 'dispatcher']::public.org_role[])
+  );
+
+comment on table public.operational_exception_notes is
+  'Phase 2E. Internal, office-only notes on an exception episode. Never queried by any Driver Portal code path.';
+
+-- =============================================================================
+-- operational_exceptions_grouped: deterministic COMPOUND presentation at
+-- the query layer (spec review item 4). A dispatch with both an active
+-- OFF ROUTE and an active LATE episode must render as ONE incident row
+-- ("OFF ROUTE + LATE"), and that grouping must hold regardless of which
+-- page of a paginated result either underlying row would otherwise land
+-- on -- grouping in the browser after paginating raw rows can never
+-- guarantee that (found and fixed during architecture review).
+--
+-- This view collapses to ONE row per (organization, group_key) --
+-- group_key is the dispatch_id for dispatch/load-scoped types (off_route,
+-- late, at_risk, pod_missing, gps_stale all ultimately roll up to "this
+-- dispatch's situation") and a synthetic per-row key for source types that
+-- never compound with anything else (detention is load_stop-scoped and
+-- compliance is compliance_item-scoped -- each stands alone). The PAGINATED
+-- LIST QUERY in actions.ts targets this view, never the raw table, so an
+-- incident is always either fully on one page or fully on another.
+--
+-- A plain view, not a security-definer function -- Postgres evaluates RLS
+-- on the underlying operational_exceptions table using the QUERYING
+-- role's own permissions when a view is selected through PostgREST, so
+-- this inherits the exact same org-scoping/role check as the base table
+-- automatically. Verified in the post-migration round (cross-org
+-- isolation test), not assumed.
+-- =============================================================================
+create view public.operational_exceptions_grouped as
+with ranked as (
+  select
+    oe.*,
+    coalesce(
+      case when oe.source_type in ('dispatch', 'load') then oe.dispatch_id::text end,
+      oe.source_type || ':' || oe.source_id::text
+    ) as group_key,
+    case oe.severity when 'critical' then 4 when 'high' then 3 when 'medium' then 2 else 1 end as sev_rank
+  from public.operational_exceptions oe
+  where oe.status <> 'resolved'
+),
+groups as (
+  -- All exception_types active within a group (spec review item 4: needed
+  -- both for the compound "OFF ROUTE + LATE" label AND so a "Type: Late"
+  -- filter still matches a group whose LATE row isn't the primary/leader
+  -- row -- filtering only against primary_exception_type would silently
+  -- hide it).
+  select organization_id, group_key, array_agg(distinct exception_type) as exception_types
+  from ranked
+  group by organization_id, group_key
+)
+select distinct on (r.organization_id, r.group_key)
+  r.organization_id,
+  r.group_key,
+  r.dispatch_id,
+  r.load_id,
+  r.id as primary_exception_id,
+  r.exception_type as primary_exception_type,
+  r.severity as max_severity,
+  r.status as primary_status,
+  r.title,
+  r.summary,
+  r.first_detected_at,
+  r.last_detected_at,
+  r.assigned_to,
+  r.acknowledged_at,
+  g.exception_types
+from ranked r
+join groups g on g.organization_id = r.organization_id and g.group_key = r.group_key
+order by r.organization_id, r.group_key, r.sev_rank desc, r.first_detected_at asc;
+
+grant select on public.operational_exceptions_grouped to authenticated;
+
+comment on view public.operational_exceptions_grouped is
+  'Phase 2E. One row per operational INCIDENT (a dispatch''s compound OFF ROUTE + LATE collapses to one row here, led by the higher-severity exception), not one row per exception episode. exception_types carries every active type in the group, so filtering/labeling never depends on which one happens to be primary. The Exception Center''s paginated list queries this view specifically so compound grouping is correct regardless of pagination boundaries. group_key is dispatch_id for dispatch/load-scoped types, else a synthetic per-row key for source types that never compound (detention, compliance).';
+
+-- =============================================================================
+-- sync_time_based_exceptions(): the scheduled evaluator for the three
+-- TIME-DRIVEN exception types (spec review item 1 -- "GPS stale is
+-- time-based and therefore cannot be detected solely by receiving a new
+-- ping... If a true scheduled evaluator is required, design it using
+-- infrastructure already available in this project"). pg_cron is that
+-- infrastructure (enabled since 0001, never actually scheduled until this
+-- migration).
+--
+-- Deliberately narrow: this function only ever performs the SAME simple
+-- threshold arithmetic already expressed elsewhere in this codebase for
+-- these exact three signals --
+--   GPS stale:   age-in-minutes > 5           (board-actions.ts's own
+--                                               STALE_LOCATION_MINUTES)
+--   detention:   elapsed-minutes - free_minutes > 0
+--                                              (src/lib/dispatch/
+--                                               detention.ts's
+--                                               calculateDetention(), the
+--                                               exact same one-line
+--                                               formula, mirrored here
+--                                               because there is no way
+--                                               for SQL to call into that
+--                                               TypeScript function -- if
+--                                               that formula ever changes,
+--                                               this block must change
+--                                               with it)
+--   compliance:  expiry_date <= today + 30d   (the exact thresholds
+--                                               refresh_compliance_
+--                                               statuses(), 0009, already
+--                                               encodes)
+-- It reads ONLY load_stops/organizations/driver_latest_locations/
+-- compliance_items/dispatches -- never route geometry, GPS accuracy
+-- filtering, geofence math, or anything with real algorithmic complexity.
+-- Those all remain exclusively TypeScript-owned and event-driven.
+-- =============================================================================
+create or replace function public.sync_time_based_exceptions()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  r record;
+  v_exception_id uuid;
+  v_was_insert boolean;
+  v_new_severity public.exception_severity;
+  v_recipients uuid[];
+begin
+  -- =========================================================================
+  -- GPS STALE -- source_type='dispatch', source_id=dispatches.id.
+  -- Eligible: non-terminal dispatches with a driver_latest_locations row.
+  -- =========================================================================
+  for r in
+    select
+      d.id as dispatch_id, d.organization_id, d.load_id,
+      round(extract(epoch from (now() - dll.recorded_at)) / 60)::int as stale_minutes
+    from public.dispatches d
+    join public.driver_latest_locations dll on dll.dispatch_id = d.id
+    where d.status not in ('delivered', 'completed', 'cancelled')
+      and dll.recorded_at < now() - interval '5 minutes'
+  loop
+    v_new_severity := case when r.stale_minutes >= 30 then 'high' else 'medium' end;
+
+    insert into public.operational_exceptions (organization_id, source_type, source_id, dispatch_id, load_id, exception_type, severity, status, title, summary, metadata)
+    values (r.organization_id, 'dispatch', r.dispatch_id, r.dispatch_id, r.load_id, 'gps_stale', v_new_severity, 'open', 'GPS Stale', format('Last GPS update %sm ago.', r.stale_minutes), jsonb_build_object('stale_minutes', r.stale_minutes))
+    on conflict (source_type, source_id, exception_type) where status <> 'resolved'
+    do update set
+      last_detected_at = now(),
+      summary = excluded.summary,
+      metadata = excluded.metadata,
+      severity = case when excluded.severity = 'high' and operational_exceptions.severity = 'medium' then 'high' else operational_exceptions.severity end
+    -- xmax=0 is a real Postgres tuple-visibility idiom for "this row was
+    -- just INSERTed in this statement, not the ON CONFLICT UPDATE path" --
+    -- FOUND alone can't distinguish the two (it's true either way), and
+    -- activity/notifications must only fire once, on the genuine open.
+    returning id, (xmax = 0) into v_exception_id, v_was_insert;
+
+    if v_was_insert then
+      perform public.log_activity('dispatch'::public.entity_type, r.dispatch_id, 'exception_opened', jsonb_build_object('exception_id', v_exception_id, 'exception_type', 'gps_stale', 'severity', v_new_severity, 'source', 'system:scheduler'), r.organization_id);
+    end if;
+  end loop;
+
+  -- Resolve GPS-stale exceptions whose dispatch no longer qualifies
+  -- (terminal, location fresh again, or no location row for it anymore).
+  for r in
+    select oe.id, oe.dispatch_id, oe.organization_id
+    from public.operational_exceptions oe
+    where oe.exception_type = 'gps_stale' and oe.status <> 'resolved'
+      and not exists (
+        select 1 from public.dispatches d
+        join public.driver_latest_locations dll on dll.dispatch_id = d.id
+        where d.id = oe.dispatch_id
+          and d.status not in ('delivered', 'completed', 'cancelled')
+          and dll.recorded_at < now() - interval '5 minutes'
+      )
+  loop
+    update public.operational_exceptions set status = 'resolved', resolved_at = now(), resolved_by = null, resolution_code = 'auto_resolved' where id = r.id and status <> 'resolved';
+    perform public.log_activity('dispatch'::public.entity_type, r.dispatch_id, 'exception_resolved', jsonb_build_object('exception_id', r.id, 'exception_type', 'gps_stale', 'auto', true, 'source', 'system:scheduler'), r.organization_id);
+  end loop;
+
+  -- =========================================================================
+  -- DETENTION -- source_type='load_stop', source_id=load_stops.id (spec
+  -- review item 3: never dispatch-scoped, so distinct stops can't collapse).
+  -- =========================================================================
+  for r in
+    select
+      ls.id as stop_id, ls.stop_type, ls.load_id, l.organization_id,
+      d.id as dispatch_id,
+      (extract(epoch from (now() - ls.arrived_at)) / 60)::int
+        - (case ls.stop_type when 'pickup' then o.pickup_detention_free_minutes else o.delivery_detention_free_minutes end) as minutes_over
+    from public.load_stops ls
+    join public.loads l on l.id = ls.load_id
+    join public.organizations o on o.id = l.organization_id
+    left join public.dispatches d on d.load_id = ls.load_id and d.status not in ('delivered', 'completed', 'cancelled')
+    where ls.arrived_at is not null and ls.departed_at is null
+  loop
+    if r.minutes_over <= 0 then continue; end if;
+    v_new_severity := case when r.minutes_over >= 120 then 'high' else 'medium' end;
+
+    insert into public.operational_exceptions (organization_id, source_type, source_id, dispatch_id, load_id, exception_type, severity, status, title, summary, metadata)
+    values (r.organization_id, 'load_stop', r.stop_id, r.dispatch_id, r.load_id, 'detention', v_new_severity, 'open', 'Detention', format('%sm over free time at %s.', r.minutes_over, r.stop_type), jsonb_build_object('stop_type', r.stop_type, 'minutes_over', r.minutes_over))
+    on conflict (source_type, source_id, exception_type) where status <> 'resolved'
+    do update set
+      last_detected_at = now(),
+      summary = excluded.summary,
+      metadata = excluded.metadata,
+      dispatch_id = excluded.dispatch_id, -- keep current even if redispatched
+      severity = case when excluded.severity = 'high' and operational_exceptions.severity = 'medium' then 'high' else operational_exceptions.severity end
+    returning id, (xmax = 0) into v_exception_id, v_was_insert;
+
+    if v_was_insert then
+      perform public.log_activity('dispatch'::public.entity_type, r.dispatch_id, 'exception_opened', jsonb_build_object('exception_id', v_exception_id, 'exception_type', 'detention', 'severity', v_new_severity, 'source', 'system:scheduler'), r.organization_id);
+    end if;
+  end loop;
+
+  -- Resolve detention exceptions whose stop no longer qualifies (departed,
+  -- arrival cleared, or back under free time).
+  for r in
+    select oe.id, oe.dispatch_id, oe.organization_id
+    from public.operational_exceptions oe
+    where oe.exception_type = 'detention' and oe.status <> 'resolved'
+      and not exists (
+        select 1 from public.load_stops ls
+        join public.loads l on l.id = ls.load_id
+        join public.organizations o on o.id = l.organization_id
+        where ls.id = oe.source_id
+          and ls.arrived_at is not null and ls.departed_at is null
+          and (extract(epoch from (now() - ls.arrived_at)) / 60)::int
+            - (case ls.stop_type when 'pickup' then o.pickup_detention_free_minutes else o.delivery_detention_free_minutes end) > 0
+      )
+  loop
+    update public.operational_exceptions set status = 'resolved', resolved_at = now(), resolved_by = null, resolution_code = 'auto_resolved' where id = r.id and status <> 'resolved';
+    perform public.log_activity('dispatch'::public.entity_type, r.dispatch_id, 'exception_resolved', jsonb_build_object('exception_id', r.id, 'exception_type', 'detention', 'auto', true, 'source', 'system:scheduler'), r.organization_id);
+  end loop;
+
+  -- =========================================================================
+  -- COMPLIANCE -- source_type='compliance_item', source_id=compliance_items.id.
+  -- Mirrors refresh_compliance_statuses()'s own thresholds (0009) rather
+  -- than trusting its output column, which that function only writes if
+  -- something schedules it -- this migration is what finally does.
+  -- =========================================================================
+  for r in
+    select
+      ci.id as item_id, ci.organization_id, ci.item_type,
+      (ci.expiry_date - current_date)::int as days_remaining
+    from public.compliance_items ci
+    where ci.expiry_date is not null
+      and ci.status <> 'waived'
+      and ci.expiry_date <= current_date + interval '30 days'
+  loop
+    v_new_severity := case when r.days_remaining < 0 then 'high' else 'low' end;
+
+    insert into public.operational_exceptions (organization_id, source_type, source_id, exception_type, severity, status, title, summary, metadata)
+    values (
+      r.organization_id, 'compliance_item', r.item_id, 'compliance', v_new_severity, 'open',
+      case when r.days_remaining < 0 then replace(r.item_type, '_', ' ') || ' Expired' else replace(r.item_type, '_', ' ') || ' Expiring Soon' end,
+      case when r.days_remaining < 0 then format('Expired %sd ago.', -r.days_remaining) else format('Expires in %sd.', r.days_remaining) end,
+      jsonb_build_object('item_type', r.item_type, 'days_remaining', r.days_remaining)
+    )
+    on conflict (source_type, source_id, exception_type) where status <> 'resolved'
+    do update set last_detected_at = now(), summary = excluded.summary, title = excluded.title, metadata = excluded.metadata, severity = excluded.severity
+    returning id, (xmax = 0) into v_exception_id, v_was_insert;
+
+    if v_was_insert then
+      -- Compliance exceptions have no dispatch_id -- log against the
+      -- compliance item's own entity instead of skipping activity
+      -- entirely (unlike the TypeScript side, which currently skips
+      -- logging for compliance since it has no dispatch context; this
+      -- scheduled function has direct access to the item's real
+      -- entity_type/entity_id, so it uses them).
+      perform public.log_activity(
+        (select entity_type from public.compliance_items where id = r.item_id),
+        (select entity_id from public.compliance_items where id = r.item_id),
+        'exception_opened', jsonb_build_object('exception_id', v_exception_id, 'exception_type', 'compliance', 'severity', v_new_severity, 'source', 'system:scheduler'), r.organization_id
+      );
+    end if;
+  end loop;
+
+  -- Resolve compliance exceptions whose item no longer qualifies (renewed,
+  -- waived, or deleted).
+  for r in
+    select oe.id, oe.organization_id, oe.source_id
+    from public.operational_exceptions oe
+    where oe.exception_type = 'compliance' and oe.status <> 'resolved'
+      and not exists (
+        select 1 from public.compliance_items ci
+        where ci.id = oe.source_id and ci.expiry_date is not null and ci.status <> 'waived' and ci.expiry_date <= current_date + interval '30 days'
+      )
+  loop
+    update public.operational_exceptions set status = 'resolved', resolved_at = now(), resolved_by = null, resolution_code = 'auto_resolved' where id = r.id and status <> 'resolved';
+  end loop;
+
+  -- Best-effort notification for anything newly HIGH+ this pass -- kept
+  -- deliberately simple (one query, not per-row) since this function
+  -- already runs every 5 minutes and duplicate-suppression is structural
+  -- (the unique index prevents a second OPEN insert; this only fires for
+  -- rows this very invocation just inserted, identified by first_detected_at
+  -- being within the last minute). entity_type/entity_id must match the
+  -- exception's OWN source, not be hardcoded to 'dispatch' -- compliance
+  -- exceptions have no dispatch_id at all.
+  for r in
+    select
+      oe.id, oe.organization_id, oe.title, oe.summary,
+      case when oe.exception_type = 'compliance' then ci.entity_type else 'dispatch'::public.entity_type end as notif_entity_type,
+      case when oe.exception_type = 'compliance' then ci.entity_id else oe.dispatch_id end as notif_entity_id
+    from public.operational_exceptions oe
+    left join public.compliance_items ci on ci.id = oe.source_id and oe.exception_type = 'compliance'
+    where oe.exception_type in ('gps_stale', 'detention', 'compliance')
+      and oe.status = 'open' and oe.severity in ('high', 'critical')
+      and oe.first_detected_at >= now() - interval '1 minute'
+  loop
+    select array_agg(id) into v_recipients from public.profiles where organization_id = r.organization_id and role in ('owner', 'admin', 'dispatcher') and is_active = true;
+    if v_recipients is not null then
+      insert into public.notifications (organization_id, profile_id, type, title, body, entity_type, entity_id)
+      select r.organization_id, unnest(v_recipients), 'system', r.title, coalesce(r.summary, r.title), r.notif_entity_type, r.notif_entity_id;
+    end if;
+  end loop;
+end;
+$$;
+
+comment on function public.sync_time_based_exceptions() is
+  'Phase 2E scheduled evaluator for the three time-driven exception types (gps_stale, detention, compliance) -- see the migration header. Scheduled via pg_cron below, every 5 minutes.';
+
+-- Idempotency guard (this migration should only ever run once, but
+-- cron.schedule() with a duplicate job name errors on some pg_cron
+-- versions rather than upserting) -- safe to reapply if it ever needs to.
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'sync-time-based-exceptions') then
+    perform cron.unschedule('sync-time-based-exceptions');
+  end if;
+end;
+$$;
+
+select cron.schedule('sync-time-based-exceptions', '*/5 * * * *', $$select public.sync_time_based_exceptions();$$);
+
+
+-- =============================================================================
+-- 0064_multi_tenant_email.sql
+-- =============================================================================
+-- 0064_multi_tenant_email.sql
+-- Phase 2F: Multi-Tenant Outgoing Email Infrastructure. Purely additive on
+-- top of 0001-0063. Does not modify, drop, or rename anything from those
+-- migrations. No historical email_send_log rows are rewritten.
+--
+-- REVISED after architecture review: the initial draft of this migration
+-- renamed email_send_log -> outbound_emails. A full repo + migration search
+-- (see the Phase 2F revised report) found zero functional SQL dependencies
+-- on the name (no views/triggers/functions reference it, only comments),
+-- so the rename itself would have been technically safe -- but it bought
+-- nothing functionally and this project's whole migration history has
+-- stayed additive-only by discipline, not just by necessity. email_send_log
+-- KEEPS ITS NAME. It is extended in place and treated architecturally as
+-- the outbound email ledger (see src/lib/email/send-pipeline.ts's own
+-- header comment) without a physical rename.
+--
+-- REVISED AGAIN (twice) after two real failed-apply attempts against a
+-- live database.
+--
+-- Attempt 1: PostgreSQL 55P04 ("unsafe use of new value of enum type").
+-- The partial unique index below on email_send_log originally read
+-- `where status in ('queued', 'sent')` -- comparing the `status` column
+-- (type email_send_status) against the literal 'queued' forces Postgres to
+-- resolve 'queued' AS AN email_send_status VALUE, which is unsafe in the
+-- same transaction as the ADD VALUE just above it.
+--
+-- Attempt 2 (the first repair): changed the predicate to
+-- `status::text in ('queued', 'sent')`, avoiding 55P04 -- but PostgreSQL
+-- then rejected THAT with 42P17 ("functions in index predicate must be
+-- marked IMMUTABLE"), because an enum-to-text cast is STABLE, not
+-- IMMUTABLE (Postgres deliberately withholds IMMUTABLE from it, since
+-- ALTER TYPE ADD VALUE can alter the type's catalog state later -- the
+-- exact same fact pattern this migration was already exercising). A cast
+-- was a superficial fix for the first error that ran straight into a
+-- second, structural one.
+--
+-- FINAL FIX: stop comparing the `status` enum column in the index
+-- predicate at all. Added `idempotency_active boolean` (see below) --
+-- a plain column the APPLICATION (send-pipeline.ts) sets to true exactly
+-- when status is 'queued' or 'sent', and to null/false when it's
+-- 'failed'/'blocked'. The partial index predicate references only this
+-- boolean column: `where idempotency_active`. A bare column reference is
+-- always valid in an index predicate (no function, no cast, nothing for
+-- Postgres to evaluate immutability of) -- this avoids 55P04 AND 42P17
+-- structurally, not by working around either symptom, and preserves the
+-- exact same business invariant (queued-or-sent rows are unique per
+-- idempotency key; failed/blocked rows are not) the enum comparison was
+-- expressing. See the Phase 2F second repair report for the full
+-- evaluation of alternatives (a migration-split approach was also viable
+-- but unnecessary once the predicate no longer needs the enum at all).
+--
+-- Attempt 3 (the second repair, this one against a database already left
+-- partially applied by attempts 1-2): PostgreSQL 42703 ("column
+-- 'created_at' does not exist"). email_send_log_org_created_at_idx
+-- (a plain, un-guarded CREATE INDEX referencing `created_at`) had been
+-- placed BEFORE the `alter table ... add column if not exists created_at
+-- ...` statement that creates it -- a genuine statement-ordering bug from
+-- the first repair, which added the created_at/updated_at columns near
+-- the end of the email_send_log block without moving this index (added
+-- earlier in the same block) below them. Root-caused by reading the
+-- REAL pre-0064 email_send_log schema in 0039_print_export_email.sql
+-- (id, organization_id, entity_type, entity_id, recipient, cc, subject,
+-- attachment_type, status, error, sent_by, sent_at -- no created_at/
+-- updated_at ever existed) rather than assuming the column pre-existed.
+-- FIX: created_at/updated_at are now added as part of the SAME, single,
+-- upfront ALTER TABLE statement as every other new email_send_log column
+-- (see below), which runs before every index in this file, unconditionally.
+--
+-- The same audit also found a second, not-yet-triggered bug: the
+-- pre-existing email_send_log_failure_requires_error CHECK constraint
+-- (from 0039: `status = 'sent' or error is not null`) would reject every
+-- 'queued' reservation insert (error is null by definition for a fresh
+-- reservation) the first time the repaired pipeline actually ran -- fixed
+-- proactively below, before it could cause a fourth failed live attempt.
+--
+-- All three failed attempts left the live database PARTIALLY applied:
+-- 'queued' is a committed enum value (confirmed via direct introspection
+-- after attempts 1-2; re-confirmed after attempt 3 -- see the Phase 2F
+-- third repair report). Every statement in this file remains
+-- idempotent/guarded (IF NOT EXISTS on tables/columns/indexes/enum
+-- values; DROP ... IF EXISTS immediately before CREATE for triggers,
+-- policies, and the one CHECK constraint that needed relaxing, since
+-- Postgres has no native IF NOT EXISTS for any of those) so this ONE file
+-- can be re-run as-is against either a fresh database or this exact
+-- partially-applied one, with identical, correct end state either way.
+--
+-- Reuses, rather than duplicates:
+--   - email_send_log (0039_print_export_email.sql, extended by
+--     0053_email_send_log_resend.sql) as the outbound email ledger.
+--   - current_org_id() / has_role() (0002) for RLS, identical to every
+--     other Phase 2A-2E table's policy shape.
+--   - the SAME single platform Resend account/API key (RESEND_API_KEY) --
+--     this migration adds tenant-owned SENDING DOMAINS under that one
+--     account, never a second Resend credential.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- email_send_status: add 'queued', a genuine reservation state (spec
+-- review item 5) used to make a send attempt safely retryable. A row is
+-- inserted as 'queued' BEFORE the provider is ever called; only once the
+-- provider call resolves does it move to 'sent'/'failed'. This closes the
+-- "provider accepted the email but the app crashed before recording it"
+-- gap: on retry, the pipeline finds the still-'queued' row (not a fresh
+-- insert) and, combined with Resend's OWN idempotency key (also passed on
+-- every send -- see send-pipeline.ts), the provider itself recognizes a
+-- retried request rather than sending twice.
+-- ALTER TYPE ... ADD VALUE is additive/non-destructive -- existing
+-- sent/blocked/failed rows and every existing query against this enum are
+-- completely unaffected.
+-- ---------------------------------------------------------------------------
+alter type public.email_send_status add value if not exists 'queued';
+
+-- ---------------------------------------------------------------------------
+-- Org-level feature/settings columns, sender/domain schema, unchanged in
+-- spirit from the original draft -- see below.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- organization_email_domains: a tenant's own verified sending domain(s) in
+-- the ONE central Resend account. sending_domain is what's actually
+-- registered with Resend (spec section 6: prefer a dedicated subdomain,
+-- e.g. mail.kalifreights.com, over the tenant's root domain) -- kept
+-- distinct from the human-facing `domain` (kalifreights.com) so Settings
+-- can show both without re-deriving one from the other.
+--
+-- sending_domain is GLOBALLY unique (spec section 39), not just per-org:
+-- Resend itself will not let the same domain be registered twice under one
+-- account, and this app deliberately uses only one account, so the DB
+-- constraint mirrors that reality up front rather than surfacing it only
+-- as a confusing provider-side error.
+-- ---------------------------------------------------------------------------
+create table if not exists public.organization_email_domains (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+
+  domain text not null,              -- human-facing root domain, e.g. "kalifreights.com"
+  sending_domain text not null,      -- actually registered with Resend, e.g. "mail.kalifreights.com"
+  region text not null default 'us-east-1',
+
+  resend_domain_id text,             -- Resend's own domain id -- the correlation key for verify/remove/get
+  -- Mirrors Resend's own DomainStatus values exactly (pending, verified,
+  -- failed, not_started, partially_verified, partially_failed) plus one
+  -- local-only value, 'disabled', for a tenant-initiated removal that
+  -- keeps the row (and any email_send_log rows that reference it) around
+  -- for history (spec section 38) without claiming it's still usable.
+  status text not null default 'not_started'
+    check (status in ('not_started', 'pending', 'verified', 'failed', 'partially_verified', 'partially_failed', 'disabled')),
+  dns_records jsonb not null default '[]'::jsonb, -- raw array of {type,name,value,ttl,priority,status} from Resend -- never an API key
+
+  -- Sender eligibility (spec review item 2): mirrors Resend's OWN
+  -- capabilities.sending field ('enabled'/'disabled'), which is the
+  -- actual authority on whether outbound sending is authorized right
+  -- now -- deliberately NOT inferred from `status` alone, since a domain
+  -- can legitimately be 'partially_verified' overall (e.g. a tracking
+  -- CNAME still pending) while sending is already enabled (SPF+DKIM
+  -- alone are what sending requires). resolveEmailSender()
+  -- (sender-resolver.ts) gates ONLY on this column, never on `status`.
+  -- See src/lib/email/domains.ts's extractSendingEnabled() for the exact
+  -- extraction rule.
+  sending_enabled boolean not null default false,
+
+  is_default boolean not null default false,
+  -- Set ONLY by a real provider-confirmed 'verified' status (spec section
+  -- 8/review item 8) -- never merely because a verify()/get() API call
+  -- itself returned without error. See checkEmailDomainVerification() in
+  -- settings/email/actions.ts, which reads result.data.status, not
+  -- result.ok, to decide this.
+  verified_at timestamptz,
+  disabled_at timestamptz,
+
+  created_by uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint organization_email_domains_domain_format check (domain ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'),
+  constraint organization_email_domains_sending_domain_format check (sending_domain ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+);
+
+create unique index if not exists organization_email_domains_sending_domain_key on public.organization_email_domains (sending_domain);
+create index if not exists organization_email_domains_org_idx on public.organization_email_domains (organization_id);
+create unique index if not exists organization_email_domains_one_default_per_org on public.organization_email_domains (organization_id) where is_default and disabled_at is null;
+
+alter table public.organization_email_domains enable row level security;
+
+-- Postgres has no CREATE POLICY IF NOT EXISTS -- drop-then-create is safe
+-- (a policy is a definition, not data) and makes this statement
+-- idempotent for the re-run case, same pattern used for every trigger
+-- below.
+drop policy if exists "org staff can view their own email domains" on public.organization_email_domains;
+create policy "org staff can view their own email domains"
+  on public.organization_email_domains for select
+  using (organization_id = public.current_org_id() and public.has_role(array['owner', 'admin']::public.org_role[]));
+
+-- No client insert/update/delete policy -- domain creation/verification/
+-- removal always go through server actions using the service-role client,
+-- after independently verifying organization ownership + owner/admin role
+-- server-side (spec sections 10/45).
+
+comment on table public.organization_email_domains is
+  'A tenant''s own verified sending domain(s), registered under the ONE central platform Resend account (never a per-tenant Resend credential). See src/lib/email/domains.ts.';
+
+-- Postgres has no CREATE TRIGGER IF NOT EXISTS -- drop-then-create is safe
+-- here (a trigger is just a definition, dropping/recreating it touches no
+-- data) and makes this statement idempotent for the re-run case.
+drop trigger if exists organization_email_domains_set_updated_at on public.organization_email_domains;
+create trigger organization_email_domains_set_updated_at
+  before update on public.organization_email_domains
+  for each row execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- organization_email_senders: named From identities under a verified
+-- domain (billing@mail.kalifreights.com, dispatch@mail.kalifreights.com).
+-- Deliberately NOT a per-address Resend API object (spec section 8) --
+-- once a domain is verified, Resend authorizes sending from ANY address on
+-- it, so a sender row here is purely this app's own display-name/reply-to
+-- configuration layered on top, never re-registered with the provider.
+-- ---------------------------------------------------------------------------
+create table if not exists public.organization_email_senders (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  email_domain_id uuid not null references public.organization_email_domains (id) on delete cascade,
+
+  display_name text not null,
+  email_address text not null,
+  reply_to text, -- may be external to the sending domain (spec section 41) -- e.g. accounting@kalifreights.com (root domain, not the subdomain)
+
+  sender_type text not null default 'general' check (sender_type in ('billing', 'dispatch', 'accounting', 'general')),
+  is_default boolean not null default false,
+  is_active boolean not null default true,
+
+  created_by uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint organization_email_senders_email_format check (email_address ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$')
+);
+
+create unique index if not exists organization_email_senders_org_address_key on public.organization_email_senders (organization_id, email_address);
+create index if not exists organization_email_senders_org_idx on public.organization_email_senders (organization_id);
+create index if not exists organization_email_senders_domain_idx on public.organization_email_senders (email_domain_id);
+create unique index if not exists organization_email_senders_one_default_per_org on public.organization_email_senders (organization_id) where is_default and is_active;
+
+alter table public.organization_email_senders enable row level security;
+
+drop policy if exists "org staff can view their own email senders" on public.organization_email_senders;
+create policy "org staff can view their own email senders"
+  on public.organization_email_senders for select
+  using (organization_id = public.current_org_id() and public.has_role(array['owner', 'admin']::public.org_role[]));
+
+-- No client write policy -- see organization_email_domains above; same
+-- server-action + service-role + independently-verified-ownership pattern.
+
+comment on table public.organization_email_senders is
+  'Named From identities under a tenant''s verified sending domain (billing@, dispatch@, ...). Not a provider-side object -- domain verification alone authorizes sending from any address on it; this table is purely this app''s display-name/reply-to/purpose configuration. See src/lib/email/sender-resolver.ts.';
+
+drop trigger if exists organization_email_senders_set_updated_at on public.organization_email_senders;
+create trigger organization_email_senders_set_updated_at
+  before update on public.organization_email_senders
+  for each row execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- email_send_log: additive columns for sender resolution, historical
+-- snapshot, richer entity linkage, two-layer idempotency, safe-retry
+-- reservation, and webhook-driven delivery tracking with out-of-order
+-- protection.
+-- ---------------------------------------------------------------------------
+alter table public.email_send_log
+  -- Which sender/domain (if any) was actually used -- nullable because a
+  -- platform-fallback send (spec section 14) uses neither.
+  add column if not exists sender_id uuid references public.organization_email_senders (id) on delete set null,
+  add column if not exists domain_id uuid references public.organization_email_domains (id) on delete set null,
+  -- 'platform' | 'tenant_verified' (spec section 15) -- which path
+  -- resolveEmailSender() actually took, independent of whether sender_id
+  -- happens to still exist later.
+  add column if not exists sender_source text check (sender_source in ('platform', 'tenant_verified')),
+
+  -- Historical snapshot (spec section 20) -- the EXACT values used at
+  -- send time, never re-derived from today's sender/recipient records.
+  add column if not exists from_name text,
+  add column if not exists from_email text,
+  add column if not exists reply_to text,
+  add column if not exists to_addresses text[],
+  add column if not exists cc_addresses text[],
+  add column if not exists bcc_addresses text[],
+
+  -- Purpose, distinct from entity_type (which stays as the generic
+  -- "kind of record this is about" the old toolbar-email call sites
+  -- already populate -- e.g. "invoice"). email_purpose is Phase 2F's own,
+  -- slightly finer-grained classification (spec section 36) used for
+  -- sender-purpose resolution (e.g. a "billing" sender for
+  -- email_purpose='invoice'/'billing_packet').
+  add column if not exists email_purpose text,
+  add column if not exists template_key text,
+
+  -- Typed entity linkage (spec sections 18/19) alongside the existing
+  -- generic entity_type/entity_id -- nullable, a business email links to
+  -- whichever of these are actually relevant; platform/system email may
+  -- have none. Independently RE-VERIFIED server-side against
+  -- organization_id before being written -- see
+  -- src/lib/email/authorization.ts's verifyEntityOwnership() -- never
+  -- trusted from caller input alone (spec review item 2).
+  add column if not exists load_id uuid references public.loads (id) on delete set null,
+  add column if not exists invoice_id uuid references public.invoices (id) on delete set null,
+  add column if not exists customer_id uuid references public.customers (id) on delete set null,
+  add column if not exists broker_id uuid references public.brokers (id) on delete set null,
+  add column if not exists dispatch_id uuid references public.dispatches (id) on delete set null,
+  add column if not exists driver_id uuid references public.drivers (id) on delete set null,
+
+  -- Webhook-driven delivery lifecycle (spec section 21), separate from the
+  -- existing `status` (sent/blocked/failed/queued -- the SEND ATTEMPT
+  -- outcome). Starts null for pre-Phase-2F rows and for blocked/failed
+  -- attempts that never reached the provider. 'uncertain' (spec review
+  -- item 1) marks a 'queued' reservation whose age has exceeded Resend's
+  -- own 24h idempotency window with no provider_message_id ever
+  -- recorded -- the app genuinely does not know whether the provider
+  -- accepted the original send, so it is never auto-retried; see
+  -- send-pipeline.ts's reserveLedgerRow().
+  add column if not exists delivery_status text
+    check (delivery_status is null or delivery_status in ('queued', 'sending', 'sent', 'delivered', 'delayed', 'bounced', 'failed', 'complained', 'uncertain')),
+  add column if not exists delivered_at timestamptz,
+  add column if not exists delivery_delayed_at timestamptz,
+  add column if not exists bounced_at timestamptz,
+  add column if not exists delivery_failed_at timestamptz,
+  add column if not exists complained_at timestamptz,
+  add column if not exists error_code text,
+
+  -- Out-of-order webhook protection (spec review item 6): the occurred_at
+  -- of the most recent webhook event actually APPLIED to this row. A new
+  -- incoming event only updates delivery_status if its own occurred_at is
+  -- >= this value -- see the webhook route's applyDeliveryEvent(), which
+  -- is the ONLY place delivery_status/*_at columns are written.
+  add column if not exists last_event_at timestamptz,
+
+  -- Two-layer idempotency (spec review item 4). idempotency_key is the
+  -- FULL key including its resend-sequence suffix (":0", ":1", ...) --
+  -- see send-pipeline.ts's buildIdempotencyKey(). provider_idempotency_key
+  -- is the (usually identical) value also sent to Resend itself as the
+  -- Idempotency-Key header, so even a retried request that never reached
+  -- this app's own ledger update is deduplicated AT THE PROVIDER.
+  add column if not exists idempotency_key text,
+  add column if not exists provider_idempotency_key text,
+
+  -- Structural fix for the index-predicate problem above -- see this
+  -- file's header comment. true exactly when this row's `status` is
+  -- 'queued' or 'sent' (i.e. holds/held an active reservation); null
+  -- (never re-set to false -- treated identically to null by `where
+  -- idempotency_active`) once it's 'failed'/'blocked'. Written by
+  -- send-pipeline.ts alongside every `status` write -- never read or
+  -- derived independently, so it can never drift from `status` as long
+  -- as that single write path is the only one touching either column
+  -- (true today: the pipeline is the only writer of email_send_log rows
+  -- with a non-null idempotency_key).
+  add column if not exists idempotency_active boolean,
+
+  add column if not exists metadata jsonb not null default '{}'::jsonb,
+
+  -- email_send_log had no created_at/updated_at columns before this
+  -- migration -- add both HERE, inside the same ALTER TABLE statement as
+  -- every other new column, so they exist before any later statement in
+  -- this file (indexes included) can reference them. (Repair 3: the
+  -- previous revision of this file added these two columns in a SEPARATE,
+  -- later ALTER TABLE statement, positioned AFTER
+  -- email_send_log_org_created_at_idx's CREATE INDEX -- Postgres executes
+  -- statements in file order, so that index's `created_at desc` column
+  -- reference failed with 42703 ("column does not exist") because the
+  -- column genuinely did not exist yet at that point in the script. Moving
+  -- both columns into this single upfront ALTER TABLE, ahead of every
+  -- index in this file, fixes the ordering unconditionally.)
+  -- created_at is when the attempt/reservation was FIRST made (always
+  -- populated, unlike sent_at, which stays null until a real send
+  -- succeeds); updated_at (with the trigger below) is when the row was
+  -- last touched by a retry or a webhook event.
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+-- Repair 3, second finding: email_send_log_failure_requires_error
+-- (0039_print_export_email.sql) reads `check (status = 'sent' or error is
+-- not null)`. Every 'queued' reservation row this pipeline inserts has
+-- error = null by definition (a reservation is written BEFORE the
+-- provider is ever called, so there is nothing to report an error about
+-- yet) -- so the very first real reservation insert after 0064 applies
+-- would violate this pre-existing constraint. This was not yet triggered
+-- by any live apply attempt (0064 has never successfully reached this
+-- point), but it is a real, certain failure the moment it does, so it is
+-- fixed proactively here rather than waiting for a fifth failed attempt.
+--
+-- Same precedent as 0053_email_send_log_resend.sql, which relaxed a
+-- constraint on this exact table (sent_at's not-null/default) for the
+-- analogous reason: a genuinely new, valid row shape didn't fit the
+-- original constraint, so the constraint -- not the row -- was widened,
+-- with no data rewritten.
+--
+-- `status::text = 'queued'` (NOT a bare `status = 'queued'`) is
+-- deliberate, for the same reason explained in this file's header
+-- comment under "FINAL FIX": 'queued' is a value added earlier in this
+-- same file via `alter type ... add value if not exists 'queued'`, and a
+-- direct enum-literal comparison against a same-transaction new value is
+-- exactly what raised 55P04 on the index predicate above. A CHECK
+-- constraint has no IMMUTABLE requirement (that restriction is specific
+-- to index predicates / generated columns, which is what turned the
+-- text-cast into a NEW error, 42P17, for the index specifically) -- so
+-- `status::text = 'queued'` here safely avoids 55P04 with no follow-on
+-- 42P17 risk, since this is a plain CHECK, not an index predicate.
+alter table public.email_send_log
+  drop constraint if exists email_send_log_failure_requires_error;
+alter table public.email_send_log
+  add constraint email_send_log_failure_requires_error
+  check (status = 'sent' or status::text = 'queued' or error is not null);
+
+-- Idempotency (spec review item 5 -- must not permanently block retries):
+-- a given (organization, idempotency_key) may be RESERVED ('queued') or
+-- CONFIRMED ('sent') at most once -- but a 'failed'/'blocked' row does NOT
+-- hold the constraint, so a genuine retry of a failed attempt is never
+-- permanently blocked. A retry REUSES the existing row (transitions it
+-- back to 'queued', see send-pipeline.ts) rather than inserting a new one,
+-- so this partial index is never violated by a legitimate retry.
+--
+-- `idempotency_active` -- NOT `status in (...)` or `status::text in
+-- (...)` -- is deliberate (see this file's header comment, "FINAL FIX"):
+-- a bare boolean column reference needs no function/cast to evaluate, so
+-- it is trivially IMMUTABLE-safe in an index predicate (fixes 42P17), and
+-- it never resolves the string 'queued' as an email_send_status value at
+-- all, so it's equally safe in the same transaction as the ADD VALUE
+-- above on a fresh install (fixes 55P04). The application (send-
+-- pipeline.ts) is solely responsible for keeping this column truthful
+-- alongside every `status` write.
+create unique index if not exists email_send_log_org_idempotency_key
+  on public.email_send_log (organization_id, idempotency_key)
+  where idempotency_key is not null and idempotency_active;
+
+create index if not exists email_send_log_load_idx on public.email_send_log (load_id) where load_id is not null;
+create index if not exists email_send_log_invoice_idx on public.email_send_log (invoice_id) where invoice_id is not null;
+create index if not exists email_send_log_dispatch_idx on public.email_send_log (dispatch_id) where dispatch_id is not null;
+create index if not exists email_send_log_org_sent_at_idx on public.email_send_log (organization_id, sent_at desc nulls last);
+create index if not exists email_send_log_org_created_at_idx on public.email_send_log (organization_id, created_at desc);
+create index if not exists email_send_log_provider_message_id_idx on public.email_send_log (provider_message_id) where provider_message_id is not null;
+
+-- created_at/updated_at are now added above, in the main ALTER TABLE
+-- block, ahead of email_send_log_org_created_at_idx -- see the repair-3
+-- comment there. This trigger only needs updated_at to exist by the time
+-- it FIRES (on a later UPDATE), not by the time it's CREATED, but it's
+-- kept here, immediately after the column and its index, for readability.
+drop trigger if exists email_send_log_set_updated_at on public.email_send_log;
+create trigger email_send_log_set_updated_at
+  before update on public.email_send_log
+  for each row execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- email_send_log_events: provider webhook event history (spec section 26),
+-- named to match the parent table it belongs to (email_send_log), not the
+-- earlier draft's "outbound_email_events" -- consistent naming now that
+-- the parent table itself keeps its original name.
+--
+-- A dedicated child table, not folded into the parent row, for two
+-- reasons: (1) idempotency -- a UNIQUE constraint on provider_event_id
+-- lets "have I already processed this exact webhook delivery" be answered
+-- by the database itself (insert, ON CONFLICT DO NOTHING), rather than
+-- re-deriving it from timestamps that a retried event could legitimately
+-- repeat; (2) audit -- a single outbound email can legitimately receive
+-- MULTIPLE distinct events over its lifetime (sent -> delivered ->
+-- complained), and collapsing them onto one row would silently lose
+-- earlier state transitions. provider_event_id is always the verified
+-- Svix/Resend delivery id (the `svix-id` header on a signature-verified
+-- request) -- never a locally synthesized approximation (spec review item
+-- 6). payload_metadata stores only a small, safe, curated subset (event
+-- type, bounce/complaint reason if present) -- never the full raw webhook
+-- body, which could carry recipient PII beyond what this table already
+-- needs.
+-- ---------------------------------------------------------------------------
+create table if not exists public.email_send_log_events (
+  id uuid primary key default gen_random_uuid(),
+  email_send_log_id uuid not null references public.email_send_log (id) on delete cascade,
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+
+  provider_event_id text not null,
+  event_type text not null,
+  occurred_at timestamptz not null,
+  payload_metadata jsonb not null default '{}'::jsonb,
+
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists email_send_log_events_provider_event_id_key on public.email_send_log_events (provider_event_id);
+create index if not exists email_send_log_events_parent_idx on public.email_send_log_events (email_send_log_id, occurred_at);
+create index if not exists email_send_log_events_org_idx on public.email_send_log_events (organization_id);
+
+alter table public.email_send_log_events enable row level security;
+
+drop policy if exists "org staff can view their own email events" on public.email_send_log_events;
+create policy "org staff can view their own email events"
+  on public.email_send_log_events for select
+  using (organization_id = public.current_org_id() and public.has_role(array['owner', 'admin', 'dispatcher', 'accountant']::public.org_role[]));
+
+-- No client write policy -- only the webhook route (service-role, after
+-- verifying the Resend/Svix signature) ever inserts here.
+
+comment on table public.email_send_log_events is
+  'Individual Resend webhook delivery events for a sent email (sent/delivered/bounced/...), one row per distinct provider event id -- the UNIQUE index on provider_event_id is what makes webhook processing idempotent against provider retries. See src/app/api/webhooks/resend/route.ts.';

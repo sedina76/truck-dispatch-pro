@@ -31,17 +31,35 @@ export type SendTransactionalEmailArgs = {
   text: string;
   /** Optional cc, e.g. from the toolbar Email dialog's CC field. */
   cc?: string;
+  /** Optional bcc (Phase 2F -- send-pipeline.ts's own bcc support). */
+  bcc?: string;
   /**
    * Reply-To may only ever be the organization's own validated
    * business email or EMAIL_REPLY_TO -- never arbitrary client input (spec
    * section 18). Callers pass an already-validated address or omit it.
    */
   replyTo?: string;
+  /**
+   * Phase 2F: an explicit "Display Name <address>" header, already
+   * resolved and validated by src/lib/email/sender-resolver.ts (a
+   * verified tenant sender, or the platform fallback). Omitting this
+   * preserves every pre-Phase-2F caller's exact prior behavior --
+   * process.env.EMAIL_FROM, unchanged.
+   */
+  from?: string;
   attachments?: EmailAttachment[];
   /** Shown in the HTML header ("Northbound Logistics"), never used for auth/routing. */
   organizationName: string;
   /** Shown as the HTML document title/heading, e.g. "Invoice INV-000021". */
   heading: string;
+  /**
+   * Phase 2F two-layer idempotency (send-pipeline.ts) -- passed straight
+   * through as Resend's own `Idempotency-Key` request header, so a
+   * retried request (e.g. this app crashed after Resend accepted the
+   * send but before recording it locally) is deduplicated BY THE
+   * PROVIDER, not just by this app's own ledger bookkeeping.
+   */
+  idempotencyKey?: string;
 };
 
 export type SendResult = { ok: true; providerMessageId: string | null } | { ok: false; error: string };
@@ -82,20 +100,24 @@ export async function sendTransactionalEmail(args: SendTransactionalEmailArgs): 
     return { ok: false, error: "Email provider not configured." };
   }
 
-  const from = process.env.EMAIL_FROM!;
+  const from = args.from || process.env.EMAIL_FROM!;
   const replyTo = args.replyTo || process.env.EMAIL_REPLY_TO || undefined;
 
   try {
-    const { data, error } = await client().emails.send({
-      from,
-      to: args.to,
-      cc: args.cc || undefined,
-      replyTo,
-      subject: args.subject,
-      text: args.text,
-      html: buildHtml(args.organizationName, args.heading, args.text),
-      attachments: args.attachments?.map((a) => ({ filename: a.filename, content: Buffer.from(a.content) })),
-    });
+    const { data, error } = await client().emails.send(
+      {
+        from,
+        to: args.to,
+        cc: args.cc || undefined,
+        bcc: args.bcc || undefined,
+        replyTo,
+        subject: args.subject,
+        text: args.text,
+        html: buildHtml(args.organizationName, args.heading, args.text),
+        attachments: args.attachments?.map((a) => ({ filename: a.filename, content: Buffer.from(a.content) })),
+      },
+      args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : undefined
+    );
 
     if (error) {
       // Resend's own error object can carry provider-internal detail --

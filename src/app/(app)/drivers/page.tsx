@@ -11,6 +11,7 @@ import { isActiveLoadStatus, isCompletedLoadStatus } from "@/lib/loads/status";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 type Driver = {
   id: string;
@@ -45,6 +46,13 @@ export default async function DriversPage({
   const { q } = await searchParams;
   const supabase = await createClient();
 
+  // Phase 2G.11 (dispatch financial reader audit): same missed-list-page
+  // gap as Carriers/Brokers/Customers (2G.10) -- Drivers is Fleet, open to
+  // every role, no layout guard, and the Revenue column below rendered
+  // unconditionally for every role including driver/viewer.
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
   let query = supabase
     .from("drivers")
     .select("id, first_name, last_name, phone, cdl_number, cdl_expiry_date, status, carriers(legal_name)")
@@ -66,14 +74,22 @@ export default async function DriversPage({
     .select("id", { count: "exact", head: true })
     .eq("status", "submitted");
 
-  const { data: dispatchRows } = await supabase
-    .from("dispatches")
-    .select("driver_id, carrier_net_amount, loads(status, total_miles)");
+  // Phase 2G.11: carrier_net_amount dropped from this select -- 0068's
+  // writer cutover stopped populating it on `dispatches`; dispatch_financials
+  // is authoritative now. The financial query itself is only issued for
+  // canSeeFinancials -- not merely hidden from driver/viewer in the table
+  // below.
+  const { data: dispatchRows } = await supabase.from("dispatches").select("id, driver_id, loads(status, total_miles)");
+  const dispatchIds = (dispatchRows ?? []).map((d) => d.id);
+  const { data: financialsRows } = canSeeFinancials && dispatchIds.length > 0
+    ? await supabase.from("dispatch_financials").select("dispatch_id, carrier_net_amount").in("dispatch_id", dispatchIds)
+    : { data: [] as { dispatch_id: string; carrier_net_amount: number }[] };
+  const netAmountByDispatch = new Map((financialsRows ?? []).map((r) => [r.dispatch_id, Number(r.carrier_net_amount)]));
 
   const tripSummaryByDriver = new Map<string, DriverTripSummary>();
   for (const row of (dispatchRows ?? []) as unknown as {
+    id: string;
     driver_id: string;
-    carrier_net_amount: number;
     loads: { status: string; total_miles: number | null } | null;
   }[]) {
     if (!row.loads) continue;
@@ -86,7 +102,7 @@ export default async function DriversPage({
     if (isCompletedLoadStatus(row.loads.status)) summary.completedTrips += 1;
     if (isActiveLoadStatus(row.loads.status)) summary.activeTrips += 1;
     summary.totalMiles += row.loads.total_miles ?? 0;
-    summary.revenue += Number(row.carrier_net_amount);
+    summary.revenue += netAmountByDispatch.get(row.id) ?? 0;
     tripSummaryByDriver.set(row.driver_id, summary);
   }
 
@@ -120,10 +136,14 @@ export default async function DriversPage({
       header: "Total Miles",
       cell: (row) => (tripSummaryByDriver.get(row.id)?.totalMiles ?? 0).toLocaleString(),
     },
-    {
-      header: "Revenue",
-      cell: (row) => `$${Math.round(tripSummaryByDriver.get(row.id)?.revenue ?? 0).toLocaleString()}`,
-    },
+    ...(canSeeFinancials
+      ? [
+          {
+            header: "Revenue",
+            cell: (row: Driver) => `$${Math.round(tripSummaryByDriver.get(row.id)?.revenue ?? 0).toLocaleString()}`,
+          },
+        ]
+      : []),
     { header: "Status", cell: (row) => <StatusBadge status={row.status} /> },
   ];
 

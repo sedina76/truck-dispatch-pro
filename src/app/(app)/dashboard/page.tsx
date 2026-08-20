@@ -14,6 +14,7 @@ import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { formatMoney } from "@/lib/collections/types";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 const STATUS_COLORS: Record<string, string> = {
   assigned: "#94a3b8",
@@ -56,8 +57,17 @@ export default async function DashboardPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const { data: profile } = await supabase.from("profiles").select("full_name, organization_id").eq("id", user!.id).single();
+  const { data: profile } = await supabase.from("profiles").select("full_name, organization_id, role").eq("id", user!.id).single();
   const orgId = profile?.organization_id ?? null;
+  const canSeeFinancials = FINANCIAL_ROLES.includes((profile?.role as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // Phase 2G.9 (item 3): Revenue Trend, Top Brokers by Revenue, and the
+  // MTD Profitability/Expenses/Collections sections below are all
+  // financial -- their underlying queries (loads.rate, payments.amount,
+  // get_profitability_summary, get_expense_summary, get_collections_*)
+  // are simply not issued for driver/viewer, not fetched-then-hidden.
+  const emptyRes = { data: null };
+  const emptyList = { data: [] as never[] };
 
   const [
     kpiTiles,
@@ -77,11 +87,16 @@ export default async function DashboardPage() {
     collectionsQueueRes,
     profitabilitySummaryRes,
     expenseSummaryRes,
+    loadFinancialsForRevenue,
   ] = await Promise.all([
-    getDashboardKpis(),
+    getDashboardKpis(canSeeFinancials),
     supabase.rpc("get_expiring_compliance_items", { p_days_ahead: 30 }),
-    supabase.from("loads").select("rate, created_at"),
-    supabase.from("payments").select("amount, received_at"),
+    // Phase 2G.12: `rate` dropped from both loads selects below --
+    // load_financials is authoritative now (0068 writer cutover). Both
+    // stay canSeeFinancials-gated exactly as before; the merge query
+    // (loadFinancialsForRevenue) is gated the same way.
+    canSeeFinancials ? supabase.from("loads").select("id, created_at") : Promise.resolve(emptyList),
+    canSeeFinancials ? supabase.from("payments").select("amount, received_at") : Promise.resolve(emptyList),
     supabase.from("dispatches").select("status"),
     supabase
       .from("activity_logs")
@@ -94,7 +109,7 @@ export default async function DashboardPage() {
       .not("status", "in", "(completed,cancelled)")
       .order("due_at", { ascending: true, nullsFirst: false })
       .limit(6),
-    supabase.from("loads").select("rate, brokers(company_name)").not("broker_id", "is", null),
+    canSeeFinancials ? supabase.from("loads").select("id, brokers(company_name)").not("broker_id", "is", null) : Promise.resolve(emptyList),
     supabase.from("loads").select("status"),
     supabase
       .from("load_tracking_events")
@@ -122,24 +137,33 @@ export default async function DashboardPage() {
     // Collections alert: same canonical get_collections_summary()/
     // get_collections_queue() (0027_collections.sql) the Collections page
     // itself uses -- one compact alert area, not several new KPI cards.
-    supabase.rpc("get_collections_summary").single(),
-    supabase.rpc("get_collections_queue"),
+    // None of these four RPCs are called at all for driver/viewer.
+    canSeeFinancials ? supabase.rpc("get_collections_summary").single() : Promise.resolve(emptyRes),
+    canSeeFinancials ? supabase.rpc("get_collections_queue") : Promise.resolve(emptyList),
     // Compact profitability KPIs (month-to-date) -- get_profitability_summary()
     // (0037_profitability.sql), the same canonical get_load_profitability()
     // source Reports -> Profitability uses. Never a separately-computed figure.
-    supabase.rpc("get_profitability_summary", {
-      p_period_start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
-      p_period_end: null,
-    }).single(),
+    canSeeFinancials
+      ? supabase.rpc("get_profitability_summary", {
+          p_period_start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+          p_period_end: null,
+        }).single()
+      : Promise.resolve(emptyRes),
     // Compact expense KPIs (month-to-date) -- get_expense_summary()
     // (0040_expense_cost_management.sql), the same canonical source
     // Reports -> Expenses uses. Deliberately just 3 figures per spec: total
     // MTD, direct load costs, and unapproved -- not an overloaded strip.
-    supabase.rpc("get_expense_summary", {
-      p_period_start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
-      p_period_end: null,
-    }).single(),
+    canSeeFinancials
+      ? supabase.rpc("get_expense_summary", {
+          p_period_start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+          p_period_end: null,
+        }).single()
+      : Promise.resolve(emptyRes),
+    // Single load_financials fetch backing both loadsForRevenue and
+    // brokerRevenueRows below -- one merge source for both loops.
+    canSeeFinancials ? supabase.from("load_financials").select("load_id, rate") : Promise.resolve(emptyList),
   ]);
+  const rateByLoadIdForRevenue = new Map((loadFinancialsForRevenue.data ?? []).map((r: { load_id: string; rate: number }) => [r.load_id, Number(r.rate)]));
 
   // Delivered Loads Missing POD: computed here, not stored -- uses the same
   // canonical "latest document per entity" helper as the load/invoice/
@@ -171,10 +195,10 @@ export default async function DashboardPage() {
       collected: 0,
     });
   }
-  for (const load of loadsForRevenue.data ?? []) {
+  for (const load of (loadsForRevenue.data ?? []) as { id: string; created_at: string }[]) {
     const d = new Date(load.created_at);
     const month = months.find((m) => m.key === `${d.getFullYear()}-${d.getMonth()}`);
-    if (month) month.booked += Number(load.rate);
+    if (month) month.booked += rateByLoadIdForRevenue.get(load.id) ?? 0;
   }
   for (const payment of paymentsForRevenue.data ?? []) {
     const d = new Date(payment.received_at);
@@ -217,9 +241,9 @@ export default async function DashboardPage() {
   }[];
 
   const brokerTotals = new Map<string, number>();
-  for (const row of (brokerRevenueRows.data ?? []) as unknown as { rate: number; brokers: { company_name: string } | null }[]) {
+  for (const row of (brokerRevenueRows.data ?? []) as unknown as { id: string; brokers: { company_name: string } | null }[]) {
     const name = row.brokers?.company_name ?? "Unknown";
-    brokerTotals.set(name, (brokerTotals.get(name) ?? 0) + Number(row.rate));
+    brokerTotals.set(name, (brokerTotals.get(name) ?? 0) + (rateByLoadIdForRevenue.get(row.id) ?? 0));
   }
   const topBrokers = Array.from(brokerTotals.entries())
     .map(([name, total]) => ({ name, total }))
@@ -262,33 +286,52 @@ export default async function DashboardPage() {
 
       <KpiScroller tiles={kpiTiles} />
 
-      <DesktopKpiStrip>
-        <DesktopKpiBox label="MTD Profitable Loads" value={profitability?.load_count ?? 0} href="/reports/load-margin" />
-        <DesktopKpiBox label="MTD Revenue" value={`$${Number(profitability?.total_revenue ?? 0).toLocaleString()}`} href="/reports/profitability" />
-        <DesktopKpiBox
-          label="MTD Gross Profit"
-          value={`$${Number(profitability?.total_gross_profit ?? 0).toLocaleString()}`}
-          tone={(profitability?.total_gross_profit ?? 0) >= 0 ? "success" : "danger"}
-          href="/reports/profitability"
-        />
-        <DesktopKpiBox
-          label="MTD Avg Margin %"
-          value={profitability?.avg_margin_percent != null ? `${Number(profitability.avg_margin_percent).toFixed(1)}%` : "--"}
-          tone="primary"
-          href="/reports/profitability"
-        />
-      </DesktopKpiStrip>
+      {/* Phase 2G.9: not rendered at all for driver/viewer, matching every
+          other financial section audited this phase -- their underlying
+          data is genuinely empty (the RPCs above were never called), so
+          showing a zeroed-out "Revenue"/"Profit" strip would be
+          misleading, not merely redundant.
 
-      <DesktopKpiStrip>
-        <DesktopKpiBox label="Expenses This Month" value={`$${Number(expenseSummary?.total_amount ?? 0).toLocaleString()}`} href="/reports/expenses" />
-        <DesktopKpiBox label="Direct Load Costs" value={`$${Number(expenseSummary?.direct_load_total ?? 0).toLocaleString()}`} href="/reports/expenses" />
-        <DesktopKpiBox
-          label="Unapproved Expenses"
-          value={`${expenseSummary?.pending_count ?? 0} ($${Number(expenseSummary?.pending_amount ?? 0).toLocaleString()})`}
-          tone={(expenseSummary?.pending_count ?? 0) > 0 ? "warning" : "neutral"}
-          href="/expenses?status=submitted"
-        />
-      </DesktopKpiStrip>
+          UI fix (KPI layout): these 7 cards were previously two separate
+          <DesktopKpiStrip> grids (4 then 3), each independently wrapping
+          at its own xl:grid-cols-7 -- since neither strip ever had more
+          than 4 children, that class could never produce one shared row.
+          Merged into a single strip so the existing xl:grid-cols-7 (kicks
+          in at the default Tailwind xl breakpoint, 1280px -- unmodified
+          here, confirmed via the shared component) lays out all 7 in one
+          row together. dense (kpi-box.tsx) is opt-in and scoped to just
+          this call site -- every other DesktopKpiBox/Strip usage in the
+          app (~30 other pages) is untouched. No calculation, RPC, query,
+          value, or label changed -- purely the container/grouping. */}
+      {canSeeFinancials && (
+        <DesktopKpiStrip className="gap-1.5">
+          <DesktopKpiBox dense label="MTD Profitable Loads" value={profitability?.load_count ?? 0} href="/reports/load-margin" />
+          <DesktopKpiBox dense label="MTD Revenue" value={`$${Number(profitability?.total_revenue ?? 0).toLocaleString()}`} href="/reports/profitability" />
+          <DesktopKpiBox
+            dense
+            label="MTD Gross Profit"
+            value={`$${Number(profitability?.total_gross_profit ?? 0).toLocaleString()}`}
+            tone={(profitability?.total_gross_profit ?? 0) >= 0 ? "success" : "danger"}
+            href="/reports/profitability"
+          />
+          <DesktopKpiBox
+            dense
+            label="MTD Avg Margin %"
+            value={profitability?.avg_margin_percent != null ? `${Number(profitability.avg_margin_percent).toFixed(1)}%` : "--"}
+            tone="primary"
+            href="/reports/profitability"
+          />
+          <DesktopKpiBox dense label="Expenses This Month" value={`$${Number(expenseSummary?.total_amount ?? 0).toLocaleString()}`} href="/reports/expenses" />
+          <DesktopKpiBox dense label="Direct Load Costs" value={`$${Number(expenseSummary?.direct_load_total ?? 0).toLocaleString()}`} href="/reports/expenses" />
+          <DesktopKpiBox
+            dense
+            label="Unapproved Expenses"
+            value={`${expenseSummary?.pending_count ?? 0} ($${Number(expenseSummary?.pending_amount ?? 0).toLocaleString()})`}
+            tone={(expenseSummary?.pending_count ?? 0) > 0 ? "warning" : "neutral"}
+            href="/expenses?status=submitted"
+          />
+        </DesktopKpiStrip>
+      )}
 
       {deliveredLoadsMissingPod.length > 0 && (
         <Link
@@ -323,29 +366,31 @@ export default async function DashboardPage() {
       )}
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle>Revenue Trend</CardTitle>
-              <CardDescription>Booked vs. collected over the last 6 months</CardDescription>
-            </div>
-            <div
-              className={`flex items-center gap-1 text-xs font-medium ${
-                thisMonthRevenue >= lastMonthRevenue ? "text-success" : "text-danger"
-              }`}
-            >
-              <TrendingUp className="size-3.5" />
-              {lastMonthRevenue > 0
-                ? `${Math.abs(pctDelta(thisMonthRevenue, lastMonthRevenue) ?? 0).toFixed(0)}% MoM`
-                : "--"}
-            </div>
-          </CardHeader>
-          <CardContent>
-            <RevenueChart data={revenueData} />
-          </CardContent>
-        </Card>
+        {canSeeFinancials && (
+          <Card className="xl:col-span-2">
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <div>
+                <CardTitle>Revenue Trend</CardTitle>
+                <CardDescription>Booked vs. collected over the last 6 months</CardDescription>
+              </div>
+              <div
+                className={`flex items-center gap-1 text-xs font-medium ${
+                  thisMonthRevenue >= lastMonthRevenue ? "text-success" : "text-danger"
+                }`}
+              >
+                <TrendingUp className="size-3.5" />
+                {lastMonthRevenue > 0
+                  ? `${Math.abs(pctDelta(thisMonthRevenue, lastMonthRevenue) ?? 0).toFixed(0)}% MoM`
+                  : "--"}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <RevenueChart data={revenueData} />
+            </CardContent>
+          </Card>
+        )}
 
-        <Card>
+        <Card className={canSeeFinancials ? undefined : "xl:col-span-3"}>
           <CardHeader>
             <CardTitle>Dispatch Pipeline</CardTitle>
             <CardDescription>Live dispatches by status</CardDescription>
@@ -516,36 +561,38 @@ export default async function DashboardPage() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Top Brokers by Revenue</CardTitle>
-          <CardDescription>Where your booked freight value is coming from</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {topBrokers.length === 0 ? (
-            <EmptyState title="No broker revenue yet" description="Book loads through a broker to see them ranked here." />
-          ) : (
-            <div className="space-y-3">
-              {topBrokers.map((broker, i) => {
-                const max = topBrokers[0].total || 1;
-                return (
-                  <div key={broker.name} className="flex items-center gap-3">
-                    <span className="w-5 shrink-0 text-sm font-medium text-muted-foreground">{i + 1}</span>
-                    <span className="w-40 shrink-0 truncate text-sm font-medium">{broker.name}</span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary"
-                        style={{ width: `${(broker.total / max) * 100}%` }}
-                      />
+      {canSeeFinancials && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Top Brokers by Revenue</CardTitle>
+            <CardDescription>Where your booked freight value is coming from</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {topBrokers.length === 0 ? (
+              <EmptyState title="No broker revenue yet" description="Book loads through a broker to see them ranked here." />
+            ) : (
+              <div className="space-y-3">
+                {topBrokers.map((broker, i) => {
+                  const max = topBrokers[0].total || 1;
+                  return (
+                    <div key={broker.name} className="flex items-center gap-3">
+                      <span className="w-5 shrink-0 text-sm font-medium text-muted-foreground">{i + 1}</span>
+                      <span className="w-40 shrink-0 truncate text-sm font-medium">{broker.name}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${(broker.total / max) * 100}%` }}
+                        />
+                      </div>
+                      <span className="w-24 shrink-0 text-right text-sm font-medium">${broker.total.toLocaleString()}</span>
                     </div>
-                    <span className="w-24 shrink-0 text-right text-sm font-medium">${broker.total.toLocaleString()}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

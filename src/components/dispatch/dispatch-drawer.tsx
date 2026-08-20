@@ -20,7 +20,8 @@ import {
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { DesktopCollapsibleSection, CollapsibleSectionsProvider, CollapsibleSectionsToolbar } from "@/components/desktop/collapsible-section";
-import { SimpleDocumentSlot } from "@/components/loads/simple-document-slot";
+import { CommunicationPanel } from "@/components/dispatch/communication-panel";
+import { DocumentsPanel } from "@/components/dispatch/documents-panel";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/toast";
 import {
@@ -30,23 +31,34 @@ import {
   setStopCoordinates,
   setStopAppointment,
   setStopTimezone,
+  dismissRouteDeviation,
   type DispatchDrawerData,
   type StopGeofenceInfo,
 } from "@/app/(app)/dispatch/board-actions";
 import { refreshDispatchEta } from "@/app/(app)/dispatch/route-actions";
 import { formatMinutes } from "@/lib/dispatch/detention";
 import { formatMiles, formatLateLabel, formatMarginLabel } from "@/lib/routing/risk";
-import { formatStopDateTime, formatStopWindow } from "@/lib/timezone/format";
+import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue } from "@/lib/timezone/format";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
 
+// Phase 2I.1: 'documents' and 'communication' default OPEN (unlike every
+// other secondary section) -- both are now primary operational surfaces
+// the toolbar's Call/Message/Documents buttons scroll straight to (same
+// #drawer-documents anchor mechanic that already existed, extended to a
+// second #drawer-communication anchor). Always-open means the toolbar
+// only ever needs to scroll, never to also force a collapsed section
+// open -- DesktopCollapsibleSection has no imperative "open" API to call
+// from outside its own provider tree, and inventing one would be a wider,
+// riskier change to a component several other pages already share.
 const SECTION_DEFAULTS: Record<string, boolean> = {
   overview: true,
   driver_equipment: true,
+  communication: true,
   pickup: true,
   delivery: false,
   tracking: false,
-  documents: false,
+  documents: true,
   activity: false,
 };
 
@@ -209,11 +221,18 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
 
         {data && (
           <>
-            {/* Quick actions */}
+            {/* Phase 2I.1: Call/Message/Documents no longer navigate away
+                (tel:/sms:) or leave the app -- all three scroll to an
+                always-open section inside this SAME drawer (Part B1: "Do
+                NOT navigate the dispatcher away from the Dispatch
+                Board"). The actual tel: hand-off (Part B2) now lives
+                inside the Communication panel's own "Call Driver" button,
+                fired together with the origination log, not on this
+                toolbar button. */}
             <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-desktop-border px-3 py-2">
-              <QuickActionLink href={data.driver?.phone ? `tel:${data.driver.phone}` : null} icon={Phone} label="Call Driver" />
-              <QuickActionLink href={data.driver?.phone ? `sms:${data.driver.phone}` : null} icon={MessageSquare} label="Message" />
-              <QuickActionLink href="#drawer-documents" icon={FileText} label="Documents" />
+              <QuickActionLink href="#drawer-communication" icon={Phone} label="Call" />
+              <QuickActionLink href="#drawer-communication" icon={MessageSquare} label="Message" />
+              <QuickActionLink href="#drawer-documents" icon={FileText} label={documentsToolbarLabel(data)} warn={documentsToolbarWarn(data)} />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="sm" variant="outline">
@@ -238,6 +257,13 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+
+            {/* Phase 2I.1 (Part A4/C8/D) -- delivered operational summary.
+                Every value here is read straight from data the drawer
+                already fetched (deliveredRetention/billingReadiness/POD
+                status) -- never independently derived, per the approved
+                design's own explicit instruction. */}
+            {data.deliveredRetention && <DeliveredBanner data={data} />}
 
             {noteOpen && (
               <div className="shrink-0 border-b border-desktop-border px-3 py-2">
@@ -274,6 +300,20 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
                     <DriverEquipmentSection data={data} />
                   </DesktopCollapsibleSection>
 
+                  <DesktopCollapsibleSection id="communication" title="Communication" badge={unreadDriverMessageCount(data) || undefined} badgeTone="warning">
+                    <div id="drawer-communication">
+                      <CommunicationPanel
+                        dispatchId={dispatchId}
+                        driver={data.driver}
+                        canManageDispatchOps={data.canManageDispatchOps}
+                        activity={data.activity}
+                        initialMessages={data.communication.messages}
+                        initialHasMoreMessages={data.communication.hasMoreMessages}
+                        onSent={refresh}
+                      />
+                    </div>
+                  </DesktopCollapsibleSection>
+
                   <DesktopCollapsibleSection id="pickup" title="Pickup">
                     <StopSection stop={data.pickup} geofence={data.geofence.pickup} kind="pickup" dispatchId={dispatchId} onSaved={refresh} />
                   </DesktopCollapsibleSection>
@@ -288,9 +328,16 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
 
                   <DesktopCollapsibleSection id="documents" title="Documents" badge={data.documents.filter((d) => d.doc).length || undefined}>
                     <div id="drawer-documents">
-                      {data.documents.map((d) => (
-                        <SimpleDocumentSlot key={d.type} loadId={data.load.id} documentType={d.type} label={d.label} doc={d.doc} />
-                      ))}
+                      <DocumentsPanel
+                        dispatchId={dispatchId}
+                        loadId={data.load.id}
+                        loadNumber={data.load.loadNumber}
+                        documents={data.documents}
+                        billingReadiness={data.billingReadiness}
+                        canManageDispatchOps={data.canManageDispatchOps}
+                        isDelivered={data.dispatch.status === "delivered" || data.dispatch.status === "completed"}
+                        onRefresh={refresh}
+                      />
                     </div>
                   </DesktopCollapsibleSection>
 
@@ -307,7 +354,7 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
   );
 }
 
-function QuickActionLink({ href, icon: Icon, label }: { href: string | null; icon: React.ComponentType<{ className?: string }>; label: string }) {
+function QuickActionLink({ href, icon: Icon, label, warn }: { href: string | null; icon: React.ComponentType<{ className?: string }>; label: string; warn?: boolean }) {
   if (!href) {
     return (
       <span className="inline-flex h-7 cursor-not-allowed items-center gap-1.5 rounded-sm border border-desktop-border px-2 text-xs font-medium text-muted-foreground opacity-50">
@@ -318,7 +365,63 @@ function QuickActionLink({ href, icon: Icon, label }: { href: string | null; ico
   return (
     <a href={href} className="inline-flex h-7 items-center gap-1.5 rounded-sm border border-desktop-border px-2 text-xs font-medium hover:bg-desktop-muted">
       <Icon className="size-3.5" /> {label}
+      {warn && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-desktop-warning" />}
     </a>
+  );
+}
+
+// Phase 2I.1 (Part C7) -- "Documents 2/3" (or a warning dot if the
+// readiness RPC hasn't returned yet) -- denominator/numerator come
+// straight from get_load_billing_readiness()'s own columns, never a
+// separate document-count guess. POD is always required (unconditional
+// in the canonical RPC); BOL/Rate Confirmation only count when that
+// org's billing_document_requirements actually requires them.
+function documentsRequiredCounts(data: DispatchDrawerData): { satisfied: number; total: number } | null {
+  const r = data.billingReadiness;
+  if (!r) return null;
+  const total = 1 + (r.bolRequired ? 1 : 0) + (r.rateConfirmationRequired ? 1 : 0);
+  const satisfied = (r.hasVerifiedPod ? 1 : 0) + (r.bolRequired && r.hasBol ? 1 : 0) + (r.rateConfirmationRequired && r.hasRateConfirmation ? 1 : 0);
+  return { satisfied, total };
+}
+function documentsToolbarLabel(data: DispatchDrawerData): string {
+  const counts = documentsRequiredCounts(data);
+  return counts ? `Documents ${counts.satisfied}/${counts.total}` : "Documents";
+}
+function documentsToolbarWarn(data: DispatchDrawerData): boolean {
+  const counts = documentsRequiredCounts(data);
+  return counts ? counts.satisfied < counts.total : false;
+}
+
+// Phase 2I.1 (Part B8, badge on the Communication section header) --
+// unread driver-sent messages only (a dispatcher cares about what THEY
+// haven't seen, not their own sent count).
+function unreadDriverMessageCount(data: DispatchDrawerData): number {
+  return data.communication.messages.filter((m) => m.senderType === "driver" && !m.readAt).length;
+}
+
+// Phase 2I.1 (Part A4/C8/D) -- delivered operational summary banner.
+// Every line reads directly from already-fetched drawer data (never a
+// second interpretation of POD/billing/retention).
+function DeliveredBanner({ data }: { data: DispatchDrawerData }) {
+  const retention = data.deliveredRetention;
+  if (!retention) return null;
+  const pod = data.documents.find((d) => d.type === "pod")?.doc ?? null;
+  const podLabel = pod ? (pod.is_verified ? "Verified" : pod.rejected_at ? "Rejected" : "Uploaded") : "Missing";
+  const billingLabel = data.billingReadiness ? (data.billingReadiness.readyToBill ? "Ready to Bill" : "Documents Needed") : "--";
+
+  return (
+    <div className="shrink-0 border-b border-desktop-border bg-desktop-success/10 px-3 py-2 text-xs">
+      <p className="font-semibold text-desktop-success">Delivered{retention.deliveredAtLabel ? `: ${retention.deliveredAtLabel}` : ""}</p>
+      <div className="mt-1 grid grid-cols-3 gap-2">
+        <span>
+          POD: <span className="font-medium">{podLabel}</span>
+        </span>
+        <span>
+          Billing: <span className="font-medium">{billingLabel}</span>
+        </span>
+        <span className="text-muted-foreground">{retention.countdown ? retention.countdown.compact + (retention.countdown.expired ? "" : " left") : "Board retention: --"}</span>
+      </div>
+    </div>
   );
 }
 
@@ -499,9 +602,13 @@ function AppointmentEditor({
   onSaved: () => void | Promise<void>;
 }) {
   const [mode, setMode] = useState<"closed" | "edit" | "timezone-only">("closed");
-  const [date, setDate] = useState(() => (stop.scheduledAt ? stop.scheduledAt.slice(0, 10) : ""));
-  const [time, setTime] = useState("");
-  const [windowEndTime, setWindowEndTime] = useState("");
+  // Pre-filled from the stop's OWN timezone, never a raw UTC-string slice
+  // (found live during Phase 2C.1 re-verification: an 11PM Pacific
+  // appointment's UTC instant falls on the next calendar day, so a naive
+  // `.slice(0, 10)` pre-filled the wrong date).
+  const [date, setDate] = useState(() => stopLocalDateInputValue(stop.scheduledAt, stop.timezone));
+  const [time, setTime] = useState(() => stopLocalTimeInputValue(stop.scheduledAt, stop.timezone));
+  const [windowEndTime, setWindowEndTime] = useState(() => stopLocalTimeInputValue(stop.scheduledWindowEnd, stop.timezone));
   const [timezone, setTimezone] = useState(stop.timezone);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -710,7 +817,12 @@ function GeofenceBlock({
           value={
             geofence.arrivalConfirmedAt
               ? geofence.statusApplied
-                ? `Confirmed ${fmtDateTime(geofence.arrivalConfirmedAt)}`
+                ? // Phase 2C.1 follow-up: this used to render via the
+                  // browser-local fmtDateTime() -- the exact bug class
+                  // Phase 2C.1 exists to fix, just missed on this one field.
+                  // Render in the STOP's own timezone through the same
+                  // centralized helper every other stop timestamp uses.
+                  `Confirmed ${formatStopDateTime(geofence.arrivalConfirmedAt, stop.timezone)}`
                 : "Detected -- awaiting driver confirmation"
               : "--"
           }
@@ -734,11 +846,6 @@ const RISK_TONE: Record<string, string> = {
   late: "border-danger/40 bg-danger/10 text-danger",
   arrived: "border-desktop-success/40 bg-desktop-success/10 text-desktop-success",
 };
-
-function fmtTime(iso: string | null): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
 
 function fmtAgo(iso: string | null): string {
   if (!iso) return "--";
@@ -838,6 +945,8 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
         </div>
       )}
 
+      {data.routeDeviation && <RouteDeviationBlock deviation={data.routeDeviation} dispatchId={dispatchId} onDismissed={onRefreshed} />}
+
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-desktop-border pt-2 text-[13px]">
         <Row label="Last Location" value={<span className="flex items-center gap-1"><MapPin className="size-3.5" />{t.currentLocation ?? "--"}</span>} />
         <Row label="GPS Updated" value={fmtAgo(t.lastGpsUpdate)} />
@@ -863,6 +972,103 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
         </button>
       </div>
       {refreshError && <p className="text-[11px] text-danger">{refreshError}</p>}
+    </div>
+  );
+}
+
+// Phase 2D. Deliberately its own small block, separate from the ETA/risk
+// card above -- route status and schedule risk are different dimensions
+// and must never be conflated into one badge (spec section 56: "OFF ROUTE
+// / 27m LATE" both visible, one never replacing the other).
+const DEVIATION_LABEL: Record<string, string> = {
+  on_route: "ON ROUTE",
+  candidate: "ROUTE CHECK",
+  off_route: "OFF ROUTE",
+  recovering: "RETURNING TO ROUTE",
+  recovered: "RECOVERED",
+};
+const DEVIATION_TONE: Record<string, string> = {
+  on_route: "border-desktop-success/40 bg-desktop-success/10 text-desktop-success",
+  candidate: "border-desktop-border bg-desktop-muted/50 text-muted-foreground",
+  off_route: "border-danger/40 bg-danger/10 text-danger",
+  recovering: "border-warning/40 bg-warning/10 text-warning",
+  recovered: "border-desktop-success/40 bg-desktop-success/10 text-desktop-success",
+};
+
+function RouteDeviationBlock({
+  deviation,
+  dispatchId,
+  onDismissed,
+}: {
+  deviation: NonNullable<DispatchDrawerData["routeDeviation"]>;
+  dispatchId: string;
+  onDismissed: () => void | Promise<void>;
+}) {
+  const [dismissing, setDismissing] = useState(false);
+  const toast = useToast();
+
+  // Not evaluated / not currently trustworthy -- surfaced honestly rather
+  // than a fabricated on/off-route claim (spec sections 6/7/18/20).
+  if (deviation.calculationStatus !== "ok") {
+    const reason =
+      deviation.calculationStatus === "no_geometry"
+        ? "Route deviation unavailable -- no calculated route yet."
+        : deviation.calculationStatus === "low_accuracy"
+          ? "Route deviation unavailable -- GPS accuracy too low."
+          : deviation.calculationStatus === "stale_gps"
+            ? "Route deviation status is stale -- GPS hasn't reported recently."
+            : null; // 'arrived' -- monitoring is complete for this stop, nothing to show
+    if (!reason) return null;
+    return (
+      <div className="flex items-start gap-1.5 rounded-sm border border-desktop-border bg-desktop-muted/40 px-2.5 py-2 text-[12px] text-muted-foreground">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> {reason}
+      </div>
+    );
+  }
+
+  // "On route" with no history worth surfacing is deliberately quiet --
+  // this block exists to flag exceptions, not to add noise to every drawer.
+  if (deviation.state === "on_route" && !deviation.confirmedAt) return null;
+
+  async function handleDismiss() {
+    setDismissing(true);
+    const result = await dismissRouteDeviation(dispatchId, deviation.targetStopId);
+    setDismissing(false);
+    if (result.ok) {
+      toast.show("success", "Marked as a false positive.");
+      await onDismissed();
+    } else {
+      toast.show("error", result.error);
+    }
+  }
+
+  return (
+    <div className={cn("rounded-sm border px-2.5 py-2", DEVIATION_TONE[deviation.state])}>
+      <div className="flex items-center justify-between">
+        <p className="text-[13px] font-bold">{DEVIATION_LABEL[deviation.state]}</p>
+        {deviation.distanceFromRouteMeters != null && deviation.state !== "on_route" && (
+          <p className="text-[12px] font-semibold">{formatMiles(deviation.distanceFromRouteMeters)}</p>
+        )}
+      </div>
+      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 text-[12.5px] text-desktop-text">
+        {deviation.confirmedAt && <Row label="Detected" value={formatStopDateTime(deviation.confirmedAt, deviation.targetStopTimezone, { timeOnly: true })} />}
+        {deviation.recoveredAt && <Row label="Recovered" value={formatStopDateTime(deviation.recoveredAt, deviation.targetStopTimezone, { timeOnly: true })} />}
+      </div>
+      {deviation.stale && (
+        // Spec section 58: last-known state may keep showing, but staleness
+        // must be unmistakable -- GPS hasn't reported recently enough to
+        // trust this as a CURRENT claim.
+        <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium opacity-80">
+          <AlertTriangle className="size-3 shrink-0" /> Not current -- GPS hasn&apos;t reported recently.
+        </p>
+      )}
+      {deviation.dismissedAt ? (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">Dismissed as a false positive.</p>
+      ) : deviation.state === "off_route" ? (
+        <button type="button" onClick={handleDismiss} disabled={dismissing} className="mt-1.5 text-[11px] font-medium underline decoration-dotted hover:text-desktop-text disabled:opacity-50">
+          {dismissing ? "Dismissing..." : "Dismiss as false positive"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -916,5 +1122,21 @@ function describeActivity(a: DispatchDrawerData["activity"][number]): string {
     const c = a.changes as { label?: string; type?: string };
     return c.label ?? GPS_ACTION_LABEL[a.action];
   }
+  // Phase 2D: readable text with the real numbers, never a raw JSON dump
+  // (spec section 23).
+  if (a.action === "route_deviation_candidate_started" && a.changes && typeof a.changes === "object") {
+    const c = a.changes as { distance_m?: number };
+    return `Route deviation candidate started${c.distance_m != null ? ` -- ${formatMiles(c.distance_m)} from expected route` : ""}`;
+  }
+  if (a.action === "route_deviation_confirmed" && a.changes && typeof a.changes === "object") {
+    const c = a.changes as { distance_m?: number };
+    return `Route deviation detected${c.distance_m != null ? ` -- ${formatMiles(c.distance_m)} from expected route` : ""}`;
+  }
+  if (a.action === "route_deviation_recovered" && a.changes && typeof a.changes === "object") {
+    const c = a.changes as { minutes_off_route?: number | null };
+    return `Vehicle returned to expected route${c.minutes_off_route != null ? ` after ${c.minutes_off_route} min` : ""}`;
+  }
+  if (a.action === "route_recalculated_while_off_route") return "Route recalculated while vehicle was off route";
+  if (a.action === "route_deviation_dismissed") return "Route deviation exception dismissed as false positive";
   return a.action.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
 }

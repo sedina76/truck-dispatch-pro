@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { invoiceEffectiveStatus } from "@/lib/invoices/effective-status";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 
@@ -114,7 +114,7 @@ export default async function InvoicesPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Invoices", href: "/invoices" }]} />
+      <BillingSubnav />
       <RegisterDesktopActions title="Invoices" exportOptions={[{ label: "Export CSV (Filtered)", href: `/invoices/export${q ? `?q=${encodeURIComponent(q)}` : ""}` }]} />
 
       <PageHeader

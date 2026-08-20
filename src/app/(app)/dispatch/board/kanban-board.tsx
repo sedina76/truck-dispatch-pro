@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   DndContext,
   DragOverlay,
@@ -27,7 +28,10 @@ export type DispatchCard = {
   carrier_name: string;
   truck_unit: string;
   driver_name: string;
-  net_amount: number;
+  // null for driver/viewer (Phase 2G.11) -- financial data is not merely
+  // hidden in JSX, it's never fetched for those roles in the first place
+  // (see dispatch/board/page.tsx).
+  net_amount: number | null;
   pickup_city: string | null;
   pickup_state: string | null;
   delivery_city: string | null;
@@ -42,6 +46,14 @@ export type DispatchCard = {
   eta_timezone: string;
   miles_remaining_meters: number | null;
   risk_status: "unknown" | "on_time" | "at_risk" | "late" | "arrived" | null;
+  // Phase 2D (spec section 56) -- independent of risk_status, never
+  // conflated with it.
+  off_route: boolean;
+  // Phase 2E (spec section 32) -- count of ACTIVE (non-resolved)
+  // operational_exceptions episodes for this dispatch. Always 0 (never
+  // undefined/error) when migration 0063 isn't applied yet -- see
+  // dispatch/board/page.tsx's graceful-degrade fetch.
+  active_exception_count: number;
 };
 
 // Exact mapping approved for this pass -- dispatch_status itself is
@@ -64,15 +76,18 @@ const EXCEPTION_TONE: Record<string, string> = {
   "Late Delivery": "bg-danger/15 text-danger",
   Detention: "bg-danger/15 text-danger",
   "AT RISK": "bg-warning/15 text-warning",
+  "OFF ROUTE": "bg-danger/15 text-danger",
 };
 // Dynamic exceptions (spec section 22): "Detention in Xm" and "Xm LATE"
 // carry a number, so they can't be exact object keys -- matched by suffix
 // instead. A late load's badge must read unmistakably more urgent than an
-// at-risk one (spec: "prioritize exception visibility").
+// at-risk one (spec: "prioritize exception visibility"). "OFF ROUTE · 1.3
+// mi" (Phase 2D) matched by prefix for the same reason.
 function exceptionTone(ex: string): string {
   if (EXCEPTION_TONE[ex]) return EXCEPTION_TONE[ex];
   if (ex.endsWith("LATE")) return "bg-danger/15 text-danger";
   if (ex.startsWith("Detention in")) return "bg-warning/15 text-warning";
+  if (ex.startsWith("OFF ROUTE")) return "bg-danger/15 text-danger";
   return "bg-muted text-muted-foreground";
 }
 
@@ -96,8 +111,24 @@ function DispatchDraggableCard({ card, onOpen }: { card: DispatchCard; onOpen: (
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold">{card.load_number}</span>
-        <span className="text-sm font-medium text-success">${card.net_amount.toLocaleString()}</span>
+        <span className="flex items-center gap-1.5 text-sm font-semibold">
+          {card.load_number}
+          {card.active_exception_count > 0 && (
+            // Compact indicator (spec section 32) -- links to the
+            // Exception Center rather than opening the Drawer, so it needs
+            // its own click handler that stops the card's own onOpen.
+            <Link
+              href={`/dispatch/exceptions?q=${encodeURIComponent(card.load_number)}`}
+              onClick={(e) => e.stopPropagation()}
+              title={`${card.active_exception_count} active exception${card.active_exception_count === 1 ? "" : "s"}`}
+              className="inline-flex items-center gap-0.5 rounded-sm bg-danger/15 px-1 py-0.5 text-[10px] font-bold text-danger hover:bg-danger/25"
+            >
+              <AlertTriangle className="size-2.5" />
+              {card.active_exception_count}
+            </Link>
+          )}
+        </span>
+        {card.net_amount != null && <span className="text-sm font-medium text-success">${card.net_amount.toLocaleString()}</span>}
       </div>
       <p className="mt-1 truncate text-xs text-muted-foreground">{card.carrier_name}</p>
       <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
@@ -165,14 +196,18 @@ function KanbanColumn({ column, cards, onOpen }: { column: (typeof COLUMNS)[numb
 }
 
 type RiskFilter = "" | "at_risk" | "late" | "unknown";
-type Filters = { search: string; driver: string; truck: string; carrier: string; risk: RiskFilter };
-const EMPTY_FILTERS: Filters = { search: "", driver: "", truck: "", carrier: "", risk: "" };
+// Phase 2D (spec section 31/56): a SEPARATE boolean, not a value inside
+// RiskFilter -- route deviation and schedule risk are independent
+// dimensions and must be independently filterable/combinable, never
+// conflated into one mutually-exclusive selector.
+type Filters = { search: string; driver: string; truck: string; carrier: string; risk: RiskFilter; offRoute: boolean };
+const EMPTY_FILTERS: Filters = { search: "", driver: "", truck: "", carrier: "", risk: "", offRoute: false };
 
 function FilterBar({ cards, filters, onChange }: { cards: DispatchCard[]; filters: Filters; onChange: (f: Filters) => void }) {
   const drivers = useMemo(() => [...new Set(cards.map((c) => c.driver_name))].filter((v) => v !== "--").sort(), [cards]);
   const trucks = useMemo(() => [...new Set(cards.map((c) => c.truck_unit))].filter((v) => v !== "--").sort(), [cards]);
   const carriers = useMemo(() => [...new Set(cards.map((c) => c.carrier_name))].filter((v) => v !== "--").sort(), [cards]);
-  const hasFilters = filters.search || filters.driver || filters.truck || filters.carrier || filters.risk;
+  const hasFilters = filters.search || filters.driver || filters.truck || filters.carrier || filters.risk || filters.offRoute;
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-desktop-border bg-desktop-panel px-2.5 py-2">
@@ -224,6 +259,7 @@ function RiskSummaryBar({ cards, filters, onChange }: { cards: DispatchCard[]; f
   const atRisk = activeCards.filter((c) => c.risk_status === "at_risk").length;
   const late = activeCards.filter((c) => c.risk_status === "late").length;
   const unknown = activeCards.filter((c) => c.risk_status == null || c.risk_status === "unknown").length;
+  const offRoute = activeCards.filter((c) => c.off_route).length;
 
   function toggle(risk: RiskFilter) {
     onChange({ ...filters, risk: filters.risk === risk ? "" : risk });
@@ -241,6 +277,15 @@ function RiskSummaryBar({ cards, filters, onChange }: { cards: DispatchCard[]; f
       <button type="button" onClick={() => toggle("unknown")} className={cn("rounded-sm border px-2 py-1 font-medium", filters.risk === "unknown" ? "border-desktop-border bg-desktop-muted text-desktop-text" : "border-desktop-border bg-desktop-muted/50 text-muted-foreground hover:bg-desktop-muted")}>
         ETA Unknown {unknown}
       </button>
+      {(offRoute > 0 || filters.offRoute) && (
+        <button
+          type="button"
+          onClick={() => onChange({ ...filters, offRoute: !filters.offRoute })}
+          className={cn("rounded-sm border px-2 py-1 font-medium", filters.offRoute ? "border-danger bg-danger/20 text-danger" : "border-danger/30 bg-danger/10 text-danger hover:bg-danger/20")}
+        >
+          Off Route {offRoute}
+        </button>
+      )}
     </div>
   );
 }
@@ -307,6 +352,7 @@ export function KanbanBoard({ initialCards }: { initialCards: DispatchCard[] }) 
         const cardRisk = c.risk_status ?? "unknown";
         if (filters.risk === "unknown" ? cardRisk !== "unknown" : cardRisk !== filters.risk) return false;
       }
+      if (filters.offRoute && !c.off_route) return false;
       if (!q) return true;
       return [c.load_number, c.driver_name, c.truck_unit, c.carrier_name, c.pickup_city, c.delivery_city]
         .filter(Boolean)

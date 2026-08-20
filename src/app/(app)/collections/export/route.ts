@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { toCsv, csvResponse, formatMoney } from "@/lib/export/csv";
 import type { CollectionsQueueRow } from "@/lib/collections/types";
 import { filterCollectionsRows } from "@/lib/collections/filter";
+import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 // Same RPC call as collections/page.tsx, then the SAME shared filter
 // function (src/lib/collections/filter.ts) -- not a second hand-maintained
@@ -9,6 +10,9 @@ import { filterCollectionsRows } from "@/lib/collections/filter";
 // Minus internal collection notes (never selected in this query to begin
 // with).
 export async function GET(req: Request) {
+  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  if (denied) return denied;
+
   const { searchParams } = new URL(req.url);
   const filter = searchParams.get("filter") ?? "";
   const priority = searchParams.get("priority") ?? "";

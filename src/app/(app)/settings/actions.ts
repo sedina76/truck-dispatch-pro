@@ -5,6 +5,13 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId, insertRecord, deleteRecord } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { isValidIanaTimezone } from "@/lib/timezone/iana";
+import { validateDeviationThresholds } from "@/lib/tracking/route-deviation";
+
+const METERS_PER_MILE = 1609.344;
+function milesToMeters(formData: FormData, name: string, fallbackMiles: number): number {
+  const miles = toNumber(formData.get(name));
+  return Math.round((miles ?? fallbackMiles) * METERS_PER_MILE);
+}
 
 export async function updateOrganization(formData: FormData) {
   const supabase = await createClient();
@@ -18,6 +25,16 @@ export async function updateOrganization(formData: FormData) {
   if (!isValidIanaTimezone(timezone)) {
     throw new Error("Please select a valid timezone for this organization.");
   }
+
+  // Route deviation thresholds (spec section 8/38) -- validated up front,
+  // before any writes, same as the timezone check above: a bad value
+  // rejects the whole submit rather than saving everything else and
+  // silently skipping just this one section.
+  const warningM = milesToMeters(formData, "route_deviation_warning_mi", 0.5);
+  const confirmedM = milesToMeters(formData, "route_deviation_confirmed_mi", 1.0);
+  const recoveryM = milesToMeters(formData, "route_deviation_recovery_mi", 0.25);
+  const thresholdError = validateDeviationThresholds({ warningM, confirmedM, recoveryM });
+  if (thresholdError) throw new Error(thresholdError);
 
   const { error } = await supabase
     .from("organizations")
@@ -78,6 +95,23 @@ export async function updateOrganization(formData: FormData) {
     })
     .eq("id", orgId);
   if (gpsError) console.warn("[settings] GPS tracking settings not saved (likely migration 0059 not applied yet):", gpsError.message);
+
+  // Route deviation (0062) -- deliberately a FOURTH separate update, same
+  // reasoning as the two above: a not-yet-applied migration must never
+  // break saving the rest of this form. Thresholds are entered in miles
+  // (matching this product's existing display convention) and converted to
+  // meters for storage (spec section 40: never store thresholds as
+  // floating-point miles) -- already computed/validated above.
+  const { error: deviationError } = await supabase
+    .from("organizations")
+    .update({
+      route_deviation_enabled: formData.get("route_deviation_enabled") === "on",
+      route_deviation_warning_m: warningM,
+      route_deviation_confirmed_m: confirmedM,
+      route_deviation_recovery_m: recoveryM,
+    })
+    .eq("id", orgId);
+  if (deviationError) console.warn("[settings] route deviation settings not saved (likely migration 0062 not applied yet):", deviationError.message);
 
   revalidatePath("/settings/organization");
 }

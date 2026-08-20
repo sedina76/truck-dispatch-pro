@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { toCsv, csvResponse, formatMoney, formatDate } from "@/lib/export/csv";
+import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 type Row = {
   load_number: string;
@@ -21,6 +22,9 @@ type Row = {
 // one set-based query, not a per-load loop, same canonical source every
 // other profitability surface reads.
 export async function GET(req: Request) {
+  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  if (denied) return denied;
+
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
   const start = searchParams.get("start");

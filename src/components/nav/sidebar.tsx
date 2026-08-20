@@ -3,114 +3,16 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  KanbanSquare,
-  Package,
-  Truck,
-  Building2,
-  Users,
-  UserRound,
-  Container,
-  Wrench,
-  Fuel,
-  FileText,
-  ShieldCheck,
-  Receipt,
-  Wallet,
-  FileStack,
-  TrendingUp,
-  HandCoins,
-  ShieldAlert,
-  BellRing,
-  BarChart3,
-  ChevronDown,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-  LogOut,
-  Radio,
-  UserPlus,
-  UserCog,
-  Settings,
-  LifeBuoy,
-  CheckSquare,
-  ReceiptText,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { logout } from "@/lib/supabase/actions";
 import { Avatar, AvatarFallback, initialsFromName } from "@/components/ui/avatar";
+import { type OrgRole, BILLING_WORKSPACE_PREFIXES, visibleSections } from "@/components/nav/nav-config";
 
-type NavItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }> };
-type NavSection = { title: string; items: NavItem[] };
-
-// Grouped per the Truck Dispatch Pro desktop redesign spec exactly:
-// OPERATIONS / FLEET / ACCOUNTING / BUSINESS / ADMINISTRATION. Every href
-// is a real existing route -- "Promises to Pay"/"Disputes"/"Reminders"
-// don't have dedicated top-level pages of their own (that data lives in
-// the Collections queue + Invoice Detail's Collections section), so they
-// route into Collections itself, filtered where a matching filter already
-// exists (Disputes -> ?filter=disputed) rather than a plain duplicate link.
-const SECTIONS: NavSection[] = [
-  {
-    title: "Operations",
-    items: [
-      { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-      { label: "Dispatch Board", href: "/dispatch/board", icon: KanbanSquare },
-      { label: "Loads", href: "/loads", icon: Package },
-      { label: "Live Tracking", href: "/tracking", icon: Radio },
-    ],
-  },
-  {
-    title: "Fleet",
-    items: [
-      { label: "Drivers", href: "/drivers", icon: UserRound },
-      { label: "Driver Applications", href: "/drivers/applications", icon: UserPlus },
-      { label: "Trucks", href: "/trucks", icon: Truck },
-      { label: "Trailers", href: "/trailers", icon: Container },
-      { label: "Maintenance", href: "/maintenance", icon: Wrench },
-      { label: "Fuel Logs", href: "/fuel", icon: Fuel },
-    ],
-  },
-  {
-    title: "Accounting",
-    items: [
-      { label: "Invoicing", href: "/invoices", icon: Receipt },
-      { label: "Payments", href: "/payments", icon: Wallet },
-      { label: "Statements", href: "/statements", icon: FileStack },
-      { label: "Accounts Receivable", href: "/accounts-receivable", icon: TrendingUp },
-      { label: "Collections", href: "/collections", icon: ShieldAlert },
-      { label: "Promises to Pay", href: "/collections", icon: HandCoins },
-      { label: "Disputes", href: "/collections?filter=disputed", icon: ShieldAlert },
-      { label: "Reminders", href: "/collections", icon: BellRing },
-      { label: "Carrier Settlements", href: "/settlements", icon: HandCoins },
-      { label: "Driver Settlements", href: "/driver-settlements", icon: UserRound },
-      { label: "Advances", href: "/advances", icon: Wallet },
-      { label: "Expenses", href: "/expenses", icon: ReceiptText },
-    ],
-  },
-  {
-    title: "Business",
-    items: [
-      { label: "Carriers", href: "/carriers", icon: Truck },
-      { label: "Brokers", href: "/brokers", icon: Building2 },
-      { label: "Customers", href: "/customers", icon: Users },
-      { label: "Documents", href: "/documents", icon: FileText },
-      { label: "Compliance", href: "/compliance", icon: ShieldCheck },
-      { label: "Reports", href: "/reports", icon: BarChart3 },
-      { label: "Tasks", href: "/dashboard", icon: CheckSquare },
-    ],
-  },
-  {
-    title: "Administration",
-    items: [
-      { label: "Users", href: "/settings/users", icon: UserCog },
-      { label: "Settings", href: "/settings/organization", icon: Settings },
-      { label: "Help", href: "/settings/profile", icon: LifeBuoy },
-    ],
-  },
-];
-
+// Phase 2G.6: the section/role data itself moved to nav-config.ts so the
+// new mobile drawer (mobile-nav.tsx) can share it exactly -- this file is
+// now purely the DESKTOP (lg: and up) rendering of that shared data.
+// Unchanged visually/behaviorally from Phase 2G.5.
 export function Sidebar({
   organizationName,
   fullName,
@@ -123,6 +25,7 @@ export function Sidebar({
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const sections = visibleSections(role as OrgRole);
 
   function toggleGroup(title: string) {
     setCollapsedGroups((prev) => {
@@ -142,7 +45,7 @@ export function Sidebar({
     >
       {/* Nav groups */}
       <div className="flex-1 space-y-0.5 overflow-y-auto px-1.5 py-2">
-        {SECTIONS.map((section) => {
+        {sections.map((section) => {
           const groupCollapsed = collapsedGroups.has(section.title);
           return (
             <div key={section.title}>
@@ -158,7 +61,15 @@ export function Sidebar({
               {!groupCollapsed && (
                 <div className="space-y-px pb-1.5">
                   {section.items.map((item) => {
-                    const active = pathname === item.href || (pathname.startsWith(item.href + "/") && item.href !== "/dashboard");
+                    // "Billing" highlights across the whole workspace
+                    // (/billing itself plus the five routes its own
+                    // internal subnav links to), not just /billing --
+                    // otherwise the sidebar would go dark the moment a
+                    // user follows the Billing subnav into e.g. /invoices,
+                    // undermining the "one workspace" goal this section
+                    // exists for. Nothing else needs this treatment.
+                    const matchPrefixes = item.href === "/billing" ? BILLING_WORKSPACE_PREFIXES : [item.href];
+                    const active = matchPrefixes.some((p) => pathname === p || (pathname.startsWith(p + "/") && p !== "/dashboard"));
                     return (
                       <Link
                         key={item.label + item.href}

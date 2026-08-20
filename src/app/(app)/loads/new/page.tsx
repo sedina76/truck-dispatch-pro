@@ -13,6 +13,7 @@ import { RevenuePerMileLive } from "@/components/loads/rate-financials-fields";
 import { createLoadWithStops } from "../create-actions";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { COMMON_TIMEZONES, isValidIanaTimezone } from "@/lib/timezone/iana";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 const EQUIPMENT_OPTIONS = [
   { value: "dry_van", label: "Dry Van" },
@@ -48,11 +49,19 @@ const SECTION_DEFAULTS: Record<string, boolean> = {
 
 export default async function NewLoadPage() {
   const supabase = await createClient();
-  const [{ data: brokers }, { data: customers }, { data: { user } }] = await Promise.all([
+  const [{ data: brokers }, { data: customers }, { data: { user } }, { data: roleData }] = await Promise.all([
     supabase.from("brokers").select("id, company_name").order("company_name"),
     supabase.from("customers").select("id, company_name").order("company_name"),
     supabase.auth.getUser(),
+    supabase.rpc("current_role"),
   ]);
+  // Phase 2G.9 (item 3): no real financial VALUES are exposed by this
+  // blank create form (RLS already blocks driver/viewer from submitting a
+  // load at all), but the "STAFF ONLY" labeled sections below previously
+  // rendered unconditionally like everywhere else audited this phase --
+  // gated for UI/enforcement consistency with Load Detail and Dispatch
+  // Detail, not because a data leak was found here.
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
   const { data: me } = user ? await supabase.from("profiles").select("full_name").eq("id", user.id).maybeSingle() : { data: null };
 
   // Default timezone for both stop sections (spec section 11): this
@@ -124,29 +133,33 @@ export default async function NewLoadPage() {
               </FormGrid>
             </DesktopCollapsibleSection>
 
-            <DesktopCollapsibleSection id="internal_financials" title="Internal Rate & Financials" description="Internal staff information -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
-              <FormGrid>
-                <FormField label="Customer / Broker Rate ($)" name="rate" type="number" step="0.01" required />
-                <RevenuePerMileLive />
-              </FormGrid>
-              <p className="mt-2 text-[11.5px] text-desktop-text-muted">
-                Transportation cost and margin are calculated on the Load Detail page&apos;s Profitability section once this load has
-                a dispatch and any settlement/expense data -- shown here would be a fabricated estimate before that exists.
-              </p>
-            </DesktopCollapsibleSection>
+            {canSeeFinancials && (
+              <DesktopCollapsibleSection id="internal_financials" title="Internal Rate & Financials" description="Internal staff information -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
+                <FormGrid>
+                  <FormField label="Customer / Broker Rate ($)" name="rate" type="number" step="0.01" required />
+                  <RevenuePerMileLive />
+                </FormGrid>
+                <p className="mt-2 text-[11.5px] text-desktop-text-muted">
+                  Transportation cost and margin are calculated on the Load Detail page&apos;s Profitability section once this load has
+                  a dispatch and any settlement/expense data -- shown here would be a fabricated estimate before that exists.
+                </p>
+              </DesktopCollapsibleSection>
+            )}
 
-            <DesktopCollapsibleSection id="rate_confirmation" title="Rate Confirmation Document" description="Internal staff information -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
-              <div className="space-y-1">
-                <label className="text-[12px] font-medium text-desktop-text">Upload Rate Confirmation</label>
-                <input
-                  type="file"
-                  name="rate_confirmation_file"
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  className="block w-full text-[12px] text-desktop-text-muted file:mr-2 file:rounded-sm file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-primary-foreground"
-                />
-                <p className="text-[11px] text-desktop-text-muted">PDF, JPG, or PNG, up to 15 MB. Stored privately -- only accessible to staff via short-lived signed links.</p>
-              </div>
-            </DesktopCollapsibleSection>
+            {canSeeFinancials && (
+              <DesktopCollapsibleSection id="rate_confirmation" title="Rate Confirmation Document" description="Internal staff information -- never shown to drivers or carriers" badge="STAFF ONLY" badgeTone="warning">
+                <div className="space-y-1">
+                  <label className="text-[12px] font-medium text-desktop-text">Upload Rate Confirmation</label>
+                  <input
+                    type="file"
+                    name="rate_confirmation_file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    className="block w-full text-[12px] text-desktop-text-muted file:mr-2 file:rounded-sm file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-primary-foreground"
+                  />
+                  <p className="text-[11px] text-desktop-text-muted">PDF, JPG, or PNG, up to 15 MB. Stored privately -- only accessible to staff via short-lived signed links.</p>
+                </div>
+              </DesktopCollapsibleSection>
+            )}
 
             <DesktopCollapsibleSection id="references" title="References & Instructions">
               <FormGrid>

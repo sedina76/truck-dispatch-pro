@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { toCsv, csvResponse, formatMoney, formatDate } from "@/lib/export/csv";
+import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 type Row = {
   invoice_number: string;
@@ -15,6 +16,9 @@ type Row = {
 
 // Mirrors invoices/page.tsx's own query+filter exactly.
 export async function GET(req: Request) {
+  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  if (denied) return denied;
+
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q");
 

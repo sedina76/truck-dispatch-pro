@@ -6,6 +6,7 @@ import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/f
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
 import { LoadPicker } from "@/components/invoices/load-picker";
 import { resolveBillingPartyDisplay, suggestedDueDate } from "@/lib/billing/party";
+import { getCurrentOrgId } from "@/lib/actions/records";
 import { createInvoice } from "../actions";
 
 export default async function NewInvoicePage({
@@ -21,30 +22,50 @@ export default async function NewInvoicePage({
   // don't already have one. Loads earlier in their lifecycle are still
   // findable via manual entry (no load selected) for an edge case like
   // pre-billing, but aren't offered here to keep the list relevant.
-  const [{ data: candidateLoads }, { data: brokers }, { data: customers }, { count }] = await Promise.all([
+  const organizationId = await getCurrentOrgId();
+
+  // Phase 2G.12: `rate` dropped from the candidateLoads select --
+  // load_financials is authoritative now (0068 writer cutover). This
+  // whole route is already layout-guarded to FINANCIAL_ROLES (see
+  // invoices/layout.tsx), so no additional role gating is needed.
+  const [{ data: candidateLoads }, { data: brokers }, { data: customers }, { data: suggestedNumberData }] = await Promise.all([
     supabase
       .from("loads")
-      .select("id, load_number, rate, invoices!left(id)")
+      .select("id, load_number, invoices!left(id)")
       .in("status", ["delivered", "pod_received", "invoiced", "closed"])
       .is("invoices.id", null)
       .order("created_at", { ascending: false })
       .limit(100),
     supabase.from("brokers").select("id, company_name").order("company_name"),
     supabase.from("customers").select("id, company_name").order("company_name"),
-    supabase.from("invoices").select("id", { count: "exact", head: true }),
+    // Atomic, year-scoped, per-organization counter (0065_billing_readiness.sql)
+    // -- replaces the old `count(*) + 1` suggestion, which raced under
+    // concurrent invoice creation and could hand two dispatchers the same
+    // number. Like the existing payment_number_seq (0026), a value is
+    // consumed here purely by visiting this page even if the invoice is
+    // never saved (e.g. the user navigates away) -- an accepted,
+    // precedented trade-off for numbering that can never collide; the
+    // field below remains a plain editable text input either way.
+    supabase.rpc("generate_invoice_number", { p_organization_id: organizationId }),
   ]);
 
-  const suggestedNumber = `INV-${String((count ?? 0) + 1).padStart(6, "0")}`;
+  const suggestedNumber = suggestedNumberData ?? "";
 
   // No load selected: existing fully-manual workflow, unchanged, just with
   // the load picker added above it (spec 3's "If no load is selected,
   // allow the existing manual billing-party workflow").
   if (!load_id) {
+    const candidateLoadIds = (candidateLoads ?? []).map((l) => l.id);
+    const { data: candidateLoadFinancials } = candidateLoadIds.length > 0
+      ? await supabase.from("load_financials").select("load_id, rate").in("load_id", candidateLoadIds)
+      : { data: [] as { load_id: string; rate: number }[] };
+    const rateByLoadId = new Map((candidateLoadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
+
     return (
       <div className="space-y-3">
         <DesktopPanel>
           <DesktopPanelBody>
-            <LoadPicker loads={(candidateLoads ?? []).map((l) => ({ id: l.id, load_number: l.load_number, rate: Number(l.rate) }))} />
+            <LoadPicker loads={(candidateLoads ?? []).map((l) => ({ id: l.id, load_number: l.load_number, rate: rateByLoadId.get(l.id) ?? 0 }))} />
           </DesktopPanelBody>
         </DesktopPanel>
 
@@ -88,13 +109,20 @@ export default async function NewInvoicePage({
   }
 
   // A load WAS selected -- resolve everything server-side.
+  // Phase 2G.12: `rate` dropped from the loads select, and the nested
+  // brokers()/customers() embeds no longer carry payment_terms_days --
+  // load_financials/broker_financials/customer_financials are
+  // authoritative now (0068/2G.10/2G.12 writer cutovers). This is the
+  // SAME rule auto_generate_invoice_from_delivered_load() (0068) already
+  // enforces at automatic-invoice time -- this manual path was the one
+  // remaining place still reading the old columns for it.
   const [{ data: load }, { data: org }] = await Promise.all([
     supabase
       .from("loads")
       .select(
-        "id, load_number, rate, organization_id, broker_id, customer_id, " +
-          "brokers(company_name, email, address_line1, city, state, postal_code, payment_terms_days), " +
-          "customers(company_name, email, billing_address_line1, city, state, postal_code, payment_terms_days)"
+        "id, load_number, organization_id, broker_id, customer_id, " +
+          "brokers(company_name, email, address_line1, city, state, postal_code), " +
+          "customers(company_name, email, billing_address_line1, city, state, postal_code)"
       )
       .eq("id", load_id)
       .single(),
@@ -154,14 +182,26 @@ export default async function NewInvoicePage({
   const loadRow = load as unknown as {
     id: string;
     load_number: string;
-    rate: number;
     broker_id: string | null;
     customer_id: string | null;
-    brokers: { company_name: string; email: string | null; address_line1: string | null; city: string | null; state: string | null; postal_code: string | null; payment_terms_days: number | null } | null;
-    customers: { company_name: string; email: string | null; billing_address_line1: string | null; city: string | null; state: string | null; postal_code: string | null; payment_terms_days: number | null } | null;
+    brokers: { company_name: string; email: string | null; address_line1: string | null; city: string | null; state: string | null; postal_code: string | null } | null;
+    customers: { company_name: string; email: string | null; billing_address_line1: string | null; city: string | null; state: string | null; postal_code: string | null } | null;
   };
 
-  const display = resolveBillingPartyDisplay(loadRow, loadRow.brokers, loadRow.customers);
+  const [{ data: loadFinancialsRow }, { data: brokerFinancialsRow }, { data: customerFinancialsRow }] = await Promise.all([
+    supabase.from("load_financials").select("rate").eq("load_id", loadRow.id).maybeSingle(),
+    loadRow.broker_id
+      ? supabase.from("broker_financials").select("payment_terms_days").eq("broker_id", loadRow.broker_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    loadRow.customer_id
+      ? supabase.from("customer_financials").select("payment_terms_days").eq("customer_id", loadRow.customer_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const loadRate = Number(loadFinancialsRow?.rate ?? 0);
+  const brokerWithTerms = loadRow.brokers ? { ...loadRow.brokers, payment_terms_days: brokerFinancialsRow?.payment_terms_days ?? null } : null;
+  const customerWithTerms = loadRow.customers ? { ...loadRow.customers, payment_terms_days: customerFinancialsRow?.payment_terms_days ?? null } : null;
+
+  const display = resolveBillingPartyDisplay(loadRow, brokerWithTerms, customerWithTerms);
   const issueDate = new Date().toISOString().slice(0, 10);
   const dueDate = suggestedDueDate(issueDate, display.paymentTermsDays, org?.default_payment_terms_days ?? null);
 
@@ -178,7 +218,7 @@ export default async function NewInvoicePage({
           ) : (
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[13px] sm:grid-cols-4">
               <Field label="Bill To" value={`${display.billToName} (${display.party.type === "broker" ? "Broker" : "Customer"})`} />
-              <Field label="Rate" value={`$${Number(loadRow.rate).toLocaleString()}`} />
+              <Field label="Rate" value={`$${loadRate.toLocaleString()}`} />
               <Field label="Terms" value={display.paymentTermsDays != null ? `Net ${display.paymentTermsDays}` : `Net ${org?.default_payment_terms_days ?? 30} (org default)`} />
               <Field label="Due Date" value={new Date(dueDate + "T00:00:00").toLocaleDateString()} />
             </div>
@@ -222,7 +262,7 @@ export default async function NewInvoicePage({
           <FormField label="Bill to name" name="bill_to_name" required defaultValue={display.billToName} />
           <FormField label="Bill to email" name="bill_to_email" type="email" defaultValue={display.billToEmail ?? undefined} />
           <FormField label="Due date" name="due_date" type="date" defaultValue={dueDate} />
-          <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={Number(loadRow.rate)} />
+          <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadRate} />
           <FormTextarea label="Notes" name="notes" />
         </FormGrid>
       </FormCard>

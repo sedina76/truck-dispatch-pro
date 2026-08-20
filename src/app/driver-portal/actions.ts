@@ -338,3 +338,119 @@ export async function updateMyDriverProfile(formData: FormData) {
 
   revalidatePath("/driver-portal/profile");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2I.1 (Part B4) -- driver-side messaging. Same pattern as every
+// action above: resolve the session first, then verify ownership of the
+// dispatch server-side (never trust a dispatchId the browser sent) --
+// dispatch_messages has RLS, but it's staff-only (see 0080's own header
+// comment); this service-role client bypasses it entirely, so this
+// ownership check IS the real security boundary here, not a redundant
+// belt-and-suspenders layer. A driver can only ever act on their OWN
+// current dispatch, resolved via getCurrentDispatch() -- never an
+// arbitrary dispatchId, so there is no way for one driver to address a
+// message into another driver's conversation even by guessing an id.
+// ---------------------------------------------------------------------------
+
+export type DriverMessage = {
+  id: string;
+  senderType: "staff" | "driver";
+  senderName: string | null;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+};
+
+const MESSAGE_SELECT = "id, sender_type, sender_profile_id, body, created_at, read_at, profiles(full_name)";
+
+function mapDriverMessage(row: { id: string; sender_type: string; sender_profile_id: string | null; body: string; created_at: string; read_at: string | null; profiles: { full_name: string } | null }): DriverMessage {
+  return {
+    id: row.id,
+    senderType: row.sender_type as "staff" | "driver",
+    // Staff sender name is resolved via the profiles join; a driver-sent
+    // row has no sender_profile_id at all (it's implicitly this driver),
+    // so there's nothing to join for that direction -- the Driver Portal
+    // UI itself already knows "this is me."
+    senderName: row.sender_type === "staff" ? (row.profiles?.full_name ?? "Dispatch") : null,
+    body: row.body,
+    createdAt: row.created_at,
+    readAt: row.read_at,
+  };
+}
+
+// Latest 50 for the driver's current dispatch -- same bounded page size as
+// the staff drawer's own initial load (getDispatchDrawerData,
+// board-actions.ts), so neither side can ever load more history than the
+// other by accident.
+export async function getMyDispatchMessages(): Promise<{ dispatchId: string | null; loadNumber: string | null; messages: DriverMessage[]; hasMore: boolean }> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return { dispatchId: null, loadNumber: null, messages: [], hasMore: false };
+
+  const { data } = await supabase.from("dispatch_messages").select(MESSAGE_SELECT).eq("dispatch_id", dispatch.id).order("created_at", { ascending: false }).limit(51);
+  const rows = (data ?? []) as unknown as Parameters<typeof mapDriverMessage>[0][];
+  const hasMore = rows.length > 50;
+  const messages = rows.slice(0, 50).reverse().map(mapDriverMessage);
+
+  return { dispatchId: dispatch.id, loadNumber: dispatch.load_number, messages, hasMore };
+}
+
+export async function loadMoreDriverMessages(dispatchId: string, beforeCreatedAt: string): Promise<{ messages: DriverMessage[]; hasMore: boolean }> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id, driver_id, organization_id").eq("id", dispatchId).maybeSingle();
+  if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {
+    throw new Error("This trip is not assigned to you.");
+  }
+
+  const { data } = await supabase.from("dispatch_messages").select(MESSAGE_SELECT).eq("dispatch_id", dispatchId).lt("created_at", beforeCreatedAt).order("created_at", { ascending: false }).limit(51);
+  const rows = (data ?? []) as unknown as Parameters<typeof mapDriverMessage>[0][];
+  const hasMore = rows.length > 50;
+  const messages = rows.slice(0, 50).reverse().map(mapDriverMessage);
+
+  return { messages, hasMore };
+}
+
+export async function sendDriverMessage(dispatchId: string, body: string) {
+  const trimmed = body.trim();
+  if (!trimmed) throw new Error("Message cannot be empty.");
+  if (trimmed.length > 2000) throw new Error("Message is too long (2000 characters max).");
+
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id, load_id, driver_id, organization_id").eq("id", dispatchId).maybeSingle();
+  if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {
+    throw new Error("This trip is not assigned to you.");
+  }
+
+  const { error } = await supabase.from("dispatch_messages").insert({
+    organization_id: identity.organizationId,
+    dispatch_id: dispatchId,
+    load_id: dispatch.load_id,
+    driver_id: identity.driverId,
+    sender_type: "driver",
+    sender_profile_id: null,
+    body: trimmed,
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/driver-portal/messages");
+}
+
+export async function markMyMessagesRead(dispatchId: string) {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id, driver_id, organization_id").eq("id", dispatchId).maybeSingle();
+  if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {
+    throw new Error("This trip is not assigned to you.");
+  }
+
+  // Narrow, column-specific update -- only ever read_at, only ever
+  // staff-sent rows (the ones the driver could plausibly be "reading").
+  await supabase.from("dispatch_messages").update({ read_at: new Date().toISOString() }).eq("dispatch_id", dispatchId).eq("sender_type", "staff").is("read_at", null);
+  revalidatePath("/driver-portal/messages");
+}

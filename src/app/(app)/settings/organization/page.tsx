@@ -148,6 +148,38 @@ export default async function OrganizationSettingsPage() {
               defaultValue={org?.gps_automation_mode ?? "suggest"}
               options={AUTOMATION_MODE_OPTIONS}
             />
+
+            <SectionHeading
+              title="Route Deviation Monitoring"
+              description="Flags a dispatch as OFF ROUTE when a truck's GPS is sustainedly, materially away from its calculated route -- not a single noisy ping. Off by default for every organization; turn on once you're comfortable with the thresholds below (Phase 2D)."
+            />
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 text-[13px] font-medium text-desktop-text">
+                <input type="checkbox" name="route_deviation_enabled" defaultChecked={org?.route_deviation_enabled ?? false} className="size-4 rounded border-border" />
+                Route Deviation Monitoring enabled
+              </label>
+            </div>
+            <FormField
+              label="Warning distance (miles)"
+              name="route_deviation_warning_mi"
+              type="number"
+              step="0.05"
+              defaultValue={org?.route_deviation_warning_m != null ? Math.round((org.route_deviation_warning_m / 1609.344) * 100) / 100 : 0.5}
+            />
+            <FormField
+              label="Confirmed deviation distance (miles)"
+              name="route_deviation_confirmed_mi"
+              type="number"
+              step="0.05"
+              defaultValue={org?.route_deviation_confirmed_m != null ? Math.round((org.route_deviation_confirmed_m / 1609.344) * 100) / 100 : 1.0}
+            />
+            <FormField
+              label="Recovery distance (miles)"
+              name="route_deviation_recovery_mi"
+              type="number"
+              step="0.05"
+              defaultValue={org?.route_deviation_recovery_m != null ? Math.round((org.route_deviation_recovery_m / 1609.344) * 100) / 100 : 0.25}
+            />
           </FormGrid>
         </fieldset>
       </FormCard>

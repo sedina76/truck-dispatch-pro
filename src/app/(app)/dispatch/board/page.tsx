@@ -7,12 +7,14 @@ import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { calculateDetention } from "@/lib/dispatch/detention";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { boardRetentionOrFilter } from "@/lib/dispatch/board-retention";
 
 type DispatchRow = {
   id: string;
   status: string;
   load_id: string;
-  carrier_net_amount: number;
+  delivered_at: string | null;
   loads: { load_number: string } | null;
   carriers: { legal_name: string } | null;
   trucks: { unit_number: string } | null;
@@ -40,6 +42,15 @@ type RouteIntelRow = {
   updated_at: string;
 };
 
+type RouteDeviationRow = {
+  dispatch_id: string;
+  state: string;
+  calculation_status: string;
+  distance_from_route_m: number | null;
+  dismissed_at: string | null;
+  updated_at: string;
+};
+
 const BEFORE_PICKUP = new Set(["assigned", "accepted", "en_route_to_pickup"]);
 const BEFORE_DELIVERY = new Set(["assigned", "accepted", "en_route_to_pickup", "at_pickup", "loaded", "en_route_to_delivery"]);
 const DELIVERED_LIKE = new Set(["delivered", "completed"]);
@@ -47,12 +58,32 @@ const DELIVERED_LIKE = new Set(["delivered", "completed"]);
 export default async function DispatchBoardPage() {
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // Phase 2G.11: carrier_net_amount dropped from this select -- 0068's
+  // writer cutover stopped populating it on `dispatches`
+  // (dispatch_financials is authoritative now), and this page previously
+  // had NO role gating at all, so every role -- including driver/viewer --
+  // was fetching and rendering it. Fixed both problems together: the
+  // operational board query below never asks for a financial column, and
+  // the real values are fetched from dispatch_financials in a SEPARATE
+  // query issued only when canSeeFinancials.
+  // Phase 2I.1 (Part A): the ACTIVE Dispatch Board excludes delivered/
+  // completed dispatches once they're more than 24h past delivered_at --
+  // query-level only (see board-retention.ts's own header comment for the
+  // full "fail open on null" reasoning). The load/dispatch record itself
+  // is never touched, archived, or hidden anywhere else -- Load Detail,
+  // Billing, Invoices, Reports, Driver history, and Driver Portal all
+  // keep reading the exact same dispatches/loads rows with no filter at
+  // all, unaffected by this query.
   const [{ data }, { data: org }] = await Promise.all([
     supabase
       .from("dispatches")
       .select(
-        "id, status, load_id, carrier_net_amount, loads(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
+        "id, status, load_id, delivered_at, loads(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
       )
+      .or(boardRetentionOrFilter())
       .order("dispatched_at", { ascending: false }),
     supabase.from("organizations").select("pickup_detention_free_minutes, delivery_detention_free_minutes").single(),
   ]);
@@ -60,6 +91,18 @@ export default async function DispatchBoardPage() {
   const dispatches = (data ?? []) as unknown as DispatchRow[];
   const loadIds = dispatches.map((d) => d.load_id);
   const dispatchIds = dispatches.map((d) => d.id);
+
+  const netAmountByDispatch = new Map<string, number>();
+  if (canSeeFinancials && dispatchIds.length > 0) {
+    const { data: financialsRows, error: financialsError } = await supabase
+      .from("dispatch_financials")
+      .select("dispatch_id, carrier_net_amount")
+      .in("dispatch_id", dispatchIds);
+    if (financialsError) console.warn("[dispatch board] dispatch_financials unavailable:", financialsError);
+    for (const row of (financialsRows ?? []) as { dispatch_id: string; carrier_net_amount: number }[]) {
+      netAmountByDispatch.set(row.dispatch_id, Number(row.carrier_net_amount));
+    }
+  }
 
   // Phase 2C (0060_route_intelligence.sql) -- batched, degradable: a
   // not-yet-applied migration just means every card shows no ETA badge,
@@ -78,6 +121,42 @@ export default async function DispatchBoardPage() {
   const routeByDispatch = new Map<string, RouteIntelRow>();
   for (const row of (routeRowsRaw ?? []) as RouteIntelRow[]) {
     if (!routeByDispatch.has(row.dispatch_id)) routeByDispatch.set(row.dispatch_id, row);
+  }
+
+  // Phase 2D (0062_route_deviation.sql) -- same degradable/batched/dedup
+  // pattern as route intelligence above, deliberately a SEPARATE query
+  // (not bundled) so migration 0062 landing independently of 0060 can
+  // never take the rest of the board down with it.
+  const { data: deviationRowsRaw, error: deviationError } =
+    dispatchIds.length > 0
+      ? await supabase
+          .from("dispatch_route_deviation_state")
+          .select("dispatch_id, state, calculation_status, distance_from_route_m, dismissed_at, updated_at")
+          .in("dispatch_id", dispatchIds)
+          .order("updated_at", { ascending: false })
+      : { data: [] as RouteDeviationRow[], error: null };
+  if (deviationError) console.warn("[dispatch board] route deviation unavailable (likely migration 0062 not applied yet):", deviationError);
+  const deviationByDispatch = new Map<string, RouteDeviationRow>();
+  for (const row of (deviationRowsRaw ?? []) as RouteDeviationRow[]) {
+    if (!deviationByDispatch.has(row.dispatch_id)) deviationByDispatch.set(row.dispatch_id, row);
+  }
+
+  // Phase 2E (0063_operational_exceptions.sql) -- same degradable/batched
+  // pattern: a compact "active exception count" per dispatch, never a
+  // second detection engine. If migration 0063 isn't applied yet, every
+  // card simply shows 0 (no indicator) -- the rest of the board is
+  // completely unaffected (spec section 41).
+  const exceptionCountByDispatch = new Map<string, number>();
+  if (dispatchIds.length > 0) {
+    const { data: exceptionRows, error: exceptionError } = await supabase
+      .from("operational_exceptions")
+      .select("dispatch_id")
+      .in("dispatch_id", dispatchIds)
+      .neq("status", "resolved");
+    if (exceptionError) console.warn("[dispatch board] operational exceptions unavailable (likely migration 0063 not applied yet):", exceptionError);
+    for (const row of (exceptionRows ?? []) as { dispatch_id: string }[]) {
+      exceptionCountByDispatch.set(row.dispatch_id, (exceptionCountByDispatch.get(row.dispatch_id) ?? 0) + 1);
+    }
   }
 
   // Batched, not per-card -- one query for every load's stops, one for POD
@@ -136,7 +215,7 @@ export default async function DispatchBoardPage() {
   const completedCount = dispatches.filter((d) => DELIVERED_LIKE.has(d.status)).length;
   const totalNet = dispatches
     .filter((d) => d.status !== "cancelled")
-    .reduce((sum, d) => sum + Number(d.carrier_net_amount), 0);
+    .reduce((sum, d) => sum + (netAmountByDispatch.get(d.id) ?? 0), 0);
 
   const cards: DispatchCard[] = dispatches.map((d) => {
     const stops = stopsByLoad.get(d.load_id);
@@ -166,9 +245,24 @@ export default async function DispatchBoardPage() {
       if (soonest != null) exceptions.push(`Detention in ${soonest}m`);
     }
 
+    // Route deviation badge (Phase 2D, spec section 30). Only the
+    // CONFIRMED state joins the board -- a soft "candidate" ping should not
+    // dominate the board (spec section 30/31), it's drawer-only detail. A
+    // dismissed exception (false positive, spec section 37) is also
+    // suppressed here even though the underlying row is still 'off_route'.
+    const deviation = deviationByDispatch.get(d.id) ?? null;
+    if (deviation?.state === "off_route" && deviation.calculation_status === "ok" && !deviation.dismissed_at) {
+      exceptions.unshift(deviation.distance_from_route_m != null ? `OFF ROUTE · ${Math.round(deviation.distance_from_route_m / 1609.344 * 10) / 10} mi` : "OFF ROUTE");
+    }
+
     // Route-intelligence risk badge (spec section 22) -- a late load must
     // be easier to spot than an on-time one, so LATE/AT RISK also joins
     // the same exceptions array (not a second, competing badge system).
+    // Placed AFTER the off-route unshift above so LATE/AT RISK ends up
+    // visually first, OFF ROUTE second -- matches spec section 30's
+    // suggested priority (LATE, OFF ROUTE, DETENTION, AT RISK, POD
+    // MISSING). Route status and schedule risk are independent dimensions
+    // (spec section 56) -- both can and do show at once.
     const route = routeByDispatch.get(d.id) ?? null;
     const riskStatus = route?.risk_status ?? null;
     if (riskStatus === "late" && route?.schedule_variance_minutes != null) {
@@ -184,7 +278,7 @@ export default async function DispatchBoardPage() {
       carrier_name: d.carriers?.legal_name ?? "--",
       truck_unit: d.trucks?.unit_number ?? "--",
       driver_name: d.drivers ? `${d.drivers.first_name} ${d.drivers.last_name}` : "--",
-      net_amount: Number(d.carrier_net_amount),
+      net_amount: canSeeFinancials ? (netAmountByDispatch.get(d.id) ?? 0) : null,
       pickup_city: pickup?.city ?? null,
       pickup_state: pickup?.state ?? null,
       delivery_city: delivery?.city ?? null,
@@ -202,6 +296,10 @@ export default async function DispatchBoardPage() {
       eta_timezone: resolveStopTimezone(stopTzByLoad.get(d.load_id)?.delivery ?? stopTzByLoad.get(d.load_id)?.pickup ?? null, organizationTimezone).timezone,
       miles_remaining_meters: route?.route_distance_meters ?? null,
       risk_status: (riskStatus as DispatchCard["risk_status"]) ?? (route ? "unknown" : null),
+      // Independent of risk_status (spec section 56) -- drives its own
+      // board filter (spec section 31), never overloaded onto `risk`.
+      off_route: deviation?.state === "off_route" && deviation.calculation_status === "ok" && !deviation.dismissed_at,
+      active_exception_count: exceptionCountByDispatch.get(d.id) ?? 0,
     };
   });
 
@@ -219,7 +317,7 @@ export default async function DispatchBoardPage() {
         <DesktopKpiBox label="Total Dispatches" value={dispatches.length} />
         <DesktopKpiBox label="Active" value={activeCount} />
         <DesktopKpiBox label="Delivered" value={completedCount} tone="success" />
-        <DesktopKpiBox label="Carrier Net Value" value={`$${totalNet.toLocaleString()}`} />
+        {canSeeFinancials && <DesktopKpiBox label="Carrier Net Value" value={`$${totalNet.toLocaleString()}`} />}
       </DesktopKpiStrip>
 
       {dispatches.length === 0 ? (

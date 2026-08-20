@@ -65,14 +65,22 @@ export default async function CarrierSettlementDetailPage({ params }: { params: 
   const { id } = await params;
   const supabase = await createClient();
 
+  // Phase 2G.12: factoring_company_name dropped from the carriers() embed
+  // -- carrier_financials is authoritative now, fetched separately below
+  // once carrier_id is known. This whole route is already layout-guarded
+  // to FINANCIAL_ROLES (settlements/layout.tsx).
   const { data: settlement } = await supabase
     .from("settlements")
     .select(
-      "id, settlement_number, carrier_id, period_start, period_end, status, gross_amount, adjustments_amount, deductions_amount, advances_amount, quick_pay_enabled, quick_pay_rate_percent, quick_pay_fee_amount, net_amount, amount_paid, balance_due, created_at, approved_at, void_reason, payee_type, payee_name, carriers(legal_name, factoring_company_name)"
+      "id, settlement_number, carrier_id, period_start, period_end, status, gross_amount, adjustments_amount, deductions_amount, advances_amount, quick_pay_enabled, quick_pay_rate_percent, quick_pay_fee_amount, net_amount, amount_paid, balance_due, created_at, approved_at, void_reason, payee_type, payee_name, carriers(legal_name)"
     )
     .eq("id", id)
     .single();
   if (!settlement) notFound();
+  const carrierIdForSettlement = (settlement as unknown as { carrier_id: string }).carrier_id;
+  const { data: carrierFinancials } = carrierIdForSettlement
+    ? await supabase.from("carrier_financials").select("factoring_company_name").eq("carrier_id", carrierIdForSettlement).maybeSingle()
+    : { data: null };
 
   const row = settlement as unknown as {
     id: string;
@@ -96,7 +104,7 @@ export default async function CarrierSettlementDetailPage({ params }: { params: 
     void_reason: string | null;
     payee_type: string;
     payee_name: string | null;
-    carriers: { legal_name: string; factoring_company_name: string | null } | null;
+    carriers: { legal_name: string } | null;
   };
   const isDraft = row.status === "draft" || row.status === "pending";
   const canPay = row.status === "approved" || row.status === "partially_paid";
@@ -604,7 +612,7 @@ export default async function CarrierSettlementDetailPage({ params }: { params: 
                   defaultValue={row.payee_type}
                   options={[
                     { value: "carrier", label: `Carrier -- ${row.carriers?.legal_name ?? ""}` },
-                    ...(row.carriers?.factoring_company_name ? [{ value: "factor", label: `Factoring Company -- ${row.carriers.factoring_company_name}` }] : []),
+                    ...(carrierFinancials?.factoring_company_name ? [{ value: "factor", label: `Factoring Company -- ${carrierFinancials.factoring_company_name}` }] : []),
                   ]}
                 />
                 <Button type="submit" size="sm" variant="outline">Save</Button>

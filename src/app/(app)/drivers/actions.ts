@@ -57,12 +57,36 @@ function driverValues(formData: FormData) {
     passport_expiry_date: emptyToNull(formData.get("passport_expiry_date")),
     work_authorization_status: emptyToNull(formData.get("work_authorization_status")),
     work_authorization_expiry_date: emptyToNull(formData.get("work_authorization_expiry_date")),
-    // Payroll
-    pay_type: emptyToNull(formData.get("pay_type")),
-    pay_rate: toNumber(formData.get("pay_rate")),
+    // Payroll -- pay_type/pay_rate deliberately excluded here, see
+    // writeDriverCompensation() below (Phase 2G.10 writer cutover).
     direct_deposit_bank_name: emptyToNull(formData.get("direct_deposit_bank_name")),
     notes: emptyToNull(formData.get("notes")),
   };
+}
+
+// NOTE: requires 0067 applied (driver_compensation must exist) -- ships in
+// the same deploy as 0067/0068, never before.
+//
+// Phase 2G.12: the Payroll section (pay_type/pay_rate inputs) is now gated
+// to canSeeFinancials on Driver Detail -- driver/viewer submitting a save
+// for some OTHER field on the same page (phone, CDL info, ...) send a
+// FormData with pay_type/pay_rate simply absent, not blank. formData.has()
+// distinguishes that from "the field was present and the user cleared it"
+// -- only keys actually submitted are included in the upsert, so an
+// unauthorized-role save can never blank out a driver's real compensation
+// data it was never shown in the first place.
+async function writeDriverCompensation(supabase: Awaited<ReturnType<typeof createClient>>, driverId: string, organizationId: string, formData: FormData) {
+  if (!formData.has("pay_type") && !formData.has("pay_rate")) return;
+  const { error } = await supabase.from("driver_compensation").upsert(
+    {
+      driver_id: driverId,
+      organization_id: organizationId,
+      ...(formData.has("pay_type") ? { pay_type: emptyToNull(formData.get("pay_type")) } : {}),
+      ...(formData.has("pay_rate") ? { pay_rate: toNumber(formData.get("pay_rate")) } : {}),
+    },
+    { onConflict: "driver_id" }
+  );
+  if (error) throw new Error(error.message);
 }
 
 // Bespoke rather than built on the generic insertRecord() helper: SSN needs
@@ -100,6 +124,8 @@ export async function createDriver(formData: FormData) {
     .single();
   if (error) throw new Error(error.message);
 
+  await writeDriverCompensation(supabase, data.id, organizationId, formData);
+
   if (ssn) {
     const { error: piiError } = await supabase.rpc("set_driver_pii", {
       p_driver_id: data.id,
@@ -119,6 +145,9 @@ export async function createDriver(formData: FormData) {
 }
 
 export async function updateDriver(id: string, formData: FormData) {
+  const supabase = await createClient();
+  const organizationId = await getCurrentOrgId();
+  await writeDriverCompensation(supabase, id, organizationId, formData);
   await updateRecord("drivers", id, driverValues(formData), "/drivers");
 }
 

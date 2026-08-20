@@ -64,6 +64,7 @@ export type TripLoadStop = {
   scheduled_at: string | null;
   arrived_at: string | null;
   departed_at: string | null;
+  timezone: string | null;
 };
 
 export type TripRow = {
@@ -74,13 +75,14 @@ export type TripRow = {
   load_number: string;
   load_status: string;
   total_miles: number | null;
-  rate: number;
   carrier_net_amount: number;
   truck_unit: string | null;
   trailer_unit: string | null;
   partner_name: string | null;
   pickup_date: string | null;
+  pickup_date_timezone: string | null;
   delivery_date: string | null;
+  delivery_date_timezone: string | null;
   delivery_actual_at: string | null;
   pod_status: PodStatus;
 };

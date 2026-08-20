@@ -1,24 +1,28 @@
 import Link from "next/link";
+import { AuthShell } from "@/components/auth/auth-shell";
+import { AuthCard } from "@/components/auth/auth-card";
 import { SignupForm } from "./signup-form";
 
 export default function SignupPage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Create your account</h1>
-        <p className="mt-1 text-sm text-[var(--color-text-muted)]">
-          You&apos;ll set up your dispatch company on the next step.
-        </p>
-      </div>
+    <AuthShell centered>
+      <AuthCard>
+        <div className="space-y-5">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-[#1a1a18]">Create Your Account</h1>
+            <p className="mt-1 text-sm text-[#6b6b64]">Join thousands of trucking companies running smarter.</p>
+          </div>
 
-      <SignupForm />
+          <SignupForm />
 
-      <p className="text-center text-sm text-[var(--color-text-muted)]">
-        Already have an account?{" "}
-        <Link href="/login" className="font-medium text-[var(--color-brand)]">
-          Sign in
-        </Link>
-      </p>
-    </div>
+          <p className="text-center text-sm text-[#6b6b64]">
+            Already have an account?{" "}
+            <Link href="/login" className="font-medium text-[#1c54b8] hover:underline">
+              Sign in
+            </Link>
+          </p>
+        </div>
+      </AuthCard>
+    </AuthShell>
   );
 }

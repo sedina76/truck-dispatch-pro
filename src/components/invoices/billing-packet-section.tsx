@@ -1,8 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
+import { GeneratePacketButton } from "@/components/invoices/generate-packet-button";
+import { SendBillingPacketForm } from "@/components/invoices/send-billing-packet-form";
 import type { PodStatus } from "@/lib/documents/pod-status";
-import { generatePacket, getBillingPacketSignedUrl, sendBillingPacket } from "@/app/(app)/invoices/billing-packet-actions";
+import { getBillingPacketSignedUrl } from "@/app/(app)/invoices/billing-packet-actions";
 
 type BillingPacket = {
   id: string;
@@ -114,13 +115,7 @@ export function BillingPacketSection({
         )}
 
         <div className="flex flex-wrap items-center gap-2">
-          {readyToSend && (
-            <form action={generatePacket.bind(null, invoiceId)}>
-              <Button type="submit" size="sm">
-                {packet ? "Regenerate Packet" : "Generate Billing Packet"}
-              </Button>
-            </form>
-          )}
+          {readyToSend && <GeneratePacketButton invoiceId={invoiceId} label={packet ? "Regenerate Packet" : "Generate Billing Packet"} />}
 
           {packet && (
             <>
@@ -131,21 +126,7 @@ export function BillingPacketSection({
         </div>
 
         {packet && !packetOutdated && invoiceStatus !== "void" && (
-          <form action={sendBillingPacket.bind(null, invoiceId, packet.id)} className="flex flex-wrap items-end gap-2 border-t border-border pt-3">
-            <div className="flex-1 space-y-1">
-              <label className="text-xs font-medium">Send to (billing contact)</label>
-              <input
-                name="recipient_email"
-                type="email"
-                required
-                defaultValue={defaultRecipientEmail ?? ""}
-                className="h-9 w-full min-w-[220px] rounded-lg border border-border bg-card px-2.5 text-sm shadow-elevation-1 outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
-              />
-            </div>
-            <Button type="submit" size="sm" variant="success">
-              Send Billing Packet
-            </Button>
-          </form>
+          <SendBillingPacketForm invoiceId={invoiceId} packetId={packet.id} defaultRecipientEmail={defaultRecipientEmail} />
         )}
       </CardContent>
     </Card>

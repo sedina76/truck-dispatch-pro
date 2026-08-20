@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Truck, FileText, Receipt, Wallet, History } from "lucide-react";
+import { Home, Truck, FileText, Receipt, Wallet, History, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
   { href: "/driver-portal", label: "Home", icon: Home },
   { href: "/driver-portal/trip", label: "Trip", icon: Truck },
+  { href: "/driver-portal/messages", label: "Messages", icon: MessageSquare },
   { href: "/driver-portal/documents", label: "Docs", icon: FileText },
   { href: "/driver-portal/expenses", label: "Expenses", icon: Receipt },
   { href: "/driver-portal/settlements", label: "Pay", icon: Wallet },

@@ -41,6 +41,11 @@ export default function DriverPortalLoginPage() {
         <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <Truck className="size-6" />
         </div>
+        {/* Shares Truck Dispatch Pro branding (spec section 16) without
+            merging into the office/staff auth workflow -- this page still
+            talks to /api/driver-portal/login exclusively (phone+PIN
+            against verify_driver_portal_login()), never Supabase Auth. */}
+        <p className="text-xs font-medium tracking-wide text-muted-foreground">Truck Dispatch Pro</p>
         <h1 className="text-xl font-semibold tracking-tight">Driver Portal</h1>
         <p className="text-sm text-muted-foreground">Sign in with your phone number and PIN.</p>
       </div>

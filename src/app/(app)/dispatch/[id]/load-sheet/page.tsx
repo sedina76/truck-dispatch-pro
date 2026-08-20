@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getDriverLoadSheetData } from "@/lib/dispatch/load-sheet";
+import { getDriverLoadSheetData, type LoadSheetStop } from "@/lib/dispatch/load-sheet";
 import { PrintInvoiceButton } from "@/components/invoices/print-invoice-button";
+import { formatStopDateTime } from "@/lib/timezone/format";
 
 // Driver-Safe Load Sheet (spec section 12) -- same browser-print pattern
 // already used for invoices/receipts/settlements (window.print(), no PDF
@@ -76,7 +77,7 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StopBlock({ title, stop }: { title: string; stop: { companyName: string | null; addressLine1: string | null; city: string | null; state: string | null; scheduledAt: string | null; referenceNumber: string | null } | null }) {
+function StopBlock({ title, stop }: { title: string; stop: LoadSheetStop | null }) {
   return (
     <div>
       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">{title}</p>
@@ -85,7 +86,7 @@ function StopBlock({ title, stop }: { title: string; stop: { companyName: string
           <p className="font-medium">{stop.companyName ?? "--"}</p>
           {stop.addressLine1 && <p className="text-neutral-600">{stop.addressLine1}</p>}
           <p className="text-neutral-600">{[stop.city, stop.state].filter(Boolean).join(", ") || "--"}</p>
-          {stop.scheduledAt && <p className="text-neutral-600">{new Date(stop.scheduledAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</p>}
+          {stop.scheduledAt && <p className="text-neutral-600">{formatStopDateTime(stop.scheduledAt, stop.timezone, { includeYear: true })}</p>}
           {stop.referenceNumber && <p className="text-xs text-neutral-500">Ref #: {stop.referenceNumber}</p>}
         </div>
       ) : (

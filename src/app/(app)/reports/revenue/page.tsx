@@ -6,13 +6,19 @@ import { EmptyState } from "@/components/ui/empty-state";
 export default async function RevenueReportPage() {
   const supabase = await createClient();
 
-  const [{ data: loads }, { data: payments }] = await Promise.all([
-    supabase.from("loads").select("rate, created_at"),
+  // Phase 2G.12 (found during the final legacy-column search): `rate`
+  // dropped from this select -- load_financials is authoritative now
+  // (0068 writer cutover). No additional role gating needed -- this whole
+  // route is already layout-guarded to FINANCIAL_ROLES (reports/layout.tsx).
+  const [{ data: loads }, { data: payments }, { data: loadFinancials }] = await Promise.all([
+    supabase.from("loads").select("id, created_at"),
     // status = 'posted' only -- a voided payment was never really
     // collected, matching the same rule get_ar_summary() uses everywhere
     // else this is calculated.
     supabase.from("payments").select("amount, received_at").eq("status", "posted"),
+    supabase.from("load_financials").select("load_id, rate"),
   ]);
+  const rateByLoadId = new Map((loadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
 
   const months: { key: string; label: string; booked: number; collected: number }[] = [];
   for (let i = 5; i >= 0; i--) {
@@ -31,7 +37,7 @@ export default async function RevenueReportPage() {
     const d = new Date(load.created_at);
     const key = `${d.getFullYear()}-${d.getMonth()}`;
     const month = months.find((m) => m.key === key);
-    if (month) month.booked += Number(load.rate);
+    if (month) month.booked += rateByLoadId.get(load.id) ?? 0;
   }
   for (const payment of payments ?? []) {
     const d = new Date(payment.received_at);

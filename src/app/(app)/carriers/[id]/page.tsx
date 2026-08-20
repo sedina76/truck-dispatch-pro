@@ -9,7 +9,10 @@ import { CarrierSettlementSummarySection } from "@/components/carriers/carrier-s
 import { CarrierCompanyProfitabilitySection } from "@/components/carriers/carrier-company-profitability-section";
 import { CarrierExpenseSummarySection } from "@/components/carriers/carrier-expense-summary-section";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
+// Phase 2G.9 (item 3): same treatment as Customer/Broker Detail -- Carriers
+// is Business, open to every role, no layout guard.
 export default async function CarrierDetailPage({
   params,
 }: {
@@ -18,19 +21,31 @@ export default async function CarrierDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
   const { data: carrier } = await supabase.from("carriers").select("*").eq("id", id).single();
   if (!carrier) notFound();
 
-  const [{ data: drivers }, { data: trucks }, { data: trailers }, { data: pendingAdvances }] = await Promise.all([
+  const [{ data: drivers }, { data: trucks }, { data: trailers }, { data: pendingAdvances }, { data: carrierFinancials }] = await Promise.all([
     supabase.from("drivers").select("id, first_name, last_name, status").eq("carrier_id", id),
     supabase.from("trucks").select("id, unit_number, status").eq("carrier_id", id),
     supabase.from("trailers").select("id, unit_number, status").eq("carrier_id", id),
-    supabase
-      .from("dispatch_advances")
-      .select("id, expense_type, description, amount, paid_date")
-      .eq("carrier_id", id)
-      .eq("status", "pending")
-      .order("paid_date", { ascending: false }),
+    canSeeFinancials
+      ? supabase
+          .from("dispatch_advances")
+          .select("id, expense_type, description, amount, paid_date")
+          .eq("carrier_id", id)
+          .eq("status", "pending")
+          .order("paid_date", { ascending: false })
+      : Promise.resolve({ data: [] as never[] }),
+    // Phase 2G.12: dispatch_fee_percentage/payment_terms_days moved to
+    // carrier_financials (writer already cut over in 2G.10) -- carriers'
+    // own copies are stale the moment either is edited. Fetched only for
+    // canSeeFinancials, not merely hidden in JSX below.
+    canSeeFinancials
+      ? supabase.from("carrier_financials").select("dispatch_fee_percentage, payment_terms_days, factoring_company_name").eq("carrier_id", id).maybeSingle()
+      : Promise.resolve({ data: null }),
   ]);
 
   const pendingAdvanceTotal = (pendingAdvances ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
@@ -54,28 +69,32 @@ export default async function CarrierDetailPage({
           <FormField label="Email" name="email" type="email" defaultValue={carrier.email} />
           <FormField label="City" name="city" defaultValue={carrier.city} />
           <FormField label="State" name="state" defaultValue={carrier.state} />
-          <FormField
-            label="Dispatch fee %"
-            name="dispatch_fee_percentage"
-            type="number"
-            step="0.01"
-            defaultValue={carrier.dispatch_fee_percentage}
-            required
-          />
-          <FormField
-            label="Payment terms (days)"
-            name="payment_terms_days"
-            type="number"
-            defaultValue={carrier.payment_terms_days}
-          />
+          {canSeeFinancials && (
+            <>
+              <FormField
+                label="Dispatch fee %"
+                name="dispatch_fee_percentage"
+                type="number"
+                step="0.01"
+                defaultValue={carrierFinancials?.dispatch_fee_percentage}
+                required
+              />
+              <FormField
+                label="Payment terms (days)"
+                name="payment_terms_days"
+                type="number"
+                defaultValue={carrierFinancials?.payment_terms_days}
+              />
+            </>
+          )}
         </FormGrid>
       </FormCard>
 
-      <CarrierSettlementSummarySection carrierId={id} />
+      {canSeeFinancials && <CarrierSettlementSummarySection carrierId={id} />}
 
-      <CarrierCompanyProfitabilitySection carrierId={id} />
+      {canSeeFinancials && <CarrierCompanyProfitabilitySection carrierId={id} />}
 
-      <CarrierExpenseSummarySection carrierId={id} />
+      {canSeeFinancials && <CarrierExpenseSummarySection carrierId={id} />}
 
       <ShareExternalProfileSection entity={{ type: "carrier", carrierId: id }} />
 
@@ -85,31 +104,33 @@ export default async function CarrierDetailPage({
         <RelatedList title="Trailers" emptyLabel="No trailers yet" items={(trailers ?? []).map((t) => ({ id: t.id, label: t.unit_number, status: t.status }))} href="/trailers" />
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-4 shadow-elevation-1">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium">
-            Pending Advances{pendingAdvanceTotal > 0 && <span className="ml-2 text-warning">${pendingAdvanceTotal.toLocaleString()}</span>}
-          </p>
-          <Link href={`/advances/new?carrier_id=${id}`} className="text-xs font-medium text-primary hover:underline">
-            Add Advance &rarr;
-          </Link>
+      {canSeeFinancials && (
+        <div className="rounded-xl border border-border bg-card p-4 shadow-elevation-1">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">
+              Pending Advances{pendingAdvanceTotal > 0 && <span className="ml-2 text-warning">${pendingAdvanceTotal.toLocaleString()}</span>}
+            </p>
+            <Link href={`/advances/new?carrier_id=${id}`} className="text-xs font-medium text-primary hover:underline">
+              Add Advance &rarr;
+            </Link>
+          </div>
+          {!pendingAdvances || pendingAdvances.length === 0 ? (
+            <p className="mt-2 text-sm text-muted-foreground">No pending advances for this carrier.</p>
+          ) : (
+            <ul className="mt-2 divide-y divide-border">
+              {pendingAdvances.map((a) => (
+                <li key={a.id} className="flex items-center justify-between py-2 text-sm">
+                  <Link href={`/advances/${a.id}`} className="min-w-0 truncate capitalize hover:underline">
+                    {a.expense_type.replace(/_/g, " ")}
+                    {a.description ? ` -- ${a.description}` : ""}
+                  </Link>
+                  <span className="shrink-0 font-medium">${Number(a.amount).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        {!pendingAdvances || pendingAdvances.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">No pending advances for this carrier.</p>
-        ) : (
-          <ul className="mt-2 divide-y divide-border">
-            {pendingAdvances.map((a) => (
-              <li key={a.id} className="flex items-center justify-between py-2 text-sm">
-                <Link href={`/advances/${a.id}`} className="min-w-0 truncate capitalize hover:underline">
-                  {a.expense_type.replace(/_/g, " ")}
-                  {a.description ? ` -- ${a.description}` : ""}
-                </Link>
-                <span className="shrink-0 font-medium">${Number(a.amount).toLocaleString()}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      )}
     </div>
   );
 }

@@ -21,16 +21,28 @@ export function DesktopKpiBox({
   tone = "neutral",
   href,
   sub,
+  dense,
 }: {
   label: string;
   value: string | number;
   tone?: Tone;
   href?: string;
   sub?: string;
+  // Dashboard-only knob (7-card financial row, see DesktopKpiStrip below)
+  // -- every other one of this component's ~30 call sites across the app
+  // omits this, so their padding/font sizing is byte-for-byte unchanged.
+  // Slightly tighter padding and label size, same value size (kept
+  // prominent), same borders/background/colors/tone map.
+  dense?: boolean;
 }) {
   const content = (
-    <div className="flex h-full flex-col justify-between rounded-md border border-desktop-border bg-desktop-panel px-3 py-2 transition-colors hover:border-primary/50">
-      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+    <div
+      className={cn(
+        "flex h-full flex-col justify-between rounded-md border border-desktop-border bg-desktop-panel transition-colors hover:border-primary/50",
+        dense ? "px-2 py-1.5" : "px-3 py-2"
+      )}
+    >
+      <p className={cn("font-semibold uppercase tracking-wide text-muted-foreground", dense ? "text-[9.5px] leading-tight" : "text-[10.5px]")}>{label}</p>
       <p className={cn("mt-1 text-lg font-semibold leading-tight tabular-nums", VALUE_TONE[tone])}>{value}</p>
       {sub && <p className="mt-0.5 text-[10.5px] text-muted-foreground">{sub}</p>}
     </div>
@@ -46,6 +58,6 @@ export function DesktopKpiBox({
   return content;
 }
 
-export function DesktopKpiStrip({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">{children}</div>;
+export function DesktopKpiStrip({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn("grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7", className)}>{children}</div>;
 }

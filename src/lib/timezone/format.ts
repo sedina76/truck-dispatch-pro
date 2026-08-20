@@ -42,6 +42,39 @@ export function formatStopDateTime(iso: string | null, timezone: string | null, 
   }
 }
 
+// Inverse of the display helpers above: given a stored UTC instant and the
+// stop's own timezone, returns the "YYYY-MM-DD"/"HH:mm" (24-hour) strings
+// an edit form's <input type="date">/<input type="time"> need to pre-fill
+// with the CORRECT local wall-clock values -- never a raw ISO-string slice
+// of the UTC instant, which silently shows the wrong calendar date/time
+// whenever the stop's local day differs from the UTC day (e.g. an 11:00 PM
+// Pacific appointment is already the next day in UTC). Round-trips
+// correctly back through zonedDateTimeToUtc().
+export function stopLocalDateInputValue(iso: string | null, timezone: string | null): string {
+  if (!iso) return "";
+  const tz = timezone ?? "UTC";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(iso));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+export function stopLocalTimeInputValue(iso: string | null, timezone: string | null): string {
+  if (!iso) return "";
+  const tz = timezone ?? "UTC";
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(iso));
+    const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
+    const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+    return `${hour === "24" ? "00" : hour}:${minute}`;
+  } catch {
+    return "";
+  }
+}
+
 // Formats an appointment window using ONE zone for both ends (spec
 // section 16: scheduled_at/scheduled_window_end always share a stop's
 // timezone in this schema).

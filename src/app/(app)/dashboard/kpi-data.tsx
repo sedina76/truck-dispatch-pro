@@ -52,7 +52,18 @@ const ACTIVE_DISPATCH_STATUSES = [
   "at_delivery",
 ];
 
-export async function getDashboardKpis(): Promise<KpiTileData[]> {
+// Phase 2G.9 (item 3): Dashboard is Command Center, open to every role, no
+// layout guard -- 5 of these 10 tiles (revenue/AR/collected/profit) are
+// financial. Computation is left unchanged (a delicate month-over-month/
+// sparkline calculation, not worth risking a subtle break under time
+// pressure) -- instead the 5 financial tile ids are filtered out of the
+// RETURNED array before this function's result ever reaches the page's
+// render tree, for driver/viewer. This mirrors the same "fetch
+// server-side, filter before crossing to the client" pattern already
+// established and accepted in getDispatchDrawerData().
+const FINANCIAL_TILE_IDS = new Set(["revenue-today", "outstanding-invoices", "ar-overdue", "collected-this-month", "profit-month"]);
+
+export async function getDashboardKpis(canSeeFinancials: boolean): Promise<KpiTileData[]> {
   const supabase = await createClient();
 
   const now = new Date();
@@ -62,27 +73,51 @@ export async function getDashboardKpis(): Promise<KpiTileData[]> {
   const startOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const startOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
 
-  const [loadsRes, dispatchesRes, driversRes, trucksRes, invoicesRes, complianceRes, expensesRes, advancesRes, arSummaryRes, postedPaymentsRes] =
-    await Promise.all([
-      supabase.from("loads").select("rate, status, created_at, updated_at"),
-      supabase
-        .from("dispatches")
-        .select("dispatch_fee_amount, status, dispatched_at, driver_id, truck_id"),
-      supabase.from("drivers").select("id, status"),
-      supabase.from("trucks").select("id, status"),
-      supabase.from("invoices").select("status, balance_due, issue_date"),
-      supabase.from("compliance_items").select("status"),
-      supabase.from("expenses").select("amount, expense_date"),
-      supabase.from("dispatch_advances").select("amount, status, updated_at"),
-      // Accounts Receivable canonical aggregate -- same function Finance ->
-      // Accounts Receivable, the Invoices list KPIs, and Reports all call,
-      // so these three tiles can never disagree with those pages.
-      supabase.rpc("get_ar_summary").single(),
-      supabase.from("payments").select("amount, received_at").eq("status", "posted"),
-    ]);
+  const [
+    loadsRes,
+    dispatchesRes,
+    driversRes,
+    trucksRes,
+    invoicesRes,
+    complianceRes,
+    expensesRes,
+    advancesRes,
+    arSummaryRes,
+    postedPaymentsRes,
+    loadFinancialsRes,
+    dispatchFinancialsRes,
+  ] = await Promise.all([
+    // Phase 2G.11: `rate` dropped from this select -- 0068's writer
+    // cutover (loads/create-actions.ts's create_load_with_stops RPC,
+    // loads/actions.ts) stopped populating loads.rate; load_financials is
+    // authoritative now, fetched separately below and merged in by id.
+    // Same "fetch server-side either way, filter the financial tiles out
+    // of the returned array" pattern this file already uses (Phase 2G.9)
+    // is kept as-is -- only the SOURCE of the values changes.
+    supabase.from("loads").select("id, status, created_at, updated_at"),
+    // dispatch_fee_amount dropped for the same reason -- dispatch_financials
+    // merged in below.
+    supabase.from("dispatches").select("id, status, dispatched_at, driver_id, truck_id"),
+    supabase.from("drivers").select("id, status"),
+    supabase.from("trucks").select("id, status"),
+    supabase.from("invoices").select("status, balance_due, issue_date"),
+    supabase.from("compliance_items").select("status"),
+    supabase.from("expenses").select("amount, expense_date"),
+    supabase.from("dispatch_advances").select("amount, status, updated_at"),
+    // Accounts Receivable canonical aggregate -- same function Finance ->
+    // Accounts Receivable, the Invoices list KPIs, and Reports all call,
+    // so these three tiles can never disagree with those pages.
+    supabase.rpc("get_ar_summary").single(),
+    supabase.from("payments").select("amount, received_at").eq("status", "posted"),
+    supabase.from("load_financials").select("load_id, rate"),
+    supabase.from("dispatch_financials").select("dispatch_id, dispatch_fee_amount"),
+  ]);
 
-  const loads = loadsRes.data ?? [];
-  const dispatches = dispatchesRes.data ?? [];
+  const loadRateById = new Map((loadFinancialsRes.data ?? []).map((r) => [r.load_id, Number(r.rate)]));
+  const dispatchFeeAmountById = new Map((dispatchFinancialsRes.data ?? []).map((r) => [r.dispatch_id, Number(r.dispatch_fee_amount)]));
+
+  const loads = (loadsRes.data ?? []).map((l) => ({ ...l, rate: loadRateById.get(l.id) ?? 0 }));
+  const dispatches = (dispatchesRes.data ?? []).map((d) => ({ ...d, dispatch_fee_amount: dispatchFeeAmountById.get(d.id) ?? 0 }));
   const drivers = driversRes.data ?? [];
   const trucks = trucksRes.data ?? [];
   const invoices = invoicesRes.data ?? [];
@@ -292,7 +327,7 @@ export async function getDashboardKpis(): Promise<KpiTileData[]> {
     },
   ];
 
-  return tiles;
+  return canSeeFinancials ? tiles : tiles.filter((t) => !FINANCIAL_TILE_IDS.has(t.id));
 }
 
 function toDelta(value: number | undefined, label: string): { value: number; label: string } | undefined {

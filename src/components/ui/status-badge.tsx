@@ -15,6 +15,7 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   converted: "success",
   hired: "success",
   verified: "success",
+  reconciled: "success",
   // warning
   incomplete: "warning",
   paused: "warning",
@@ -49,6 +50,8 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   uploaded: "info",
   // collections: collection_status
   not_started: "neutral",
+  unreconciled: "neutral",
+  partially_reconciled: "warning",
   contacted: "info",
   follow_up: "warning",
   promise_to_pay: "info",
@@ -68,6 +71,8 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   cancelled: "danger",
   void: "danger",
   disputed: "danger",
+  recourse: "danger",
+  chargeback: "danger",
   terminated: "danger",
   out_of_service: "danger",
   overdue: "danger",

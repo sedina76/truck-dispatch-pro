@@ -24,13 +24,19 @@ const REPORTS = [
 export default async function ReportsPage() {
   const supabase = await createClient();
 
-  const [{ data: loads }, { data: invoices }, { data: settlements }] = await Promise.all([
-    supabase.from("loads").select("rate, status"),
+  // Phase 2G.12 (found during the final legacy-column search): `rate`
+  // dropped from this select -- load_financials is authoritative now
+  // (0068 writer cutover). No additional role gating needed -- this whole
+  // route is already layout-guarded to FINANCIAL_ROLES (reports/layout.tsx).
+  const [{ data: loads }, { data: invoices }, { data: settlements }, { data: loadFinancials }] = await Promise.all([
+    supabase.from("loads").select("id, status"),
     supabase.from("invoices").select("total_amount, amount_paid"),
     supabase.from("settlements").select("net_amount, status"),
+    supabase.from("load_financials").select("load_id, rate"),
   ]);
+  const rateByLoadId = new Map((loadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
 
-  const totalBooked = (loads ?? []).reduce((sum, l) => sum + Number(l.rate), 0);
+  const totalBooked = (loads ?? []).reduce((sum, l) => sum + (rateByLoadId.get(l.id) ?? 0), 0);
   const totalCollected = (invoices ?? []).reduce((sum, i) => sum + Number(i.amount_paid), 0);
   const totalPayouts = (settlements ?? [])
     .filter((s) => s.status === "paid")

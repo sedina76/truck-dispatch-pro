@@ -3,9 +3,17 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { insertRecord } from "@/lib/actions/records";
+import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
+// Phase 2G.10 writer cutover: rate is written to load_financials, not
+// loads, in the same action as the base-table write below -- see
+// writeLoadFinancials(). rate_confirmation_number stays on loads (Phase
+// 2G.9 reclassification: operational, not financial). detention_rate/
+// layover_rate are not part of loadValues() at all -- confirmed by
+// inspection (2G.9/2G.10 full search) that no form in this app has ever
+// written them; they carry only their column default through every
+// existing load, so there is nothing to cut over for those two fields.
 function loadValues(formData: FormData) {
   return {
     load_number: String(formData.get("load_number")),
@@ -16,14 +24,33 @@ function loadValues(formData: FormData) {
     weight_lbs: toNumber(formData.get("weight_lbs")),
     equipment_type: emptyToNull(formData.get("equipment_type")),
     total_miles: toNumber(formData.get("total_miles")),
-    rate: toNumber(formData.get("rate")) ?? 0,
     rate_confirmation_number: emptyToNull(formData.get("rate_confirmation_number")),
     special_instructions: emptyToNull(formData.get("special_instructions")),
   };
 }
 
+// NOTE: requires 0067 applied (load_financials must exist) -- this
+// function and every caller below are meant to ship in the SAME deploy as
+// 0067/0068, never before. Upsert, not insert: on create, load_financials
+// has no row yet for this load_id; on update, it already does (backfilled
+// by 0067, or created by a prior call to this same function).
+async function writeLoadFinancials(supabase: Awaited<ReturnType<typeof createClient>>, loadId: string, organizationId: string, formData: FormData) {
+  const rate = toNumber(formData.get("rate")) ?? 0;
+  const { error } = await supabase
+    .from("load_financials")
+    .upsert({ load_id: loadId, organization_id: organizationId, rate }, { onConflict: "load_id" });
+  if (error) throw new Error(error.message);
+}
+
 export async function createLoad(formData: FormData) {
-  await insertRecord("loads", loadValues(formData), "/loads");
+  const supabase = await createClient();
+  const organizationId = await getCurrentOrgId();
+  const { data, error } = await supabase.from("loads").insert({ ...loadValues(formData), organization_id: organizationId }).select("id").single();
+  if (error) throw new Error(error.message);
+  await writeLoadFinancials(supabase, data.id, organizationId, formData);
+  await supabase.rpc("log_activity", { p_entity_type: "load", p_entity_id: data.id, p_action: "created" });
+  revalidatePath("/loads");
+  redirect("/loads");
 }
 
 // Bespoke rather than the generic updateRecord() helper: this needs to know
@@ -37,7 +64,15 @@ export async function createLoad(formData: FormData) {
 // trigger's condition was just met so it can route somewhere useful.
 export async function updateLoad(id: string, formData: FormData) {
   const supabase = await createClient();
+  const organizationId = await getCurrentOrgId();
   const { data: before } = await supabase.from("loads").select("status").eq("id", id).single();
+
+  // Phase 2G.10: load_financials (rate) is written BEFORE the loads update
+  // below -- if this same save also flips status to 'delivered' in the
+  // same request, auto_generate_invoice_from_delivered_load() (0068) reads
+  // load_financials.rate to seed the invoice, so the fresh rate must
+  // already be committed by the time that trigger fires.
+  await writeLoadFinancials(supabase, id, organizationId, formData);
 
   const values = loadValues(formData);
   const { error } = await supabase.from("loads").update(values).eq("id", id);

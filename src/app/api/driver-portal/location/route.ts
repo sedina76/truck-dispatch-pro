@@ -3,6 +3,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { evaluateGeofencesForDispatch } from "@/lib/tracking/evaluate-geofences";
 import { evaluateRouteIntelligence } from "@/lib/routing/evaluate-route";
+import { evaluateRouteDeviation } from "@/lib/tracking/evaluate-route-deviation";
 
 const ACTIVE_DISPATCH_STATUSES = [
   "assigned",
@@ -126,6 +127,20 @@ export async function POST(request: NextRequest) {
     // failure or missing configuration must never turn a successful GPS
     // ping into a failed request.
     await evaluateRouteIntelligence({
+      dispatchId: activeDispatch.id,
+      organizationId: identity.organizationId,
+      latitude,
+      longitude,
+      accuracyMeters: accuracy,
+      recordedAt,
+    });
+
+    // Phase 2D: route deviation runs LAST, after route intelligence, so it
+    // always evaluates against whatever geometry is current as of THIS
+    // ping (spec section 17's pipeline) -- including geometry route
+    // intelligence may have just recalculated a moment ago. Equally
+    // best-effort: never turns a successful GPS ping into a failed request.
+    await evaluateRouteDeviation({
       dispatchId: activeDispatch.id,
       organizationId: identity.organizationId,
       latitude,

@@ -14,19 +14,18 @@ import {
 } from "@/lib/drivers/trip-metrics";
 import { computePodStatus } from "@/lib/documents/pod-status";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 type DispatchQueryRow = {
   id: string;
   status: string;
   dispatched_at: string;
-  load_rate: number;
-  carrier_net_amount: number;
   loads: {
     id: string;
     load_number: string;
     status: string;
     total_miles: number | null;
-    rate: number;
     brokers: { company_name: string } | null;
     customers: { company_name: string } | null;
     load_stops: TripLoadStop[];
@@ -41,11 +40,13 @@ function fmtMoney(n: number) {
 
 export async function DriverTripHistorySection({
   driverId,
+  organizationId,
   range,
   customFrom,
   customTo,
 }: {
   driverId: string;
+  organizationId: string;
   range: DateRangeKey;
   customFrom?: string;
   customTo?: string;
@@ -53,13 +54,22 @@ export async function DriverTripHistorySection({
   const supabase = await createClient();
   const { start, end } = resolveDateRange(range, customFrom, customTo);
 
+  // Phase 2G.11: load_rate/carrier_net_amount dropped from this select
+  // (dead `loads.rate` dropped too -- confirmed unused by any render path
+  // in this file) -- 0068's writer cutover stopped populating them on
+  // `dispatches`; dispatch_financials is authoritative now, fetched
+  // separately below and merged in by dispatch id. This component is only
+  // ever rendered for canSeeFinancials callers (see drivers/[id]/page.tsx),
+  // so no additional role gating is added here -- consistent with how
+  // every other leaf component in this app is gated at its call site, not
+  // re-checked redundantly inside.
   let query = supabase
     .from("dispatches")
     .select(
-      `id, status, dispatched_at, load_rate, carrier_net_amount,
-       loads(id, load_number, status, total_miles, rate,
+      `id, status, dispatched_at,
+       loads(id, load_number, status, total_miles,
              brokers(company_name), customers(company_name),
-             load_stops(stop_type, scheduled_at, arrived_at, departed_at)),
+             load_stops(stop_type, scheduled_at, arrived_at, departed_at, timezone)),
        trucks(unit_number),
        trailers(unit_number)`
     )
@@ -69,9 +79,22 @@ export async function DriverTripHistorySection({
   if (start) query = query.gte("dispatched_at", start.toISOString());
   if (end) query = query.lt("dispatched_at", end.toISOString());
 
+  // Separate query -- org.timezone is only ever used to backfill legacy
+  // stops with no timezone of their own (see resolveStopTimezone()), and
+  // fetching it independently keeps the dispatches/loads/load_stops select
+  // above immune to this column ever going missing (bundled-select risk,
+  // see src/lib/timezone/resolve.ts callers elsewhere in the app).
+  const { data: org } = await supabase.from("organizations").select("timezone").eq("id", organizationId).maybeSingle();
+
   const { data } = await query;
   const dispatchRows = (data ?? []) as unknown as DispatchQueryRow[];
   const loadIds = dispatchRows.filter((d) => d.loads !== null).map((d) => d.loads!.id);
+  const dispatchIds = dispatchRows.map((d) => d.id);
+
+  const { data: financialsRows } = dispatchIds.length > 0
+    ? await supabase.from("dispatch_financials").select("dispatch_id, carrier_net_amount").in("dispatch_id", dispatchIds)
+    : { data: [] as { dispatch_id: string; carrier_net_amount: number }[] };
+  const netAmountByDispatch = new Map((financialsRows ?? []).map((r) => [r.dispatch_id, Number(r.carrier_net_amount)]));
 
   // Same canonical "latest document per load" helper used everywhere else
   // POD status is shown (load page, invoice page, dashboard, loads list) --
@@ -92,13 +115,14 @@ export async function DriverTripHistorySection({
         load_number: load.load_number,
         load_status: load.status,
         total_miles: load.total_miles,
-        rate: load.rate,
-        carrier_net_amount: Number(d.carrier_net_amount),
+        carrier_net_amount: netAmountByDispatch.get(d.id) ?? 0,
         truck_unit: d.trucks?.unit_number ?? null,
         trailer_unit: d.trailers?.unit_number ?? null,
         partner_name: load.brokers?.company_name ?? load.customers?.company_name ?? null,
         pickup_date: pickupStop?.scheduled_at ?? null,
+        pickup_date_timezone: resolveStopTimezone(pickupStop?.timezone ?? null, org?.timezone ?? null).timezone,
         delivery_date: deliveryStop?.scheduled_at ?? null,
+        delivery_date_timezone: resolveStopTimezone(deliveryStop?.timezone ?? null, org?.timezone ?? null).timezone,
         delivery_actual_at: deliveryStop?.arrived_at ?? null,
         pod_status: computePodStatus(podByLoadId.get(load.id) ?? null),
       };
@@ -108,8 +132,8 @@ export async function DriverTripHistorySection({
 
   const columns: Column<TripRow>[] = [
     { header: "Load #", cell: (t) => <span className="font-medium">{t.load_number}</span> },
-    { header: "Pickup Date", cell: (t) => (t.pickup_date ? new Date(t.pickup_date).toLocaleDateString() : "--") },
-    { header: "Delivery Date", cell: (t) => (t.delivery_date ? new Date(t.delivery_date).toLocaleDateString() : "--") },
+    { header: "Pickup Date", cell: (t) => formatStopDateTime(t.pickup_date, t.pickup_date_timezone, { dateOnly: true, includeYear: true }) },
+    { header: "Delivery Date", cell: (t) => formatStopDateTime(t.delivery_date, t.delivery_date_timezone, { dateOnly: true, includeYear: true }) },
     { header: "Miles", cell: (t) => (t.total_miles != null ? t.total_miles.toLocaleString() : "--") },
     { header: "Rate", cell: (t) => fmtMoney(t.carrier_net_amount) },
     { header: "Status", cell: (t) => <StatusBadge status={t.load_status} /> },

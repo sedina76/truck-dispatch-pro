@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
@@ -171,7 +171,7 @@ export default async function CollectionsPage({ searchParams }: { searchParams: 
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Collections", href: "/collections" }]} />
+      <BillingSubnav />
       <RegisterDesktopActions
         title="Collections"
         exportOptions={[

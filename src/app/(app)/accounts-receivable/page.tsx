@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ArAgingChart, type AgingBucketPoint } from "@/components/finance/ar-aging-chart";
 import { AGING_BUCKETS, AGING_BUCKET_LABELS, AGING_BUCKET_COLORS } from "@/lib/invoices/effective-status";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
@@ -108,7 +108,7 @@ export default async function AccountsReceivablePage() {
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Accounts Receivable", href: "/accounts-receivable" }]} />
+      <BillingSubnav />
       <RegisterDesktopActions title="Accounts Receivable" exportOptions={[{ label: "Export CSV", href: "/accounts-receivable/export" }]} />
 
       <div>

@@ -3,8 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
-import { EMAIL_PROVIDER_CONFIGURED, sendTransactionalEmail, FRIENDLY_SEND_ERROR } from "@/lib/email/provider";
-import { resolveOrgName } from "@/lib/email/resolve-entity";
+import { sendTenantEmail } from "@/lib/email/send-pipeline";
+import { resolveEmailAuthorizationContext } from "@/lib/email/authorization";
 import {
   computeProfileShareData,
   renderProfileSharePdf,
@@ -129,6 +129,18 @@ export async function generateProfileShare(
 // Only ever called with a shareId that generateProfileShare just returned
 // in the same user action -- there is no separate "resend" path in this
 // pass, matching "Do not send anything automatically without user action."
+//
+// Migrated onto the central pipeline (spec review item 3) -- this is
+// tenant business email (a driver/carrier profile handed to a broker or
+// customer contact), not platform system email, so it gets tenant sender
+// resolution, organization/entity linkage, idempotency, and delivery
+// tracking exactly like invoice/billing-packet email. Each share row is
+// itself a unique, one-shot document (generateProfileShare() always
+// creates a fresh shareId), so shareId alone is a sufficient idempotency
+// base key -- no version/resend-sequence concept is needed beyond the
+// pipeline's own default (sequence 0, i.e. a second attempt at the SAME
+// shareId is a blocked accidental duplicate, matching this function's own
+// "no separate resend path" design).
 export async function sendProfileShareGeneratedEmail(
   shareId: string,
   loadId: string,
@@ -136,10 +148,12 @@ export async function sendProfileShareGeneratedEmail(
   message: string
 ): Promise<{ ok: boolean; error?: string }> {
   const supabase = await createClient();
-  const organizationId = await getCurrentOrgId();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  const auth = await resolveEmailAuthorizationContext();
+  if (!auth.ok) return { ok: false, error: auth.error };
 
   // Re-verify the share belongs to the caller's org and is still in
   // GENERATED state under RLS before doing anything -- mirrors the
@@ -147,50 +161,14 @@ export async function sendProfileShareGeneratedEmail(
   // session (Test 15).
   const { data: share } = await supabase
     .from("profile_share_log")
-    .select("id, status, recipient_email, storage_path")
+    .select("id, status, recipient_email, storage_path, load_id, driver_id")
     .eq("id", shareId)
     .maybeSingle();
   if (!share) return { ok: false, error: "Share record not found." };
 
-  async function logAttempt(status: "sent" | "failed", error: string | null, providerMessageId: string | null) {
-    await supabase.from("email_send_log").insert({
-      organization_id: organizationId,
-      entity_type: "profile_share",
-      entity_id: shareId,
-      recipient: share!.recipient_email,
-      subject,
-      attachment_type: "profile_share_pdf",
-      status,
-      error,
-      sent_at: status === "sent" ? new Date().toISOString() : null,
-      provider_message_id: providerMessageId,
-      sent_by: user?.id ?? null,
-    });
-  }
-
-  if (!EMAIL_PROVIDER_CONFIGURED) {
-    const error = "Email provider not configured.";
-    await supabase.from("profile_share_log").update({ status: "BLOCKED", error }).eq("id", shareId);
-    await supabase.from("email_send_log").insert({
-      organization_id: organizationId,
-      entity_type: "profile_share",
-      entity_id: shareId,
-      recipient: share.recipient_email,
-      subject,
-      attachment_type: null,
-      status: "blocked",
-      error,
-      sent_by: user?.id ?? null,
-    });
-    revalidatePath(`/loads/${loadId}`);
-    return { ok: false, error };
-  }
-
   if (!share.storage_path) {
     const error = "This share has no generated PDF on file.";
     await supabase.from("profile_share_log").update({ status: "FAILED", error }).eq("id", shareId);
-    await logAttempt("failed", error, null);
-    revalidatePath(`/loads/${loadId}`);
     return { ok: false, error };
   }
 
@@ -198,29 +176,31 @@ export async function sendProfileShareGeneratedEmail(
   if (downloadError || !fileData) {
     const error = "Could not read the generated profile PDF.";
     await supabase.from("profile_share_log").update({ status: "FAILED", error }).eq("id", shareId);
-    await logAttempt("failed", error, null);
-    revalidatePath(`/loads/${loadId}`);
-    return { ok: false, error: FRIENDLY_SEND_ERROR };
+    return { ok: false, error: "Email could not be sent. Please try again." };
   }
 
-  const sendResult = await sendTransactionalEmail({
-    to: share.recipient_email,
+  const sendResult = await sendTenantEmail({
+    authContext: auth.context,
+    emailPurpose: "profile_share",
+    to: [share.recipient_email],
     subject,
     text: message,
-    organizationName: await resolveOrgName(supabase),
-    heading: subject,
     attachments: [{ filename: "driver-carrier-profile.pdf", content: Buffer.from(await fileData.arrayBuffer()) }],
+    entityType: "profile_share",
+    entityId: shareId,
+    entities: { loadId: share.load_id, driverId: share.driver_id },
+    sentBy: user?.id ?? null,
+    idempotencyBaseKey: `profile_share_sent:${shareId}`,
   });
 
   if (!sendResult.ok) {
-    await supabase.from("profile_share_log").update({ status: "FAILED", error: sendResult.error }).eq("id", shareId);
-    await logAttempt("failed", sendResult.error, null);
+    const status = sendResult.error === "Email provider not configured." ? "BLOCKED" : "FAILED";
+    await supabase.from("profile_share_log").update({ status, error: sendResult.error }).eq("id", shareId);
     revalidatePath(`/loads/${loadId}`);
-    return { ok: false, error: FRIENDLY_SEND_ERROR };
+    return { ok: false, error: sendResult.error };
   }
 
   await supabase.from("profile_share_log").update({ status: "SENT", sent_at: new Date().toISOString(), error: null, sent_by: user?.id ?? null }).eq("id", shareId);
-  await logAttempt("sent", null, sendResult.providerMessageId);
   revalidatePath(`/loads/${loadId}`);
   return { ok: true };
 }

@@ -90,10 +90,21 @@ export async function computeStatementData(params: {
   const brokerId = partyType === "broker" ? partyId : null;
   const customerId = partyType === "customer" ? partyId : null;
 
-  const { data: partyRow, error: partyError } =
+  // Phase 2G.12: `payment_terms_days` dropped from both selects below --
+  // broker_financials/customer_financials are authoritative now (2G.10/
+  // 2G.12 writer cutovers). This whole path is already layout-guarded to
+  // FINANCIAL_ROLES (statements/layout.tsx, or requireRoleForApi() for
+  // the PDF route), so no additional role gating is needed here.
+  const [{ data: partyRow, error: partyError }, { data: partyFinancials }] =
     partyType === "broker"
-      ? await supabase.from("brokers").select("id, company_name, email, address_line1, city, state, postal_code, payment_terms_days").eq("id", partyId).single()
-      : await supabase.from("customers").select("id, company_name, email, billing_address_line1, city, state, postal_code, payment_terms_days").eq("id", partyId).single();
+      ? await Promise.all([
+          supabase.from("brokers").select("id, company_name, email, address_line1, city, state, postal_code").eq("id", partyId).single(),
+          supabase.from("broker_financials").select("payment_terms_days").eq("broker_id", partyId).maybeSingle(),
+        ])
+      : await Promise.all([
+          supabase.from("customers").select("id, company_name, email, billing_address_line1, city, state, postal_code").eq("id", partyId).single(),
+          supabase.from("customer_financials").select("payment_terms_days").eq("customer_id", partyId).maybeSingle(),
+        ]);
   if (partyError || !partyRow) throw new Error("Party not found.");
 
   const { data: orgRow } = await supabase
@@ -114,7 +125,7 @@ export async function computeStatementData(params: {
     company_name: partyRow.company_name,
     email: partyRow.email,
     address: [addressField, partyRow.city, partyRow.state, partyRow.postal_code].filter(Boolean).join(", ") || null,
-    paymentTermsDays: partyRow.payment_terms_days,
+    paymentTermsDays: partyFinancials?.payment_terms_days ?? null,
   };
 
   const includedInvoiceIds: string[] = [];

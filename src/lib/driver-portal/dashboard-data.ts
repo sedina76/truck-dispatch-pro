@@ -3,6 +3,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { computePodStatus } from "@/lib/documents/pod-status";
 import type { DriverPortalIdentity } from "./session";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 // Canonical dispatch "in progress" set -- the single source every page that
 // needs "the driver's current trip" reads from (home dashboard, Trip page,
@@ -57,6 +58,10 @@ export type TripStop = {
   state: string | null;
   scheduled_at: string | null;
   reference_number: string | null;
+  // Phase 2C.1: the driver-facing zone this stop's scheduled_at should be
+  // shown in -- already resolved (stop's own, or the org fallback), never
+  // the driver's phone timezone.
+  timezone: string;
 };
 
 export type DashboardCounters = {
@@ -122,10 +127,14 @@ export async function getTripStops(
 ): Promise<TripStop[]> {
   const { data } = await supabase
     .from("load_stops")
-    .select("stop_type, stop_sequence, facility_name, city, state, scheduled_at, reference_number")
+    .select("organization_id, stop_type, stop_sequence, facility_name, city, state, scheduled_at, reference_number, timezone")
     .eq("load_id", loadId)
     .order("stop_sequence");
-  return data ?? [];
+  const rows = (data ?? []) as (Omit<TripStop, "timezone"> & { organization_id: string; timezone: string | null })[];
+  if (rows.length === 0) return [];
+
+  const { data: org } = await supabase.from("organizations").select("timezone").eq("id", rows[0].organization_id).maybeSingle();
+  return rows.map((row) => ({ ...row, timezone: resolveStopTimezone(row.timezone, org?.timezone ?? null).timezone }));
 }
 
 // One fixed, small set of queries -- never one query per trip/document/

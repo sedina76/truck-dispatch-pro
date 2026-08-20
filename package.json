@@ -37,6 +37,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "framer-motion": "^12.42.2",
+    "input-otp": "^1.4.2",
     "lucide-react": "^1.23.0",
     "maplibre-gl": "^5.24.0",
     "next": "^15.5.4",
@@ -48,6 +49,7 @@
     "recharts": "^3.9.2",
     "resend": "^6.20.0",
     "server-only": "^0.0.1",
+    "svix": "^1.99.1",
     "tailwind-merge": "^3.3.1",
     "zod": "^4.1.12"
   },

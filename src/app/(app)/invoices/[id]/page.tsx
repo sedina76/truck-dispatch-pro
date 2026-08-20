@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { FileText, CheckCircle2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { deleteRecord } from "@/lib/actions/records";
+import { deleteRecord, getCurrentOrgId } from "@/lib/actions/records";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,9 @@ import { invoiceEffectiveStatus } from "@/lib/invoices/effective-status";
 import { CollectionsSection } from "@/components/collections/collections-section";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { evaluateFactoringEligibility, isNonTerminalFactoredInvoiceStatus } from "@/lib/factoring/eligibility";
+import { getDefaultFactoringRelationship } from "@/lib/factoring/default-relationship";
+import { FactoringSection, type RelationshipOption, type FactoredInvoiceDisplay, type FactoringEventDisplay } from "@/components/invoices/factoring-section";
 
 export default async function InvoiceDetailPage({
   params,
@@ -105,6 +108,128 @@ export default async function InvoiceDetailPage({
       pendingCount = pending?.length ?? 0;
       pendingTotal = (pending ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase 2H.4 -- Factoring. eligibility here is a UI pre-check only
+  // (src/lib/factoring/eligibility.ts); submit_invoice_to_factor() (0073)
+  // is the sole authority and re-validates everything itself. Reading
+  // factored_invoices/factoring_events goes through this page's normal
+  // caller-scoped client (RLS-safe) the same as every other query above.
+  // ---------------------------------------------------------------------
+  const organizationId = await getCurrentOrgId();
+  const eligibility = evaluateFactoringEligibility({ status: invoice.status, amountPaid: Number(invoice.amount_paid) });
+
+  const { data: factoredInvoicesRaw } = await supabase
+    .from("factored_invoices")
+    .select("*, factoring_companies(name), factoring_relationships(relationship_name, recourse_type)")
+    .eq("invoice_id", id)
+    .order("created_at", { ascending: false });
+
+  const factoredInvoices: FactoredInvoiceDisplay[] = (factoredInvoicesRaw ?? []).map((fi) => ({
+    id: fi.id,
+    status: fi.status,
+    companyName: (fi.factoring_companies as unknown as { name: string } | null)?.name ?? "--",
+    relationshipName: (fi.factoring_relationships as unknown as { relationship_name: string | null } | null)?.relationship_name ?? null,
+    recourseType: (fi.factoring_relationships as unknown as { recourse_type: string | null } | null)?.recourse_type ?? null,
+    submittedAt: fi.submitted_at,
+    invoiceFaceValue: Number(fi.invoice_face_value),
+    advancePercentage: Number(fi.advance_percentage),
+    expectedAdvanceAmount: Number(fi.expected_advance_amount),
+    factoringFeePercentage: Number(fi.factoring_fee_percentage),
+    factoringFeeAmount: Number(fi.factoring_fee_amount),
+    reservePercentage: Number(fi.reserve_percentage),
+    reserveAmount: Number(fi.reserve_amount),
+    feeTiming: fi.fee_timing,
+    otherFees: Number(fi.other_fees),
+    expectedFundingAmount: Number(fi.expected_funding_amount),
+    actualFundedAmount: fi.actual_funded_amount !== null ? Number(fi.actual_funded_amount) : null,
+    externalReference: fi.external_reference,
+    rejectionReason: fi.rejection_reason,
+    customerPaidFactorAmount: fi.customer_paid_factor_amount !== null ? Number(fi.customer_paid_factor_amount) : null,
+    customerPaidFactorAt: fi.customer_paid_factor_at,
+    reserveReleasedAmount: Number(fi.reserve_released_amount),
+    outstandingReserve: Number(fi.outstanding_reserve),
+    reconciliationStatus: fi.reconciliation_status,
+    recourseAmount: Number(fi.recourse_amount),
+    chargebackAmount: Number(fi.chargeback_amount),
+    notes: fi.notes,
+  }));
+
+  // The most recent factored_invoices row (by created_at, already the
+  // query's own order) is always the "primary" one shown in full via
+  // FactoringStatusCard -- regardless of its status. A rejected/cancelled
+  // row is still this invoice's current factoring state until a NEW
+  // submission is made (Phase 2H.5: "rejected: read-only for this
+  // phase"), so it must get the same full read-only detail view a
+  // funded row does, not be silently demoted to the compact "Prior
+  // Factoring Attempts" list -- only rows OLDER than the most recent one
+  // belong there. Resubmission eligibility (spec section 10/Phase 2H.4)
+  // is a SEPARATE question, handled by FactoringSection itself via
+  // isNonTerminalFactoredInvoiceStatus() on the primary row's own status.
+  const activeFactoredInvoice = factoredInvoices[0] ?? null;
+  const historicalFactoredInvoices = factoredInvoices.slice(1);
+
+  let factoringEvents: FactoringEventDisplay[] = [];
+  if (activeFactoredInvoice) {
+    const { data: eventsRaw } = await supabase
+      .from("factoring_events")
+      .select("*")
+      .eq("factored_invoice_id", activeFactoredInvoice.id)
+      .order("created_at", { ascending: false });
+
+    const performerIds = [...new Set((eventsRaw ?? []).map((e) => e.performed_by).filter((v): v is string => !!v))];
+    const { data: performers } = performerIds.length
+      ? await supabase.from("profiles").select("id, full_name").in("id", performerIds)
+      : { data: [] as { id: string; full_name: string }[] };
+    const performerNameById = new Map((performers ?? []).map((p) => [p.id, p.full_name]));
+
+    factoringEvents = (eventsRaw ?? []).map((e) => ({
+      id: e.id,
+      eventType: e.event_type,
+      fromStatus: e.from_status,
+      toStatus: e.to_status,
+      amount: e.amount !== null ? Number(e.amount) : null,
+      reference: e.reference,
+      notes: e.notes,
+      performedByName: e.performed_by ? (performerNameById.get(e.performed_by) ?? null) : null,
+      createdAt: e.created_at,
+    }));
+  }
+
+  // Resubmission is only offered when there is no row at all, or the
+  // most recent row is terminal-for-resubmission (rejected/cancelled) --
+  // the exact factored_invoices_one_active_per_invoice predicate (0071),
+  // not a re-guess of it.
+  const canResubmit = !activeFactoredInvoice || !isNonTerminalFactoredInvoiceStatus(activeFactoredInvoice.status);
+
+  let relationshipOptions: RelationshipOption[] = [];
+  let defaultRelationshipId: string | null = null;
+  if (eligibility.eligible && canResubmit) {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: relRaw } = await supabase
+      .from("factoring_relationships")
+      .select(
+        "id, relationship_name, default_advance_percentage, default_factoring_fee_percentage, default_reserve_percentage, fee_timing, recourse_type, effective_from, effective_to, factoring_companies!inner(id, name, is_active)"
+      )
+      .eq("is_active", true)
+      .eq("factoring_companies.is_active", true)
+      .lte("effective_from", today)
+      .or(`effective_to.is.null,effective_to.gte.${today}`);
+
+    relationshipOptions = (relRaw ?? []).map((r) => ({
+      id: r.id,
+      companyName: (r.factoring_companies as unknown as { name: string }).name,
+      relationshipName: r.relationship_name,
+      advancePercentage: Number(r.default_advance_percentage),
+      factoringFeePercentage: Number(r.default_factoring_fee_percentage),
+      reservePercentage: Number(r.default_reserve_percentage),
+      feeTiming: r.fee_timing,
+      recourseType: r.recourse_type,
+    }));
+
+    const defaultRel = await getDefaultFactoringRelationship(organizationId);
+    defaultRelationshipId = defaultRel && relationshipOptions.some((r) => r.id === defaultRel.relationship.id) ? defaultRel.relationship.id : null;
   }
 
   return (
@@ -302,6 +427,18 @@ export default async function InvoiceDetailPage({
         packetOutdated={packetOutdated}
         defaultRecipientEmail={invoice.bill_to_email}
         invoiceStatus={invoice.status}
+      />
+
+      <FactoringSection
+        invoiceId={id}
+        eligible={eligibility.eligible}
+        ineligibleReason={eligibility.eligible ? null : eligibility.reason}
+        activeFactoredInvoice={activeFactoredInvoice}
+        canResubmit={canResubmit}
+        historicalFactoredInvoices={historicalFactoredInvoices}
+        relationshipOptions={relationshipOptions}
+        defaultRelationshipId={defaultRelationshipId}
+        events={factoringEvents}
       />
 
       {pendingCount > 0 && (

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { PrintInvoiceButton } from "@/components/invoices/print-invoice-button";
 import { AutoPrint } from "@/components/invoices/auto-print";
+import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 // Payment receipt. Deliberately OUTSIDE the (app) route group -- same
 // reasoning as /invoices/[id]/pdf (src/app/invoices/[id]/pdf/page.tsx):
@@ -21,6 +22,10 @@ export default async function PaymentReceiptPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ autoprint?: string }>;
 }) {
+  // Phase 2G.7 finding: same gap as /invoices/[id]/pdf -- outside (app),
+  // not covered by payments/layout.tsx (Phase 2G.6). Guarded explicitly.
+  await requireRole(FINANCIAL_ROLES);
+
   const { id } = await params;
   const { autoprint } = await searchParams;
   const supabase = await createClient();

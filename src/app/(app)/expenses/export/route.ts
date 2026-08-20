@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { toCsv, csvResponse, formatMoney, formatDate } from "@/lib/export/csv";
+import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 type Row = {
   expense_number: string;
@@ -19,6 +20,9 @@ type Row = {
 // Mirrors expenses/page.tsx's own query+filters exactly. No sensitive HR/
 // driver PII in scope -- this table never carried any.
 export async function GET(req: Request) {
+  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  if (denied) return denied;
+
   const { searchParams } = new URL(req.url);
   const start = searchParams.get("start");
   const end = searchParams.get("end");

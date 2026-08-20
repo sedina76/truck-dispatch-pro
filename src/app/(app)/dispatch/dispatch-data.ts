@@ -1,6 +1,7 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestDocument, type DocumentRow } from "@/lib/documents/latest-document";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 // Shared data-loading for both /dispatch/new and /dispatch/[id] -- same
 // Load Summary / Trip / Assignment-options shape either page needs, one
@@ -24,21 +25,24 @@ export type StopSummary = {
   state: string | null;
   scheduled_at: string | null;
   reference_number: string | null;
+  timezone: string;
 };
 
 export async function getLoadSummary(
   supabase: Awaited<ReturnType<typeof createClient>>,
   loadId: string
 ): Promise<{ load: LoadSummary; stops: StopSummary[] } | null> {
-  const [{ data: load }, { data: stops }] = await Promise.all([
-    supabase.from("loads").select("id, load_number, status, equipment_type, total_miles, broker_id, customer_id, brokers(company_name), customers(company_name)").eq("id", loadId).maybeSingle(),
+  const [{ data: load }, { data: stops }, { data: orgRow }] = await Promise.all([
+    supabase.from("loads").select("id, load_number, status, equipment_type, total_miles, broker_id, customer_id, organization_id, brokers(company_name), customers(company_name)").eq("id", loadId).maybeSingle(),
     supabase
       .from("load_stops")
-      .select("stop_type, stop_sequence, facility_name, city, state, scheduled_at, reference_number")
+      .select("stop_type, stop_sequence, facility_name, city, state, scheduled_at, reference_number, timezone")
       .eq("load_id", loadId)
       .order("stop_sequence"),
+    supabase.from("organizations").select("timezone").limit(1).maybeSingle(),
   ]);
   if (!load) return null;
+  const organizationTimezone = orgRow?.timezone ?? null;
 
   const raw = load as unknown as { id: string; load_number: string; status: string; equipment_type: string | null; total_miles: number | null; brokers: { company_name: string } | null; customers: { company_name: string } | null };
 
@@ -52,7 +56,10 @@ export async function getLoadSummary(
       broker_name: raw.brokers?.company_name ?? null,
       customer_name: raw.customers?.company_name ?? null,
     },
-    stops: stops ?? [],
+    stops: ((stops ?? []) as unknown as (Omit<StopSummary, "timezone"> & { timezone: string | null })[]).map((s) => ({
+      ...s,
+      timezone: resolveStopTimezone(s.timezone, organizationTimezone).timezone,
+    })),
   };
 }
 
@@ -67,15 +74,29 @@ export type TrailerOption = { id: string; carrier_id: string | null; unit_number
 // real enforcement is guard_dispatch_org() (0048, server-side) plus the
 // conflict/relationship checks in actions.ts, so a crafted request can't
 // bypass this by skipping the client-side filter.
+// POST-0069 finding: dispatch_fee_percentage dropped from this select --
+// it doesn't exist on `carriers` at all anymore (moved to
+// carrier_financials by the 2G.10 writer cutover). Left unfixed, this
+// query throws (42703, confirmed live) on EVERY call, which the
+// unchecked `data ?? []` below silently turned into an always-empty
+// carrier dropdown -- New Dispatch and Dispatch Detail's Assignment
+// section could no longer assign or reassign a carrier to ANY dispatch
+// at all. Merged in from carrier_financials below -- same "org-scoped
+// list, no per-role gate" shape as before (this function has never been
+// role-gated; the fee value here is only ever used as an operational
+// default suggestion for the Dispatch Fee % input, not a financial
+// disclosure surface -- unchanged by this fix).
 export async function getAssignmentOptions(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const [{ data: carriers }, { data: drivers }, { data: trucks }, { data: trailers }] = await Promise.all([
-    supabase.from("carriers").select("id, legal_name, dispatch_fee_percentage").eq("is_active", true).order("legal_name"),
+  const [{ data: carriers }, { data: drivers }, { data: trucks }, { data: trailers }, { data: carrierFinancials }] = await Promise.all([
+    supabase.from("carriers").select("id, legal_name").eq("is_active", true).order("legal_name"),
     supabase.from("drivers").select("id, carrier_id, first_name, last_name").eq("status", "active").order("last_name"),
     supabase.from("trucks").select("id, carrier_id, unit_number, ownership_type").eq("status", "active").order("unit_number"),
     supabase.from("trailers").select("id, carrier_id, unit_number, ownership_type").eq("status", "active").order("unit_number"),
+    supabase.from("carrier_financials").select("carrier_id, dispatch_fee_percentage"),
   ]);
+  const feeByCarrierId = new Map((carrierFinancials ?? []).map((r) => [r.carrier_id, Number(r.dispatch_fee_percentage)]));
   return {
-    carriers: (carriers ?? []) as CarrierOption[],
+    carriers: ((carriers ?? []) as { id: string; legal_name: string }[]).map((c) => ({ ...c, dispatch_fee_percentage: feeByCarrierId.get(c.id) ?? 10 })) as CarrierOption[],
     drivers: (drivers ?? []) as DriverOption[],
     trucks: (trucks ?? []) as TruckOption[],
     trailers: (trailers ?? []) as TrailerOption[],

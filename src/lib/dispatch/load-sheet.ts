@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 // Driver-Safe Load Sheet (spec section 12) -- Phase 2 will build the
 // actual PDF/print view and a "Send to Driver" action on top of this, but
@@ -22,27 +23,30 @@ export type DriverLoadSheet = {
   delivery: LoadSheetStop | null;
 };
 
-type LoadSheetStop = {
+export type LoadSheetStop = {
   companyName: string | null;
   addressLine1: string | null;
   city: string | null;
   state: string | null;
   scheduledAt: string | null;
   referenceNumber: string | null;
+  timezone: string;
 };
 
 export async function getDriverLoadSheetData(loadId: string): Promise<DriverLoadSheet | null> {
   const supabase = await createClient();
 
-  const [{ data: load }, { data: stops }] = await Promise.all([
+  const [{ data: load }, { data: stops }, { data: orgRow }] = await Promise.all([
     supabase.from("loads").select("load_number, commodity, weight_lbs, total_miles, equipment_type, special_instructions").eq("id", loadId).maybeSingle(),
     supabase
       .from("load_stops")
-      .select("stop_type, stop_sequence, facility_name, address_line1, city, state, scheduled_at, reference_number")
+      .select("stop_type, stop_sequence, facility_name, address_line1, city, state, scheduled_at, reference_number, timezone")
       .eq("load_id", loadId)
       .order("stop_sequence"),
+    supabase.from("organizations").select("timezone").limit(1).maybeSingle(),
   ]);
   if (!load) return null;
+  const organizationTimezone = orgRow?.timezone ?? null;
 
   const toStop = (row: (typeof stops extends (infer T)[] | null ? T : never) | undefined): LoadSheetStop | null =>
     row
@@ -57,6 +61,7 @@ export async function getDriverLoadSheetData(loadId: string): Promise<DriverLoad
           // show a driver ("when allowed" per spec; always allowed here
           // since this field never carries a dollar amount).
           referenceNumber: row.reference_number,
+          timezone: resolveStopTimezone(row.timezone, organizationTimezone).timezone,
         }
       : null;
 

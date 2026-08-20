@@ -24,6 +24,7 @@ import {
   DesktopCollapsibleSection,
 } from "@/components/desktop/collapsible-section";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Section ids + default open/closed state (spec: Employment and Personal
 // Information start open, everything else starts closed; Sensitive
@@ -36,6 +37,7 @@ const SECTION_DEFAULTS: Record<string, boolean> = {
   medical_compliance: false,
   work_auth: false,
   payroll: false,
+  notes: false,
   trip_history: false,
   portal_access: false,
   settlement_summary: false,
@@ -78,14 +80,21 @@ export default async function DriverDetailPage({
   // asks for them anyway, which Postgres denies for the whole query -- not
   // just those columns -- which .single() turns into "no data", which
   // notFound() turns into a misleading 404 for every driver.
+  // Phase 2G.12 finding: the Payroll section below (pay_type/pay_rate) had
+  // NO canSeeFinancials gate at all -- rendered unconditionally for every
+  // role, including driver/viewer. driver_compensation is also the
+  // authoritative source now (2G.10 writer cutover moved pay_type/pay_rate
+  // there); dropped from this always-fetched select and moved to a
+  // separate, canSeeFinancials-gated query below, matching "do not fetch
+  // protected financial rows for driver/viewer" -- not just hidden in JSX.
   const [{ data: driver }, { data: carriers }, { data: user }, { data: portalCredential }, tripCountRes] = await Promise.all([
     supabase
       .from("drivers")
       .select(
         `id, organization_id, carrier_id, first_name, middle_name, last_name, phone, email,
          cdl_number, cdl_state, cdl_expiry_date, medical_card_expiry_date, hire_date,
-         date_of_birth, status, home_terminal_city, home_terminal_state, pay_type,
-         pay_rate, notes, created_at, updated_at,
+         date_of_birth, status, home_terminal_city, home_terminal_state,
+         notes, created_at, updated_at,
          employee_number, photo_url, photo_shareable, gender, address_line1, city, state, postal_code,
          emergency_contact_name, emergency_contact_phone, department, cdl_class,
          cdl_restrictions, cdl_endorsements, medical_card_number, drug_test_date,
@@ -114,6 +123,18 @@ export default async function DriverDetailPage({
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.user!.id).single();
   const isOwnerOrAdmin = profile?.role === "owner" || profile?.role === "admin";
   const canManagePortalAccess = ["owner", "admin", "dispatcher"].includes(profile?.role ?? "");
+  // Phase 2G.9 (item 3): Trip History (below) computes per-trip rate/
+  // carrier_net_amount and revenue-per-mile metrics throughout -- it's a
+  // revenue-reporting section, not incidentally financial, so it's gated
+  // as a whole rather than field-by-field (same treatment as
+  // Profitability/Settlement sections on Customer/Broker/Carrier Detail).
+  const canSeeFinancials = FINANCIAL_ROLES.includes((profile?.role as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // driver_compensation query itself only runs for canSeeFinancials -- not
+  // merely hidden in the Payroll section's JSX below.
+  const { data: driverCompensation } = canSeeFinancials
+    ? await supabase.from("driver_compensation").select("pay_type, pay_rate").eq("driver_id", id).maybeSingle()
+    : { data: null };
 
   const tripCount = tripCountRes.count ?? 0;
   const complianceAlerts = expiringCount(driver);
@@ -289,21 +310,27 @@ export default async function DriverDetailPage({
                 </FormGrid>
               </DesktopCollapsibleSection>
 
-              <DesktopCollapsibleSection id="payroll" title="Payroll" description="Pay structure and notes. Direct deposit numbers are in Sensitive Information.">
+              {canSeeFinancials && (
+                <DesktopCollapsibleSection id="payroll" title="Payroll" description="Pay structure. Never shown to drivers or carriers. Direct deposit numbers are in Sensitive Information." badge="STAFF ONLY" badgeTone="warning">
+                  <FormGrid>
+                    <FormSelect
+                      label="Pay type"
+                      name="pay_type"
+                      defaultValue={driverCompensation?.pay_type ?? undefined}
+                      options={[
+                        { value: "per_mile", label: "Per mile" },
+                        { value: "percentage", label: "Percentage" },
+                        { value: "hourly", label: "Hourly" },
+                        { value: "salary", label: "Salary" },
+                      ]}
+                    />
+                    <FormField label="Pay rate" name="pay_rate" type="number" step="0.01" defaultValue={driverCompensation?.pay_rate ?? undefined} />
+                    <FormField label="Direct deposit bank name" name="direct_deposit_bank_name" defaultValue={driver.direct_deposit_bank_name} />
+                  </FormGrid>
+                </DesktopCollapsibleSection>
+              )}
+              <DesktopCollapsibleSection id="notes" title="Notes">
                 <FormGrid>
-                  <FormSelect
-                    label="Pay type"
-                    name="pay_type"
-                    defaultValue={driver.pay_type}
-                    options={[
-                      { value: "per_mile", label: "Per mile" },
-                      { value: "percentage", label: "Percentage" },
-                      { value: "hourly", label: "Hourly" },
-                      { value: "salary", label: "Salary" },
-                    ]}
-                  />
-                  <FormField label="Pay rate" name="pay_rate" type="number" step="0.01" defaultValue={driver.pay_rate} />
-                  <FormField label="Direct deposit bank name" name="direct_deposit_bank_name" defaultValue={driver.direct_deposit_bank_name} />
                   <FormTextarea label="Notes" name="notes" defaultValue={driver.notes} />
                 </FormGrid>
               </DesktopCollapsibleSection>
@@ -328,9 +355,17 @@ export default async function DriverDetailPage({
           </div>
         </div>
 
-        <DesktopCollapsibleSection id="trip_history" title="Trip History" badge={tripCount || undefined}>
-          <DriverTripHistorySection driverId={id} range={(range as DateRangeKey) ?? "all"} customFrom={from} customTo={to} />
-        </DesktopCollapsibleSection>
+        {canSeeFinancials && (
+          <DesktopCollapsibleSection id="trip_history" title="Trip History" badge={tripCount || undefined}>
+            <DriverTripHistorySection
+              driverId={id}
+              organizationId={driver.organization_id}
+              range={(range as DateRangeKey) ?? "all"}
+              customFrom={from}
+              customTo={to}
+            />
+          </DesktopCollapsibleSection>
+        )}
 
         {canManagePortalAccess && (
           <DesktopCollapsibleSection id="portal_access" title="Driver Portal Access" description="Sign-in on their phone at /driver-portal for their active dispatch and live location.">

@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { updateRecordInPlace, getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { DispatchConflictError, translateDispatchError, type DispatchActionState } from "@/lib/dispatch/errors";
+import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
 
 // Same "in progress" set the Driver Portal uses for its own current-trip
 // resolver (src/lib/driver-portal/dashboard-data.ts, ACTIVE_DISPATCH_
@@ -190,6 +191,15 @@ function matchedUniqueIndex(message: string | undefined): string | null {
   return null;
 }
 
+// Phase 2G.10 writer cutover: dispatch_fee_percentage and notes are no
+// longer part of the dispatches insert/update -- they're written to
+// dispatch_financials/dispatch_internal_notes by writeDispatchFinancials()/
+// writeDispatchNotes() below, in the SAME action, right after the
+// dispatches row's id is known. Kept in the return shape here (still read
+// by checkEquipmentAvailable/checkAssignmentConflicts callers below, which
+// only use carrier_id/truck_id/driver_id/trailer_id) for minimal diff, but
+// never written to `dispatches` directly anymore -- see createDispatch/
+// updateDispatch.
 function dispatchValues(formData: FormData) {
   const carrierId = String(formData.get("carrier_id") || "").trim();
   const truckId = String(formData.get("truck_id") || "").trim();
@@ -202,9 +212,29 @@ function dispatchValues(formData: FormData) {
     truck_id: truckId,
     driver_id: driverId,
     trailer_id: emptyToNull(formData.get("trailer_id")),
-    dispatch_fee_percentage: toNumber(formData.get("dispatch_fee_percentage")) ?? 10,
-    notes: emptyToNull(formData.get("notes")),
   };
+}
+
+// NOTE: requires 0067 applied (dispatch_financials/dispatch_internal_notes
+// must exist) -- ships in the same deploy as 0067/0068, never before.
+async function writeDispatchFinancials(supabase: Awaited<ReturnType<typeof createClient>>, dispatchId: string, organizationId: string, formData: FormData) {
+  const dispatchFeePercentage = toNumber(formData.get("dispatch_fee_percentage")) ?? 10;
+  // load_rate/dispatch_fee_amount/carrier_net_amount are computed by
+  // dispatch_financials_sync (0068), the same way sync_dispatch_financials()
+  // always computed them -- only dispatch_fee_percentage is a real user
+  // input here.
+  const { error } = await supabase
+    .from("dispatch_financials")
+    .upsert({ dispatch_id: dispatchId, organization_id: organizationId, dispatch_fee_percentage: dispatchFeePercentage }, { onConflict: "dispatch_id" });
+  if (error) throw new Error(error.message);
+}
+
+async function writeDispatchNotes(supabase: Awaited<ReturnType<typeof createClient>>, dispatchId: string, organizationId: string, formData: FormData) {
+  const notes = emptyToNull(formData.get("notes"));
+  const { error } = await supabase
+    .from("dispatch_internal_notes")
+    .upsert({ dispatch_id: dispatchId, organization_id: organizationId, notes }, { onConflict: "dispatch_id" });
+  if (error) throw new Error(error.message);
 }
 
 // Status is intentionally NOT part of dispatchValues(): createDispatch
@@ -258,6 +288,13 @@ export async function createDispatch(_prevState: DispatchActionState, formData: 
     }
     newDispatchId = data.id;
 
+    // Phase 2G.10: dispatch_fee_percentage/notes written here, after the
+    // dispatches row exists (their FK target) -- dispatch_financials_sync
+    // (0068) computes load_rate/dispatch_fee_amount/carrier_net_amount
+    // from dispatch_fee_percentage automatically on this insert.
+    await writeDispatchFinancials(supabase, newDispatchId, organizationId, formData);
+    await writeDispatchNotes(supabase, newDispatchId, organizationId, formData);
+
     await supabase.from("loads").update({ status: "dispatched" }).eq("id", loadId);
     await supabase.rpc("log_activity", { p_entity_type: "dispatch", p_entity_id: newDispatchId, p_action: "created", p_changes: null, p_organization_id: organizationId });
   } catch (err) {
@@ -290,7 +327,28 @@ export async function updateDispatch(id: string, _prevState: DispatchActionState
       excludeDispatchId: id,
     });
 
-    const { error } = await supabase.from("dispatches").update({ ...values, status }).eq("id", id);
+    // Phase 2I.1: this full-edit-form path is the OTHER real way a
+    // dispatch can reach status='delivered'/'completed' (the Dispatch
+    // Board's own drag/drop, updateDispatchBoardStatus(), already applied
+    // this bookkeeping) -- confirmed live to have been the actual cause
+    // of 3 dispatches reaching a delivered-like status with delivered_at
+    // left null (see the Phase 2I.1 pre-migration report's audit trail).
+    // Same shared, idempotent rule as the board move -- never overwrites
+    // a timestamp that's already set, applied to whichever ONE of the
+    // five 0057 columns this specific status transition (if any) owns.
+    const { data: priorRow } = await supabase
+      .from("dispatches")
+      .select("status, en_route_pickup_at, loaded_at, in_transit_at, delivered_at, cancelled_at")
+      .eq("id", id)
+      .maybeSingle();
+    const previousStatus = priorRow?.status ?? null;
+    const nowIso = new Date().toISOString();
+    const timestampUpdates = priorRow ? computeOperationalTimestampUpdates(status, priorRow, nowIso) : {};
+
+    const { error } = await supabase
+      .from("dispatches")
+      .update({ ...values, status, ...timestampUpdates })
+      .eq("id", id);
     if (error) {
       const indexName = matchedUniqueIndex(error.message);
       if (error.code === "23505" && indexName) {
@@ -299,7 +357,25 @@ export async function updateDispatch(id: string, _prevState: DispatchActionState
       throw error;
     }
 
-    await supabase.rpc("log_activity", { p_entity_type: "dispatch", p_entity_id: id, p_action: "updated", p_changes: null, p_organization_id: organizationId });
+    // Phase 2G.10: same split as createDispatch above.
+    await writeDispatchFinancials(supabase, id, organizationId, formData);
+    await writeDispatchNotes(supabase, id, organizationId, formData);
+
+    // Phase 2I.1: capture the actual status transition when one happened,
+    // same shape updateDispatchBoardStatus() already logs -- previously
+    // this call always passed p_changes: null unconditionally, which is
+    // exactly why no historical log row from this path could ever prove
+    // WHEN a status change happened (see the pre-migration report). Still
+    // logs on every save (not only status changes), matching this
+    // action's own prior "updated" semantics for anyone watching the
+    // Activity section for non-status edits.
+    await supabase.rpc("log_activity", {
+      p_entity_type: "dispatch",
+      p_entity_id: id,
+      p_action: "updated",
+      p_changes: previousStatus && previousStatus !== status ? { field: "status", old_value: previousStatus, new_value: status } : null,
+      p_organization_id: organizationId,
+    });
   } catch (err) {
     return translateDispatchError(err);
   }

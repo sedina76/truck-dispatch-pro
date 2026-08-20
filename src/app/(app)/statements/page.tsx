@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { computeStatementData, type StatementKind, type StatementPartyType } from "@/lib/statements/generate";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
 import { DesktopFilterBar, DesktopFilterField, desktopInputClass } from "@/components/desktop/filter-bar";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
@@ -52,7 +53,9 @@ export default async function StatementsPage({
   ]);
 
   return (
-    <div className="flex h-full min-h-0 gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <BillingSubnav />
+      <div className="flex min-h-0 flex-1 gap-3">
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         <div>
           <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Statements</h1>
@@ -129,6 +132,7 @@ export default async function StatementsPage({
       </div>
 
       {partyType && partyId && <AccountSummaryInspector partyType={partyType} partyId={partyId} />}
+      </div>
     </div>
   );
 }

@@ -14,10 +14,18 @@ type Row = {
 export default async function CarrierPerformancePage() {
   const supabase = await createClient();
 
-  const [{ data: carriers }, { data: dispatches }] = await Promise.all([
+  // Phase 2G.11: carrier_net_amount dropped from the dispatches select --
+  // 0068's writer cutover stopped populating it there; dispatch_financials
+  // is authoritative now, fetched separately and merged in by dispatch id.
+  // No additional role gating needed here -- this whole route is already
+  // layout-guarded to FINANCIAL_ROLES (see reports/layout.tsx).
+  const [{ data: carriers }, { data: dispatches }, { data: dispatchFinancials }] = await Promise.all([
     supabase.from("carriers").select("id, legal_name"),
-    supabase.from("dispatches").select("carrier_id, status, carrier_net_amount"),
+    supabase.from("dispatches").select("id, carrier_id, status"),
+    supabase.from("dispatch_financials").select("dispatch_id, carrier_net_amount"),
   ]);
+
+  const netAmountByDispatch = new Map((dispatchFinancials ?? []).map((r) => [r.dispatch_id, Number(r.carrier_net_amount)]));
 
   const rows: Row[] = (carriers ?? []).map((c) => {
     const carrierDispatches = (dispatches ?? []).filter((d) => d.carrier_id === c.id);
@@ -26,7 +34,7 @@ export default async function CarrierPerformancePage() {
       legal_name: c.legal_name,
       dispatchCount: carrierDispatches.length,
       completedCount: carrierDispatches.filter((d) => ["completed", "delivered"].includes(d.status)).length,
-      netTotal: carrierDispatches.reduce((sum, d) => sum + Number(d.carrier_net_amount), 0),
+      netTotal: carrierDispatches.reduce((sum, d) => sum + (netAmountByDispatch.get(d.id) ?? 0), 0),
     };
   });
   rows.sort((a, b) => b.dispatchCount - a.dispatchCount);

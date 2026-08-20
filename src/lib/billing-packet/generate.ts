@@ -3,6 +3,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestDocument, type DocumentRow } from "@/lib/documents/latest-document";
 import { computePodStatus } from "@/lib/documents/pod-status";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 const PAGE_WIDTH = 612; // US Letter, points
 const PAGE_HEIGHT = 792;
@@ -68,37 +70,94 @@ function drawWrappedText(
   return cursorY - options.lineHeight;
 }
 
+export type AppendResult = { ok: true } | { ok: false; reason: string };
+
 // Embeds an uploaded document's raw bytes as pages in the target packet.
 // PDFs are merged page-for-page (never re-rendered); JPG/PNG become a
 // single full-page image. The source object in Storage is only ever read,
 // never modified -- this never writes back to load-documents.
-async function appendDocumentPages(
-  targetDoc: PDFDocument,
-  bytes: ArrayBuffer,
-  mimeType: string | null
-): Promise<void> {
+//
+// Defensive by construction, not by accident: a live crash (TypeError:
+// Cannot read properties of undefined (reading 'Pages')) showed that
+// PDFDocument.load() can succeed -- the file parses enough to return a
+// PDFDocument -- while the page tree it parsed into is malformed/
+// incompatible enough that pdf-lib throws internally the moment
+// getPageIndices()/copyPages() actually walks it. Both calls, and the
+// image-embed path, are wrapped separately so ANY failure becomes a typed
+// AppendResult instead of an uncaught exception -- this function must
+// never throw. The caller (generateBillingPacket) decides what a failure
+// MEANS (required POD vs. optional supporting document), which is a
+// business decision, not this function's job.
+async function appendDocumentPages(targetDoc: PDFDocument, bytes: ArrayBuffer, mimeType: string | null): Promise<AppendResult> {
   if (mimeType === "application/pdf") {
-    const srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-    const copiedPages = await targetDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+    let srcDoc: PDFDocument;
+    try {
+      srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    } catch (err) {
+      return { ok: false, reason: `could not parse the PDF (${err instanceof Error ? err.message : "unknown error"})` };
+    }
+
+    let pageIndices: number[];
+    let copiedPages: Awaited<ReturnType<PDFDocument["copyPages"]>>;
+    try {
+      // The exact call site that crashed live: a malformed/incompatible
+      // internal page tree makes pdf-lib throw here even though load()
+      // above already returned successfully.
+      pageIndices = srcDoc.getPageIndices();
+      if (pageIndices.length === 0) {
+        return { ok: false, reason: "the PDF has zero pages" };
+      }
+      copiedPages = await targetDoc.copyPages(srcDoc, pageIndices);
+    } catch (err) {
+      return { ok: false, reason: `the PDF's page structure is invalid or unsupported (${err instanceof Error ? err.message : "unknown error"})` };
+    }
+
     copiedPages.forEach((p) => targetDoc.addPage(p));
-    return;
+    return { ok: true };
   }
 
-  const isPng = mimeType === "image/png";
-  const image = isPng ? await targetDoc.embedPng(bytes) : await targetDoc.embedJpg(bytes);
-  const page = targetDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  const maxW = PAGE_WIDTH - MARGIN * 2;
-  const maxH = PAGE_HEIGHT - MARGIN * 2;
-  const scale = Math.min(maxW / image.width, maxH / image.height, 1);
-  const w = image.width * scale;
-  const h = image.height * scale;
-  page.drawImage(image, { x: (PAGE_WIDTH - w) / 2, y: (PAGE_HEIGHT - h) / 2, width: w, height: h });
+  // Image attachments -- same defensive wrapping for symmetry (a
+  // corrupted JPG/PNG must not crash the packet either), valid-image
+  // handling below is otherwise unchanged.
+  try {
+    const isPng = mimeType === "image/png";
+    const image = isPng ? await targetDoc.embedPng(bytes) : await targetDoc.embedJpg(bytes);
+    const page = targetDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    const maxW = PAGE_WIDTH - MARGIN * 2;
+    const maxH = PAGE_HEIGHT - MARGIN * 2;
+    const scale = Math.min(maxW / image.width, maxH / image.height, 1);
+    const w = image.width * scale;
+    const h = image.height * scale;
+    page.drawImage(image, { x: (PAGE_WIDTH - w) / 2, y: (PAGE_HEIGHT - h) / 2, width: w, height: h });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `could not read the image (${err instanceof Error ? err.message : "unknown error"})` };
+  }
 }
 
 export type GeneratedPacket = {
   bytes: Uint8Array;
   documentSnapshot: { document_id: string; document_type: string; created_at: string }[];
+  // Optional supporting documents that were skipped because their file
+  // could not be read (spec: "surface a warning", never silently omit).
+  // Also written onto the packet's own cover page (see below) so the
+  // warning survives regardless of what the calling UI does with it.
+  skippedDocuments: { label: string; filename: string; reason: string }[];
 };
+
+// Logs enough to locate the bad document without ever logging file
+// contents/secrets -- id, filename, mime type, and invoice/load id only.
+function logAppendFailure(context: { invoiceId: string; loadId: string | null; documentId: string; filename: string; mimeType: string | null; label: string; reason: string }) {
+  console.error("[billing-packet] could not include a document in the packet:", {
+    invoice_id: context.invoiceId,
+    load_id: context.loadId,
+    document_id: context.documentId,
+    filename: context.filename,
+    mime_type: context.mimeType,
+    label: context.label,
+    reason: context.reason,
+  });
+}
 
 // Builds the full merged packet: cover page, invoice page (drawn directly,
 // not re-using the browser-print /invoices/[id]/pdf view, since this must
@@ -118,14 +177,14 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   const [{ data: org }, { data: lineItems }, loadRes, dispatchRes] = await Promise.all([
     supabase
       .from("organizations")
-      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code")
+      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code, timezone")
       .eq("id", invoice.organization_id)
       .single(),
     supabase.from("invoice_line_items").select("*").eq("invoice_id", invoiceId).order("sort_order"),
     invoice.load_id
       ? supabase
           .from("loads")
-          .select("load_number, total_miles, load_stops(stop_type, facility_name, city, state, scheduled_at)")
+          .select("load_number, total_miles, load_stops(stop_type, facility_name, city, state, scheduled_at, timezone)")
           .eq("id", invoice.load_id)
           .single()
       : Promise.resolve({ data: null }),
@@ -137,7 +196,7 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   const load = loadRes.data as unknown as {
     load_number: string;
     total_miles: number | null;
-    load_stops: { stop_type: string; facility_name: string | null; city: string | null; state: string | null; scheduled_at: string | null }[];
+    load_stops: { stop_type: string; facility_name: string | null; city: string | null; state: string | null; scheduled_at: string | null; timezone: string | null }[];
   } | null;
   const dispatchInfo = dispatchRes.data as unknown as {
     drivers: { first_name: string; last_name: string } | null;
@@ -145,6 +204,7 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   } | null;
   const pickup = load?.load_stops.find((s) => s.stop_type === "pickup") ?? null;
   const delivery = load?.load_stops.find((s) => s.stop_type === "delivery") ?? null;
+  const deliveryTz = resolveStopTimezone(delivery?.timezone ?? null, org?.timezone ?? null).timezone;
 
   const packet = await PDFDocument.create();
   const font = await packet.embedFont(StandardFonts.Helvetica);
@@ -171,7 +231,7 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   if (pickup) coverLine("Pickup", [pickup.facility_name, pickup.city, pickup.state].filter(Boolean).join(", ") || "--");
   if (delivery) {
     coverLine("Delivery", [delivery.facility_name, delivery.city, delivery.state].filter(Boolean).join(", ") || "--");
-    if (delivery.scheduled_at) coverLine("Delivery Date", new Date(delivery.scheduled_at).toLocaleDateString());
+    if (delivery.scheduled_at) coverLine("Delivery Date", formatStopDateTime(delivery.scheduled_at, deliveryTz, { dateOnly: true, includeYear: true }));
   }
   coverLine("Invoice Amount", `$${Number(invoice.total_amount).toLocaleString()}`);
 
@@ -225,23 +285,53 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   }
 
   // ---- POD (required, already confirmed verified) --------------------------
+  // Required, not optional: the packet has no meaning without it (spec:
+  // "Do not silently omit required POD... docs without telling the
+  // user"). Both a download failure and an appendDocumentPages failure
+  // now THROW a clean business error instead of either crashing
+  // (the original bug) or silently producing an "ready"-looking packet
+  // that's actually missing its one hard requirement.
+  const skippedDocuments: GeneratedPacket["skippedDocuments"] = [];
   if (readiness.pod) {
     const bytes = await downloadDocumentBytes(supabase, readiness.pod.file_path);
-    if (bytes) {
-      await appendDocumentPages(packet, bytes, readiness.pod.mime_type);
-      documentSnapshot.push({ document_id: readiness.pod.id, document_type: "pod", created_at: readiness.pod.created_at });
-      includedLabels.push("Proof of Delivery (Verified)");
+    if (!bytes) {
+      logAppendFailure({ invoiceId, loadId: invoice.load_id, documentId: readiness.pod.id, filename: readiness.pod.file_name, mimeType: readiness.pod.mime_type, label: "Proof of Delivery", reason: "could not download the file from storage" });
+      throw new Error(`Could not include the Proof of Delivery (${readiness.pod.file_name}): the file could not be read from storage. Please re-upload it and try again.`);
     }
+    const result = await appendDocumentPages(packet, bytes, readiness.pod.mime_type);
+    if (!result.ok) {
+      logAppendFailure({ invoiceId, loadId: invoice.load_id, documentId: readiness.pod.id, filename: readiness.pod.file_name, mimeType: readiness.pod.mime_type, label: "Proof of Delivery", reason: result.reason });
+      throw new Error(`Could not include the Proof of Delivery (${readiness.pod.file_name}): the PDF is invalid or unsupported. Please re-upload a valid file and try again.`);
+    }
+    documentSnapshot.push({ document_id: readiness.pod.id, document_type: "pod", created_at: readiness.pod.created_at });
+    includedLabels.push("Proof of Delivery (Verified)");
   }
 
   // ---- Optional supporting documents, in order ------------------------------
+  // Non-blocking: a malformed rate confirmation/BOL/etc. does not stop the
+  // packet (POD above is the only hard requirement, matching this
+  // module's existing readiness model) -- but it is never silently
+  // dropped either. It's recorded in skippedDocuments (surfaced to the
+  // caller) AND written directly onto the packet's own cover page below,
+  // so the warning is visible in the one artifact guaranteed to reach
+  // whoever generated or received it, regardless of what the calling UI
+  // does with the return value.
   if (invoice.load_id) {
     for (const { type, label } of SUPPORTING_DOC_TYPES) {
       const doc = await getLatestDocument(supabase, "load", invoice.load_id, type);
       if (!doc) continue;
       const bytes = await downloadDocumentBytes(supabase, doc.file_path);
-      if (!bytes) continue;
-      await appendDocumentPages(packet, bytes, doc.mime_type);
+      if (!bytes) {
+        logAppendFailure({ invoiceId, loadId: invoice.load_id, documentId: doc.id, filename: doc.file_name, mimeType: doc.mime_type, label, reason: "could not download the file from storage" });
+        skippedDocuments.push({ label, filename: doc.file_name, reason: "could not be downloaded from storage" });
+        continue;
+      }
+      const result = await appendDocumentPages(packet, bytes, doc.mime_type);
+      if (!result.ok) {
+        logAppendFailure({ invoiceId, loadId: invoice.load_id, documentId: doc.id, filename: doc.file_name, mimeType: doc.mime_type, label, reason: result.reason });
+        skippedDocuments.push({ label, filename: doc.file_name, reason: result.reason });
+        continue;
+      }
       documentSnapshot.push({ document_id: doc.id, document_type: type, created_at: doc.created_at });
       includedLabels.push(label);
     }
@@ -259,6 +349,20 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
     cover.drawText(`- ${label}`, { x: MARGIN, y, size: 10, font, color: rgb(0.06, 0.5, 0.35) });
     y -= 16;
   }
+
+  // Warning surfaced directly on the cover page (spec: "surfacing a
+  // warning", never silent) -- this is the one artifact guaranteed to
+  // reach whoever generated or received the packet, regardless of
+  // whether the calling UI does anything with skippedDocuments itself.
+  if (skippedDocuments.length > 0) {
+    y -= 8;
+    cover.drawText("Could Not Include:", { x: MARGIN, y, size: 10, font: boldFont, color: rgb(0.6, 0.35, 0.05) });
+    y -= 16;
+    for (const skipped of skippedDocuments) {
+      y = drawWrappedText(cover, `- ${skipped.label} (${skipped.filename}): ${skipped.reason}`, MARGIN, y, { font, size: 9, maxWidth: PAGE_WIDTH - MARGIN * 2, lineHeight: 12, color: rgb(0.6, 0.35, 0.05) }) + 4;
+    }
+  }
+
   y -= 10;
   cover.drawText(`Total Amount Due: $${Number(invoice.total_amount).toLocaleString()}`, {
     x: MARGIN,
@@ -268,7 +372,7 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   });
 
   const bytes = await packet.save();
-  return { bytes, documentSnapshot };
+  return { bytes, documentSnapshot, skippedDocuments };
 }
 
 async function downloadDocumentBytes(

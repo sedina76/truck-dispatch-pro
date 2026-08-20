@@ -1,11 +1,7 @@
 import { ArrowDown } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { LoadSummary, StopSummary } from "@/app/(app)/dispatch/dispatch-data";
-
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "-- no date set";
-  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
+import { formatStopDateTime } from "@/lib/timezone/format";
 
 // Read-only, load_stops/loads only -- no duplicate pickup/delivery columns
 // anywhere. Same component renders for New Dispatch and the existing
@@ -43,7 +39,7 @@ export function TripStopsPanel({ stops }: { stops: StopSummary[] }) {
               <span className="text-[13px] font-medium text-desktop-text">{stop.facility_name ?? "Unnamed facility"}</span>
             </div>
             <p className="mt-1 text-[12.5px] text-desktop-text-muted">
-              {[stop.city, stop.state].filter(Boolean).join(", ") || "-- no location set"} &middot; {fmtDateTime(stop.scheduled_at)}
+              {[stop.city, stop.state].filter(Boolean).join(", ") || "-- no location set"} &middot; {formatStopDateTime(stop.scheduled_at, stop.timezone)}
             </p>
             {stop.reference_number && <p className="text-[11.5px] text-desktop-text-muted">{stop.stop_type === "pickup" ? "Pickup #" : "Ref #"}: {stop.reference_number}</p>}
           </div>

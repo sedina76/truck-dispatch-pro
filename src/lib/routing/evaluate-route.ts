@@ -8,6 +8,7 @@ import { classifyRisk, classifyConfidence, type RiskStatus } from "./risk";
 import { RoutingProviderError } from "./types";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { formatStopDateTime } from "@/lib/timezone/format";
+import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 
 type ServiceRoleClient = ReturnType<typeof createServiceRoleClient>;
 
@@ -104,6 +105,12 @@ async function maybeAlertRiskTransition(
   }
 
   await logActivity(supabase, { organizationId: ctx.organizationId, dispatchId: ctx.dispatchId, action: "eta_risk_changed", changes: { from, to, source: "system:route" } });
+
+  // Phase 2E push-hook -- same restraint as Phase 2D's own hook in
+  // evaluate-route-deviation.ts: only on an alertable transition (already
+  // gated above), never on every recalculation. Fire-and-forget +
+  // isolated: a failure here must never break ETA/risk evaluation.
+  syncExceptionsForDispatch(supabase, ctx.organizationId, ctx.dispatchId).catch((err) => console.warn("[route-intel] exception sync failed:", err));
 }
 
 function shouldRecalculate(existing: RouteRow | null, currentLat: number, currentLon: number, nowIso: string, forceRecalc: boolean): boolean {

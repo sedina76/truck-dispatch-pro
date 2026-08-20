@@ -11,6 +11,8 @@ import { StatusUpdateControl } from "@/components/driver-portal/status-update-co
 import { LocationSharing } from "@/components/driver-portal/location-sharing";
 import { GeofenceStatusCard, type GeofenceStopInfo } from "@/components/driver-portal/geofence-status";
 import { formatMiles } from "@/lib/routing/risk";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
 const DRIVER_RISK_LABEL: Record<string, string> = { on_time: "On Time", at_risk: "At Risk", late: "Late" };
 
@@ -86,7 +88,7 @@ export default async function DriverPortalTripPage() {
   // word. Never margin/profit/rates -- this reads only the columns that
   // exist (no financial fields are even present on dispatch_route_
   // intelligence, so there's nothing to accidentally leak here).
-  const routeIntel = await getRouteIntelForTrip(supabase, dispatch.id);
+  const routeIntel = await getRouteIntelForTrip(supabase, dispatch.id, identity.organizationId);
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -123,7 +125,7 @@ export default async function DriverPortalTripPage() {
                 {stop.stop_sequence}. {stop.stop_type} -- {stop.facility_name ?? "Unnamed facility"}
               </p>
               <p className="text-xs text-muted-foreground">
-                {stop.city ?? "--"}, {stop.state ?? "--"} &middot; {fmtDateTime(stop.scheduled_at)}
+                {stop.city ?? "--"}, {stop.state ?? "--"} &middot; {formatStopDateTime(stop.scheduled_at, stop.timezone, { includeYear: false })}
                 {stop.reference_number && ` · Ref: ${stop.reference_number}`}
               </p>
             </div>
@@ -158,6 +160,12 @@ export default async function DriverPortalTripPage() {
           ) : (
             <p className="text-sm text-muted-foreground">Route ETA unavailable.</p>
           )}
+          {/* Phase 2D (spec section 35): a plain operational status line
+              only, and only when it's actually off route -- no distance, no
+              severity, no dispatcher commentary, no turn-by-turn rerouting.
+              Quiet (renders nothing) the rest of the time, matching this
+              page's existing "only show what's actionable" style. */}
+          {routeIntel.routeStatus === "off_route" && <p className="mt-2 text-sm font-bold text-danger">Route status: Off route</p>}
         </div>
       )}
 
@@ -258,7 +266,7 @@ async function getGeofenceStatusForTrip(supabase: any, dispatchId: string, loadI
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getRouteIntelForTrip(supabase: any, dispatchId: string) {
+async function getRouteIntelForTrip(supabase: any, dispatchId: string, organizationId: string) {
   try {
     const { data: row, error } = await supabase
       .from("dispatch_route_intelligence")
@@ -269,9 +277,30 @@ async function getRouteIntelForTrip(supabase: any, dispatchId: string) {
       .maybeSingle();
     if (error || !row) return null;
 
-    const { data: stopRow } = await supabase.from("load_stops").select("facility_name, city, state").eq("id", row.target_stop_id).maybeSingle();
+    const [{ data: stopRow }, { data: orgRow }] = await Promise.all([
+      supabase.from("load_stops").select("facility_name, city, state, timezone").eq("id", row.target_stop_id).maybeSingle(),
+      supabase.from("organizations").select("timezone").eq("id", organizationId).maybeSingle(),
+    ]);
     const targetStopLabel = stopRow ? stopRow.facility_name || [stopRow.city, stopRow.state].filter(Boolean).join(", ") || null : null;
-    const fmtTime = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : null);
+    // Phase 2C.1: driver-facing ETA/appointment in the target stop's own
+    // timezone, never the driver's phone timezone (spec section 24).
+    const targetTimezone = resolveStopTimezone(stopRow?.timezone ?? null, orgRow?.timezone ?? null).timezone;
+    const fmtTime = (iso: string | null) => (iso ? formatStopDateTime(iso, targetTimezone, { timeOnly: true }) : null);
+
+    // Phase 2D (spec section 35): the ONLY field surfaced from
+    // dispatch_route_deviation_state on this page -- deliberately no
+    // distance, no severity, no dispatcher-facing detail. A dismissed
+    // exception (false positive) is not shown to the driver either.
+    let routeStatus: "off_route" | null = null;
+    if (row.target_stop_id) {
+      const { data: devRow } = await supabase
+        .from("dispatch_route_deviation_state")
+        .select("state, calculation_status, dismissed_at")
+        .eq("dispatch_id", dispatchId)
+        .eq("target_stop_id", row.target_stop_id)
+        .maybeSingle();
+      if (devRow?.state === "off_route" && devRow.calculation_status === "ok" && !devRow.dismissed_at) routeStatus = "off_route";
+    }
 
     return {
       targetStopLabel,
@@ -282,6 +311,7 @@ async function getRouteIntelForTrip(supabase: any, dispatchId: string) {
         : (fmtTime(row.appointment_at) ?? "Not set"),
       riskStatus: row.risk_status as "unknown" | "on_time" | "at_risk" | "late" | "arrived",
       calculationStatus: row.calculation_status as string,
+      routeStatus,
     };
   } catch (err) {
     console.warn("[driver-portal] route intelligence unavailable:", err);

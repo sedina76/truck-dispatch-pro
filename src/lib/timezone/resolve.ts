@@ -30,6 +30,7 @@ export function resolveStopTimezone(stopTimezone: string | null, organizationTim
 // ID, OR among them), so a state-keyed lookup table would be silently
 // wrong for a meaningful fraction of real addresses. No provider is
 // configured; this always returns null today.
-export function geocodedTimezoneLookup(_latitude: number, _longitude: number): string | null {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature documents the intended future inputs even though no provider is wired up yet.
+export function geocodedTimezoneLookup(latitude: number, longitude: number): string | null {
   return null;
 }

@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { toCsv, csvResponse, formatMoney, formatDate } from "@/lib/export/csv";
+import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 
 type Row = {
   invoice_number: string;
@@ -20,6 +21,9 @@ type Row = {
 // Same canonical get_ar_invoices() the on-screen A/R page reads -- no
 // independent query, so the export can never disagree with the grid.
 export async function GET() {
+  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  if (denied) return denied;
+
   const supabase = await createClient();
   const { data } = await supabase.rpc("get_ar_invoices");
   const rows = ((data ?? []) as Row[]).filter((r) => r.balance_due > 0);

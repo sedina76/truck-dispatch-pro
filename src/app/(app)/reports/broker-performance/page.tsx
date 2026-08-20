@@ -14,10 +14,20 @@ type Row = {
 export default async function BrokerPerformancePage() {
   const supabase = await createClient();
 
-  const [{ data: brokers }, { data: loads }] = await Promise.all([
-    supabase.from("brokers").select("id, company_name, average_days_to_pay"),
-    supabase.from("loads").select("broker_id, rate"),
+  // Phase 2G.12: average_days_to_pay dropped from the brokers select and
+  // rate from the loads select -- broker_financials/load_financials are
+  // authoritative now. No additional role gating needed here -- this
+  // whole route is already layout-guarded to FINANCIAL_ROLES (see
+  // reports/layout.tsx).
+  const [{ data: brokers }, { data: loads }, { data: brokerFinancials }, { data: loadFinancials }] = await Promise.all([
+    supabase.from("brokers").select("id, company_name"),
+    supabase.from("loads").select("id, broker_id"),
+    supabase.from("broker_financials").select("broker_id, average_days_to_pay"),
+    supabase.from("load_financials").select("load_id, rate"),
   ]);
+
+  const daysToPayByBroker = new Map((brokerFinancials ?? []).map((r) => [r.broker_id, r.average_days_to_pay]));
+  const rateByLoadId = new Map((loadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
 
   const rows: Row[] = (brokers ?? []).map((b) => {
     const brokerLoads = (loads ?? []).filter((l) => l.broker_id === b.id);
@@ -25,8 +35,8 @@ export default async function BrokerPerformancePage() {
       id: b.id,
       company_name: b.company_name,
       loadCount: brokerLoads.length,
-      totalValue: brokerLoads.reduce((sum, l) => sum + Number(l.rate), 0),
-      average_days_to_pay: b.average_days_to_pay,
+      totalValue: brokerLoads.reduce((sum, l) => sum + (rateByLoadId.get(l.id) ?? 0), 0),
+      average_days_to_pay: daysToPayByBroker.get(b.id) ?? null,
     };
   });
   rows.sort((a, b) => b.totalValue - a.totalValue);

@@ -6,6 +6,7 @@ import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 type Carrier = {
   id: string;
@@ -15,10 +16,12 @@ type Carrier = {
   dot_number: string | null;
   contact_name: string | null;
   phone: string | null;
-  dispatch_fee_percentage: number;
+  dispatch_fee_percentage?: number;
   is_active: boolean;
 };
 
+// Phase 2G.10 (item 6 full search): same missed-list-page gap as Brokers/
+// Customers -- Carriers is Business, open to every role, no layout guard.
 export default async function CarriersPage({
   searchParams,
 }: {
@@ -27,17 +30,30 @@ export default async function CarriersPage({
   const { q } = await searchParams;
   const supabase = await createClient();
 
+  const { data: roleData } = await supabase.rpc("current_role");
+  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+
+  // Phase 2G.12: dispatch_fee_percentage dropped from this select --
+  // 2G.10's writer cutover moved it to carrier_financials; carriers' own
+  // copy is stale the moment it's edited. Merged in below from a separate
+  // query, issued only when canSeeFinancials.
   let query = supabase
     .from("carriers")
-    .select(
-      "id, legal_name, dba_name, mc_number, dot_number, contact_name, phone, dispatch_fee_percentage, is_active"
-    )
+    .select("id, legal_name, dba_name, mc_number, dot_number, contact_name, phone, is_active")
     .order("legal_name");
 
   if (q) query = query.ilike("legal_name", `%${q}%`);
 
   const { data } = await query;
-  const carriers = (data ?? []) as Carrier[];
+  const carriersRaw = (data ?? []) as unknown as Omit<Carrier, "dispatch_fee_percentage">[];
+
+  const carrierIds = carriersRaw.map((c) => c.id);
+  const feeByCarrierId = new Map<string, number>();
+  if (canSeeFinancials && carrierIds.length > 0) {
+    const { data: financialsRows } = await supabase.from("carrier_financials").select("carrier_id, dispatch_fee_percentage").in("carrier_id", carrierIds);
+    for (const row of financialsRows ?? []) feeByCarrierId.set(row.carrier_id, Number(row.dispatch_fee_percentage));
+  }
+  const carriers: Carrier[] = carriersRaw.map((c) => ({ ...c, dispatch_fee_percentage: feeByCarrierId.get(c.id) }));
 
   const { count: totalCount } = await supabase
     .from("carriers")
@@ -48,9 +64,9 @@ export default async function CarriersPage({
     .eq("is_active", true);
 
   const avgFee =
-    carriers.length > 0
+    canSeeFinancials && carriers.length > 0
       ? (
-          carriers.reduce((sum, c) => sum + Number(c.dispatch_fee_percentage), 0) /
+          carriers.reduce((sum, c) => sum + Number(c.dispatch_fee_percentage ?? 0), 0) /
           carriers.length
         ).toFixed(1)
       : "0.0";
@@ -70,7 +86,7 @@ export default async function CarriersPage({
     { header: "MC / DOT", cell: (row) => `${row.mc_number ?? "--"} / ${row.dot_number ?? "--"}` },
     { header: "Contact", cell: (row) => row.contact_name ?? "--" },
     { header: "Phone", cell: (row) => row.phone ?? "--" },
-    { header: "Fee %", cell: (row) => `${Number(row.dispatch_fee_percentage).toFixed(2)}%` },
+    ...(canSeeFinancials ? [{ header: "Fee %", cell: (row: Carrier) => `${Number(row.dispatch_fee_percentage ?? 0).toFixed(2)}%` }] : []),
     {
       header: "Status",
       cell: (row) => <StatusBadge status={row.is_active ? "active" : "inactive"} />,
@@ -89,7 +105,7 @@ export default async function CarriersPage({
         <KpiCard label="Total Carriers" value={totalCount ?? 0} />
         <KpiCard label="Active" value={activeCount ?? 0} />
         <KpiCard label="Inactive" value={(totalCount ?? 0) - (activeCount ?? 0)} />
-        <KpiCard label="Avg Dispatch Fee" value={`${avgFee}%`} />
+        {canSeeFinancials && <KpiCard label="Avg Dispatch Fee" value={`${avgFee}%`} />}
       </KpiRow>
 
       <SearchBar placeholder="Search carriers by name..." />
