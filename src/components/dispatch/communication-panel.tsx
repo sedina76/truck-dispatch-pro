@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Phone, Copy, Send, Loader2 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { logDriverCall, sendDispatchMessage, loadMoreDispatchMessages, type DrawerActivity, type DrawerMessage } from "@/app/(app)/dispatch/board-actions";
+import {
+  logDriverCall,
+  sendDispatchMessage,
+  loadMoreDispatchMessages,
+  markDispatchMessagesRead,
+  type DrawerActivity,
+  type DrawerMessage,
+} from "@/app/(app)/dispatch/board-actions";
 import { cn } from "@/lib/utils";
 
 // Phase 2I.1 (Part B) -- the Dispatch Drawer's Communication section:
@@ -84,6 +91,32 @@ export function CommunicationPanel({
   const [sending, startSend] = useTransition();
   const [logging, startLog] = useTransition();
   const [loadingMore, startLoadMore] = useTransition();
+
+  // Phase 2I.1A section B -- mark the driver's messages read exactly once
+  // per genuine open of this panel. This component only exists in the
+  // tree while its parent's data has actually loaded for THIS dispatch
+  // (dispatch-drawer.tsx unmounts it between dispatches and while
+  // loading), so a plain mount-guarded effect -- the same pattern already
+  // proven in driver-portal/message-thread.tsx's markMyMessagesRead --
+  // gives exactly the required behavior: never on login, never on Board
+  // load, never for a drawer open on another tab, and a fresh guard (thus
+  // a fresh read) each time a different dispatch's drawer is opened.
+  // Failures are swallowed (best-effort, matching the driver-side
+  // precedent) rather than surfaced as a toast -- an unread badge staying
+  // one tick stale is not worth interrupting the dispatcher.
+  const markedReadRef = useRef(false);
+  useEffect(() => {
+    // Viewer/accountant have read-only access to this panel (composer
+    // hidden below) -- markDispatchMessagesRead is gated server-side to
+    // owner/admin/dispatcher (requireDispatchOpsAccess), so skip the call
+    // entirely for those roles rather than firing a request guaranteed to
+    // be rejected.
+    if (!canManageDispatchOps) return;
+    if (markedReadRef.current) return;
+    markedReadRef.current = true;
+    markDispatchMessagesRead(dispatchId).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const callEntries: TimelineEntry[] = activity
     .filter((a) => a.action === "call_logged")
@@ -174,6 +207,14 @@ export function CommunicationPanel({
               <Copy className="mr-1.5 size-3.5" /> Copy Number
             </Button>
           </div>
+        )}
+        {canManageDispatchOps && driver?.phone && (
+          // Phase 2I.1A section A -- honesty requirement: Call Driver only
+          // ever hands off to the device's native phone app (tel:), there
+          // is no in-portal voice provider. Never imply "Calling...",
+          // "Connected", or any in-app call state here or anywhere else in
+          // this panel.
+          <p className="mt-1 text-[10.5px] text-muted-foreground">Opens your device&apos;s phone app.</p>
         )}
         {canManageDispatchOps && (
           <div className="mt-1.5 flex flex-wrap gap-1">

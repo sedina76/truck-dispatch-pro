@@ -141,6 +141,34 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
     };
   }, [dispatchId]);
 
+  // Phase 2I.1A section K -- lightweight 20s polling so a driver's reply
+  // (or its read-state) surfaces without a manual close/reopen, using the
+  // drawer's OWN existing narrow fetch (getDispatchDrawerData), never
+  // router.refresh() or a new realtime/websocket channel. Guarded against
+  // overlap (skips a tick if the previous fetch is still in flight) and
+  // stops the moment the drawer closes or unmounts.
+  useEffect(() => {
+    if (!dispatchId) return;
+    let cancelled = false;
+    let inFlight = false;
+    const interval = setInterval(() => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      getDispatchDrawerData(dispatchId)
+        .then((fresh) => {
+          if (cancelled) return;
+          if (!("error" in fresh)) setData(fresh);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    }, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dispatchId]);
+
   if (!dispatchId) return null;
 
   async function refresh() {

@@ -1,0 +1,25 @@
+-- =============================================================================
+-- 0083_dispatch_message_notification_type.sql
+-- Phase 2I.1A: Dispatch Communication Notifications Repair.
+-- PROPOSED ONLY -- NOT APPLIED (do not apply until instructed; live
+-- verification happens only after manual application via Supabase's own
+-- tooling, per this project's established migration discipline).
+--
+-- Single addition: one new public.notification_type enum value,
+-- 'dispatch_message', so a driver's reply can fan out into the existing
+-- public.notifications table (0007_productivity.sql) with its own
+-- specific type rather than overloading the generic 'system' value every
+-- other subsystem has been forced to reuse so far.
+--
+-- Scope, deliberately minimal, per the approved design:
+--   - No new table. public.notifications (0007) already has every column
+--     this needs (organization_id, profile_id, type, title, body,
+--     entity_type, entity_id, read_at, created_at).
+--   - No table-structure change of any kind.
+--   - No Realtime publication change, for dispatch_messages OR
+--     notifications -- Phase 2I.1A uses polling, not Realtime (see the
+--     pre-apply report's Realtime-vs-polling rationale).
+--   - No change to any prior migration.
+-- =============================================================================
+
+alter type public.notification_type add value if not exists 'dispatch_message';

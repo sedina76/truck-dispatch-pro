@@ -413,6 +413,59 @@ export async function loadMoreDriverMessages(dispatchId: string, beforeCreatedAt
   return { messages, hasMore };
 }
 
+// Phase 2I.1A section C -- staff notification fan-out for a driver-sent
+// message. Same "one row per active owner/admin/dispatcher profile"
+// pattern already proven by notifyOfficeStaff() in
+// evaluate-route-deviation.ts, reproduced locally here (not imported --
+// that helper is server-only tracking code, this is driver-portal code;
+// duplicating one small, already-battle-tested query is simpler than
+// introducing a shared cross-module dependency for it). accountant/
+// viewer/driver are never eligible recipients. Best-effort: a failed
+// notification insert must never fail the message send itself (the
+// message is already durably written by the time this runs).
+const MESSAGE_PREVIEW_MAX_CHARS = 80; // + the "Load <n>: " prefix keeps the whole body near the ~100-char target (spec section C)
+
+function truncateMessagePreview(text: string): string {
+  // Plain text only -- collapse whitespace/newlines so a multi-line
+  // message can't blow up the notification's line count, never HTML.
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > MESSAGE_PREVIEW_MAX_CHARS ? `${collapsed.slice(0, MESSAGE_PREVIEW_MAX_CHARS).trimEnd()}...` : collapsed;
+}
+
+async function notifyOfficeStaffOfDriverMessage(
+  supabase: ReturnType<typeof createServiceRoleClient>,
+  organizationId: string,
+  dispatchId: string,
+  driverName: string,
+  loadNumber: string,
+  messageBody: string
+) {
+  const { data: recipients } = await supabase
+    .from("profiles")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .in("role", ["owner", "admin", "dispatcher"])
+    .eq("is_active", true);
+  if (!recipients || recipients.length === 0) return;
+
+  // Deliberately just name + load number + a truncated preview of the
+  // driver's own words -- never rate/carrier-pay/dispatch-fee/factoring/
+  // financial/private-document/compliance data, none of which this
+  // function has access to in the first place (only the message body,
+  // driver name, and load number are passed in).
+  const rows = recipients.map((r) => ({
+    organization_id: organizationId,
+    profile_id: r.id,
+    type: "dispatch_message" as const,
+    title: `New message from ${driverName}`,
+    body: `Load ${loadNumber}: ${truncateMessagePreview(messageBody)}`,
+    entity_type: "dispatch" as const,
+    entity_id: dispatchId,
+  }));
+  const { error } = await supabase.from("notifications").insert(rows);
+  if (error) console.error("[driver-portal] dispatch_message notification insert failed:", error);
+}
+
 export async function sendDriverMessage(dispatchId: string, body: string) {
   const trimmed = body.trim();
   if (!trimmed) throw new Error("Message cannot be empty.");
@@ -421,7 +474,11 @@ export async function sendDriverMessage(dispatchId: string, body: string) {
   const identity = await requireIdentity();
   const supabase = createServiceRoleClient();
 
-  const { data: dispatch } = await supabase.from("dispatches").select("id, load_id, driver_id, organization_id").eq("id", dispatchId).maybeSingle();
+  const { data: dispatch } = await supabase
+    .from("dispatches")
+    .select("id, load_id, driver_id, organization_id, loads(load_number)")
+    .eq("id", dispatchId)
+    .maybeSingle();
   if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {
     throw new Error("This trip is not assigned to you.");
   }
@@ -437,7 +494,47 @@ export async function sendDriverMessage(dispatchId: string, body: string) {
   });
   if (error) throw new Error(error.message);
 
+  // Best-effort fan-out, after the message itself is durably written --
+  // see section L's finding (no server-side send-idempotency exists) in
+  // the pre-apply report: a duplicate client resubmission would fan out a
+  // duplicate notification too, same exposure the message row itself
+  // already has today, not a new category of risk introduced by this
+  // section.
+  const loadNumber = (dispatch as unknown as { loads: { load_number: string } | null }).loads?.load_number ?? "Unknown";
+  const driverName = `${identity.firstName} ${identity.lastName}`.trim();
+  await notifyOfficeStaffOfDriverMessage(supabase, identity.organizationId, dispatchId, driverName, loadNumber, trimmed).catch((e) =>
+    console.error("[driver-portal] dispatch_message notification fan-out failed:", e)
+  );
+
   revalidatePath("/driver-portal/messages");
+}
+
+// Phase 2I.1A section G -- unread-count for the bottom-nav badge and
+// dashboard alert. Driver/org identity comes exclusively from the
+// session cookie (requireIdentity/getCurrentDispatch), exactly like every
+// other action in this file -- there is no dispatchId/driverId/
+// organizationId parameter here at all, so there is nothing for the
+// browser to spoof. read_at on dispatch_messages stays the sole source of
+// truth (never derived from `notifications`, which this driver-side path
+// doesn't even read -- drivers have no profiles row / notifications
+// recipient identity in the first place).
+export async function getMyUnreadMessageCount(): Promise<number> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return 0;
+
+  const { count, error } = await supabase
+    .from("dispatch_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("dispatch_id", dispatch.id)
+    .eq("sender_type", "staff")
+    .is("read_at", null);
+  if (error) {
+    console.error("[driver-portal] unread message count failed:", error);
+    return 0;
+  }
+  return count ?? 0;
 }
 
 export async function markMyMessagesRead(dispatchId: string) {

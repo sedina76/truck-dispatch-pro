@@ -31,6 +31,8 @@ type NotificationRow = {
   title: string;
   body: string | null;
   type: string;
+  entity_type: string | null;
+  entity_id: string | null;
   read_at: string | null;
   created_at: string;
 };

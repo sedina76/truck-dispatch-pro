@@ -159,6 +159,24 @@ export default async function DispatchBoardPage() {
     }
   }
 
+  // Phase 2I.1A section F -- same degradable/batched pattern as the
+  // exception count above: one query for every dispatch's unread driver
+  // messages, never per-card. read_at on dispatch_messages stays the sole
+  // source of truth (never derived from `notifications`).
+  const unreadMessageCountByDispatch = new Map<string, number>();
+  if (dispatchIds.length > 0) {
+    const { data: unreadMessageRows, error: unreadMessageError } = await supabase
+      .from("dispatch_messages")
+      .select("dispatch_id")
+      .in("dispatch_id", dispatchIds)
+      .eq("sender_type", "driver")
+      .is("read_at", null);
+    if (unreadMessageError) console.warn("[dispatch board] unread driver messages unavailable:", unreadMessageError);
+    for (const row of (unreadMessageRows ?? []) as { dispatch_id: string }[]) {
+      unreadMessageCountByDispatch.set(row.dispatch_id, (unreadMessageCountByDispatch.get(row.dispatch_id) ?? 0) + 1);
+    }
+  }
+
   // Batched, not per-card -- one query for every load's stops, one for POD
   // presence, matching the existing getLatestDocumentsByEntity() pattern
   // already used by the dashboard/loads-list/driver-trip-history for
@@ -300,6 +318,7 @@ export default async function DispatchBoardPage() {
       // board filter (spec section 31), never overloaded onto `risk`.
       off_route: deviation?.state === "off_route" && deviation.calculation_status === "ok" && !deviation.dismissed_at,
       active_exception_count: exceptionCountByDispatch.get(d.id) ?? 0,
+      unread_driver_message_count: unreadMessageCountByDispatch.get(d.id) ?? 0,
     };
   });
 

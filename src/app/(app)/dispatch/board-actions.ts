@@ -1291,6 +1291,12 @@ export async function markDispatchMessagesRead(dispatchId: string): Promise<Boar
     return { ok: false, error: "Unable to update read status." };
   }
 
+  // Phase 2I.1A section F -- this is now a board-visible field (the
+  // per-card unread-message badge), so it needs the same two-path
+  // revalidation every other board-affecting action here already uses
+  // (updateDispatchBoardStatus, setStopAppointment, etc.), not just the
+  // single-detail-page revalidation this action had before.
+  revalidatePath("/dispatch/board");
   revalidatePath(`/dispatch/${dispatchId}`);
   return { ok: true };
 }

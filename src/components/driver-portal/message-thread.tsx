@@ -25,6 +25,45 @@ export function MessageThread({ dispatchId, initialMessages, initialHasMore }: {
     markMyMessagesRead(dispatchId).catch(() => {});
   }, [dispatchId]);
 
+  // Phase 2I.1A section K -- lightweight 20s polling via the existing
+  // narrow getMyDispatchMessages() server action, never a websocket/
+  // Realtime channel (Realtime is structurally unusable here anyway --
+  // the Driver Portal has no Supabase Auth session/JWT). Merges in only
+  // genuinely new rows (matches communication-panel.tsx's identical
+  // merge-not-replace precedent) so a page of older history already
+  // loaded via "Load earlier messages" is never dropped by a poll tick.
+  // A newly-arrived staff message is intentionally NOT auto-marked read
+  // by this poll -- read-marking stays a mount-time-only action (this
+  // effect's own guard above), matching section J's "never auto-marks
+  // from merely being on the dashboard" precedent extended here to "or
+  // merely still having the thread open in the background."
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    const interval = setInterval(() => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      getMyDispatchMessages()
+        .then((fresh) => {
+          if (cancelled || fresh.dispatchId !== dispatchId) return;
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newOnes = fresh.messages.filter((m) => !existingIds.has(m.id));
+            if (newOnes.length === 0) return prev;
+            return [...prev, ...newOnes].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          });
+        })
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    }, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dispatchId]);
+
   function handleSend() {
     const trimmed = text.trim();
     if (!trimmed) return;

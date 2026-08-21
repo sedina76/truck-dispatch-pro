@@ -46,9 +46,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const organizationName = profile.organizations?.name ?? "Your organization";
 
+  // entity_type/entity_id added (Phase 2I.1A section E) so a
+  // dispatch_message notification can navigate straight to the dispatch
+  // it's about -- both columns already existed on this table (0007), this
+  // is a select-list addition only, no schema change.
   const { data: notifications } = await supabase
     .from("notifications")
-    .select("id, title, body, type, read_at, created_at")
+    .select("id, title, body, type, entity_type, entity_id, read_at, created_at")
     .eq("profile_id", user.id)
     .order("created_at", { ascending: false })
     .limit(20);

@@ -11,7 +11,7 @@ import { useDesktopActions } from "@/components/desktop/actions-context";
 import { NotificationsMenu } from "@/components/nav/notifications-menu";
 import { type OrgRole, BILLING_WORKSPACE_PREFIXES, visibleSections } from "@/components/nav/nav-config";
 
-type NotificationRow = { id: string; title: string; body: string | null; type: string; read_at: string | null; created_at: string };
+type NotificationRow = { id: string; title: string; body: string | null; type: string; entity_type: string | null; entity_id: string | null; read_at: string | null; created_at: string };
 
 // Phase 2G.6: the entire mobile (below lg:, <1024px) staff shell in one
 // component -- compact header + bottom nav + "More" drawer -- rendered

@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   DndContext,
   DragOverlay,
@@ -14,7 +15,7 @@ import {
 } from "@dnd-kit/core";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { Truck, UserRound, Search, X, AlertTriangle } from "lucide-react";
+import { Truck, UserRound, Search, X, AlertTriangle, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { updateDispatchBoardStatus } from "../board-actions";
 import { useToast } from "@/components/ui/toast";
@@ -54,6 +55,13 @@ export type DispatchCard = {
   // undefined/error) when migration 0063 isn't applied yet -- see
   // dispatch/board/page.tsx's graceful-degrade fetch.
   active_exception_count: number;
+  // Phase 2I.1A section F -- count of dispatch_messages rows for this
+  // dispatch with sender_type='driver' AND read_at IS NULL. Deliberately
+  // NOT derived from `notifications` (dispatch_messages.read_at stays the
+  // sole source of truth); clears once the Communication panel is opened
+  // and markDispatchMessagesRead() succeeds, visible on the next
+  // refresh/poll.
+  unread_driver_message_count: number;
 };
 
 // Exact mapping approved for this pass -- dispatch_status itself is
@@ -154,7 +162,7 @@ function DispatchDraggableCard({ card, onOpen }: { card: DispatchCard; onOpen: (
           {card.miles_remaining_meters != null && `${Math.round(card.miles_remaining_meters / 1609.344)} mi`}
         </p>
       )}
-      {card.exceptions.length > 0 && (
+      {(card.exceptions.length > 0 || card.unread_driver_message_count > 0) && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {card.exceptions.map((ex) => (
             <span key={ex} className={cn("inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-semibold", exceptionTone(ex))}>
@@ -162,6 +170,16 @@ function DispatchDraggableCard({ card, onOpen }: { card: DispatchCard; onOpen: (
               {ex}
             </span>
           ))}
+          {card.unread_driver_message_count > 0 && (
+            // Deliberately non-dominant tone (spec section F) -- an unread
+            // message is informational, not an operational exception, so
+            // it must never compete visually with the red/amber exception
+            // badges above.
+            <span className="inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+              <MessageCircle className="size-2.5" />
+              Messages • {card.unread_driver_message_count}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -296,6 +314,23 @@ export function KanbanBoard({ initialCards }: { initialCards: DispatchCard[] }) 
   const [openDispatchId, setOpenDispatchId] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const toast = useToast();
+  const searchParams = useSearchParams();
+
+  // Phase 2I.1A section E: a notification bell click for a dispatch_message
+  // notification lands here as /dispatch/board?dispatch=<id> -- open that
+  // dispatch's drawer once on arrival. Guarded by a ref (not a dependency
+  // on the param itself) so it fires exactly once per navigation rather
+  // than re-opening a manually-closed drawer if some other state update
+  // re-runs this effect.
+  const appliedDispatchParamRef = useRef(false);
+  useEffect(() => {
+    if (appliedDispatchParamRef.current) return;
+    const target = searchParams.get("dispatch");
+    if (target) {
+      appliedDispatchParamRef.current = true;
+      setOpenDispatchId(target);
+    }
+  }, [searchParams]);
   // Suppresses the drawer-open click that would otherwise fire right after
   // a real drag-and-drop (dnd-kit's PointerSensor activation-distance
   // gate stops a genuine drag from firing native onClick in most browsers,

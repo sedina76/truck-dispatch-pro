@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Package, Wallet, FileText, Receipt, History, ArrowRight, UserRound } from "lucide-react";
+import { Package, Wallet, FileText, Receipt, History, ArrowRight, UserRound, MessageSquare } from "lucide-react";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getDashboardData } from "@/lib/driver-portal/dashboard-data";
+import { getMyDispatchMessages } from "@/app/driver-portal/actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { LocationSharing } from "@/components/driver-portal/location-sharing";
 import { LogoutButton } from "@/components/driver-portal/logout-button";
@@ -14,9 +15,20 @@ export default async function DriverPortalHomePage() {
   const identity = await getDriverPortalSession();
   if (!identity) redirect("/driver-portal/login");
 
-  const { dispatch, stops, counters } = await getDashboardData(identity);
+  const [{ dispatch, stops, counters }, { loadNumber: messageLoadNumber, messages: currentDispatchMessages }] = await Promise.all([
+    getDashboardData(identity),
+    getMyDispatchMessages(),
+  ]);
   const pickup = stops.find((s) => s.stop_type === "pickup");
   const delivery = stops.filter((s) => s.stop_type === "delivery").slice(-1)[0];
+
+  // Phase 2I.1A section I -- unread STAFF messages only (never a mix of
+  // sender types), scoped to the driver's current dispatch, reusing the
+  // same messages the Messages screen itself already fetches -- no second
+  // query, no new data source. Ascending order (getMyDispatchMessages'
+  // own contract), so the last unread entry is the most recent one.
+  const unreadStaffMessages = currentDispatchMessages.filter((m) => m.senderType === "staff" && !m.readAt);
+  const mostRecentUnreadMessage = unreadStaffMessages.at(-1) ?? null;
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -35,6 +47,32 @@ export default async function DriverPortalHomePage() {
           <LogoutButton />
         </div>
       </div>
+
+      {mostRecentUnreadMessage && (
+        // Phase 2I.1A section I -- deliberately its own small card, not
+        // folded into the counter grid below: unread messages need a
+        // "here's what it says" preview, which a plain count tile can't
+        // give. Only ever the message body itself + load # + count --
+        // never rate/pay/compliance/other-dispatch data.
+        <Link
+          href="/driver-portal/messages"
+          className="flex items-start gap-3 rounded-2xl border border-primary/30 bg-primary/5 p-3.5"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <MessageSquare className="size-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold">
+                {unreadStaffMessages.length} new message{unreadStaffMessages.length === 1 ? "" : "s"}
+                {messageLoadNumber ? ` · ${messageLoadNumber}` : ""}
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-primary" />
+            </span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{mostRecentUnreadMessage.body}</span>
+          </span>
+        </Link>
+      )}
 
       <div className="grid grid-cols-2 gap-2.5">
         <CounterTile label="Active Trip" value={counters.hasActiveTrip ? 1 : 0} tone={counters.hasActiveTrip ? "primary" : "neutral"} />
