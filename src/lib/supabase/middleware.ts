@@ -21,6 +21,10 @@ const PUBLIC_PATHS = [
   "/api/driver-portal",
   "/driver-application",
   "/api/driver-application",
+  // Carrier onboarding is invitation/session mediated rather than staff-
+  // authenticated. Its route handlers, portal layout, and server actions
+  // validate the invitation or carrier_onboarding_session after middleware.
+  "/carrier-onboarding",
   // Phase 2F: Resend's webhook POST carries no Supabase session cookie at
   // all -- it authenticates via its own Svix signature (see
   // src/app/api/webhooks/resend/route.ts), never a logged-in user. Found
@@ -46,6 +50,10 @@ const SUBSCRIPTION_GATE_EXEMPT_PATHS = [
 ];
 
 const BLOCKED_SUBSCRIPTION_STATUSES = ["past_due", "paused", "canceled", "incomplete"];
+
+function matchesPath(pathname: string, path: string): boolean {
+  return pathname === path || pathname.startsWith(`${path}/`);
+}
 
 // Refreshes the Supabase auth session on every request, redirects
 // unauthenticated users away from the (app) route group, and blocks a
@@ -95,7 +103,7 @@ export async function updateSession(request: NextRequest) {
   }
   const user = data.user;
 
-  const isPublicPath = PUBLIC_PATHS.some((path) => request.nextUrl.pathname.startsWith(path));
+  const isPublicPath = PUBLIC_PATHS.some((path) => matchesPath(request.nextUrl.pathname, path));
 
   if (!user && !isPublicPath) {
     const loginUrl = request.nextUrl.clone();
@@ -103,7 +111,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  const isGateExempt = SUBSCRIPTION_GATE_EXEMPT_PATHS.some((path) => request.nextUrl.pathname.startsWith(path));
+  const isGateExempt = SUBSCRIPTION_GATE_EXEMPT_PATHS.some((path) => matchesPath(request.nextUrl.pathname, path));
 
   if (user && !isGateExempt) {
     // Same reasoning as above: the postgrest-js client also resolves with

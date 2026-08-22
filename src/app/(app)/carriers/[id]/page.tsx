@@ -27,7 +27,7 @@ export default async function CarrierDetailPage({
   const { data: carrier } = await supabase.from("carriers").select("*").eq("id", id).single();
   if (!carrier) notFound();
 
-  const [{ data: drivers }, { data: trucks }, { data: trailers }, { data: pendingAdvances }, { data: carrierFinancials }] = await Promise.all([
+  const [{ data: drivers }, { data: trucks }, { data: trailers }, { data: pendingAdvances }, { data: carrierFinancials }, { data: onboardingApplication }] = await Promise.all([
     supabase.from("drivers").select("id, first_name, last_name, status").eq("carrier_id", id),
     supabase.from("trucks").select("id, unit_number, status").eq("carrier_id", id),
     supabase.from("trailers").select("id, unit_number, status").eq("carrier_id", id),
@@ -46,6 +46,7 @@ export default async function CarrierDetailPage({
     canSeeFinancials
       ? supabase.from("carrier_financials").select("dispatch_fee_percentage, payment_terms_days, factoring_company_name").eq("carrier_id", id).maybeSingle()
       : Promise.resolve({ data: null }),
+    supabase.from("carrier_onboarding_applications").select("id, status").eq("converted_carrier_id", id).order("converted_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   const pendingAdvanceTotal = (pendingAdvances ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
@@ -97,6 +98,15 @@ export default async function CarrierDetailPage({
       {canSeeFinancials && <CarrierExpenseSummarySection carrierId={id} />}
 
       <ShareExternalProfileSection entity={{ type: "carrier", carrierId: id }} />
+
+      {canSeeFinancials && onboardingApplication && (
+        <div className="rounded-md border border-desktop-border bg-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div><p className="text-[14px] font-semibold">Setup Packages</p><p className="text-[12.5px] text-muted-foreground">Generate and review immutable broker-ready carrier setup packages.</p></div>
+            <Link href={`/carriers/onboarding/${onboardingApplication.id}`} className="text-[13px] font-medium text-primary hover:underline">Open package history</Link>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <RelatedList title="Drivers" emptyLabel="No drivers yet" items={(drivers ?? []).map((d) => ({ id: d.id, label: `${d.first_name} ${d.last_name}`, status: d.status }))} href="/drivers" />

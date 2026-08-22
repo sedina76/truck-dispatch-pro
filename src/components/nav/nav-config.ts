@@ -103,6 +103,7 @@ export const SECTIONS: NavSection[] = [
       { label: "Customers", href: "/customers", icon: Users },
       { label: "Brokers", href: "/brokers", icon: Building2 },
       { label: "Carriers", href: "/carriers", icon: Truck },
+      { label: "Carrier Onboarding", href: "/carriers/onboarding", icon: UserPlus },
     ],
   },
   {

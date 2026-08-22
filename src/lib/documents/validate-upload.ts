@@ -5,6 +5,24 @@ export type UploadValidationResult = { ok: true } | { ok: false; error: string }
 const PDF_SIGNATURE = Buffer.from("%PDF-", "ascii");
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// HEIC/HEIF is an ISO-BMFF (MP4-family) container: bytes 4-7 are always
+// the literal ASCII "ftyp" box-type, and bytes 8-11 are a 4-char brand
+// naming the specific format -- "heic"/"heix" (single-image HEIC),
+// "hevc"/"hevx" (HEIC image sequence), or "mif1"/"msf1" (the more generic
+// HEIF brands some camera/phone encoders emit instead). Checking the box
+// type plus this brand allowlist is the real signature check for this
+// format (there's no single fixed magic number the way PDF/JPEG/PNG have
+// one) -- added for Phase 2L.4's carrier-onboarding document upload,
+// which is the first upload path in this app to actually accept HEIC.
+const FTYP_BOX = Buffer.from("ftyp", "ascii");
+const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "mif1", "msf1"]);
+
+function looksLikeHeic(head: Buffer): boolean {
+  if (head.length < 12) return false;
+  if (!head.subarray(4, 8).equals(FTYP_BOX)) return false;
+  const brand = head.subarray(8, 12).toString("ascii");
+  return HEIC_BRANDS.has(brand);
+}
 
 // Conservative floor, not a precise one: a real minimal single-page PDF
 // (even one pdf-lib itself produces) is several hundred bytes at least --
@@ -54,8 +72,15 @@ export async function validateUploadedFile(file: File): Promise<UploadValidation
     return { ok: true };
   }
 
+  if (file.type === "image/heic" || file.type === "image/heif") {
+    if (!looksLikeHeic(head)) {
+      return { ok: false, error: "This file does not look like a real HEIC image." };
+    }
+    return { ok: true };
+  }
+
   // Caller is expected to have already rejected any type outside this set
   // (ALLOWED_TYPES) before reaching here -- this is a defensive fallback,
   // not the primary gate for "unsupported type" messaging.
-  return { ok: false, error: "Unsupported file type. Use PDF, JPG, or PNG." };
+  return { ok: false, error: "Unsupported file type. Use PDF, JPG, PNG, or HEIC." };
 }

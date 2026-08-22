@@ -294,6 +294,7 @@ export async function sendTenantEmail(args: SendTenantEmailArgs): Promise<SendTe
     broker_id: entities.brokerId ?? null,
     dispatch_id: entities.dispatchId ?? null,
     driver_id: entities.driverId ?? null,
+    carrier_setup_package_id: entities.carrierSetupPackageId ?? null,
     sent_by: args.sentBy,
     metadata: args.metadata ?? {},
   };

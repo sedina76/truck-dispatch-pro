@@ -24,6 +24,7 @@ import {
   BadgeDollarSign,
   Radio,
   ReceiptText,
+  UserPlus,
 } from "lucide-react";
 import {
   CommandDialog,
@@ -42,6 +43,7 @@ const NAV_ITEMS = [
   { label: "Live Tracking", href: "/tracking", icon: Radio },
   { label: "Loads", href: "/loads", icon: Package },
   { label: "Carriers", href: "/carriers", icon: Truck },
+  { label: "Carrier Onboarding", href: "/carriers/onboarding", icon: UserPlus },
   { label: "Brokers", href: "/brokers", icon: Building2 },
   { label: "Customers", href: "/customers", icon: Users },
   { label: "Drivers", href: "/drivers", icon: UserRound },
@@ -64,6 +66,7 @@ const QUICK_CREATE = [
   { label: "New Load", href: "/loads/new" },
   { label: "New Dispatch", href: "/dispatch/new" },
   { label: "New Carrier", href: "/carriers/new" },
+  { label: "Invite Carrier (Onboarding)", href: "/carriers/onboarding/invite" },
   { label: "New Driver", href: "/drivers/new" },
   { label: "New Invoice", href: "/invoices/new" },
   { label: "Record Payment", href: "/payments/new" },

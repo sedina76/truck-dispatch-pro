@@ -1,0 +1,18 @@
+"use client";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
+import { sendSetupPackage, voidSetupPackage } from "../actions";
+
+export function PackageActions(props: { packageId: string; applicationId: string; legalName: string; mcNumber: string; organizationName: string; defaultRecipientName: string; defaultRecipientEmail: string; canSend: boolean; tooLarge: boolean; canVoid: boolean; hasBeenSent: boolean }) {
+  const [to, setTo] = useState(props.defaultRecipientEmail); const [name, setName] = useState(props.defaultRecipientName);
+  const [subject, setSubject] = useState(`Carrier Setup Package - ${props.legalName}${props.mcNumber ? ` - MC ${props.mcNumber}` : ""}`);
+  const [message, setMessage] = useState(`Hello,\n\nAttached is the carrier setup package for ${props.legalName}.\n\nPlease let us know if any additional documentation is required.\n\nRegards,\n${props.organizationName}`);
+  const [sending, startSend] = useTransition(); const [voiding, startVoid] = useTransition(); const router = useRouter(); const toast = useToast();
+  return <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+    {(props.canSend || props.tooLarge) && <section className="rounded-md border border-desktop-border bg-card p-4"><h2 className="text-[14px] font-semibold">Send to Broker</h2>{props.tooLarge ? <p className="mt-2 rounded-sm border border-warning/30 bg-warning/5 p-3 text-[12.5px] text-warning">Package is too large to email. Download the PDF and send it using your preferred delivery method.</p> : <div className="mt-3 space-y-3"><div className="grid gap-3 sm:grid-cols-2"><Field label="To" type="email" value={to} onChange={setTo} /><Field label="Recipient Name" value={name} onChange={setName} /></div><Field label="Subject" value={subject} onChange={setSubject} /><label className="block text-[12px] font-medium">Message<textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={7} className="mt-1 w-full rounded-sm border border-desktop-border bg-card p-2.5 text-[13px]" /></label><Button disabled={sending || !to.trim() || !subject.trim() || !message.trim()} onClick={() => startSend(async () => { const result = await sendSetupPackage(props.packageId, { recipientName: name, to, subject, message, explicitResend: props.hasBeenSent }); if (!result.ok) toast.show("error", result.error); else { toast.show("success", "Setup package sent."); router.refresh(); } })}>{sending ? "Sending..." : props.hasBeenSent ? "Send Again" : "Send Package"}</Button></div>}</section>}
+    {props.canVoid && <aside className="h-fit rounded-md border border-desktop-border bg-card p-4"><h2 className="text-[14px] font-semibold">Package Controls</h2><p className="mt-1 text-[12px] text-muted-foreground">Voiding preserves the PDF and history but prevents future use.</p><Button variant="danger" className="mt-3" disabled={voiding} onClick={() => { const reason = prompt("Reason for voiding this package?")?.trim(); if (!reason) return; startVoid(async () => { const result = await voidSetupPackage(props.packageId, reason); if (!result.ok) toast.show("error", result.error); else { toast.show("success", "Package voided."); router.refresh(); } }); }}>Void Package</Button></aside>}
+  </div>;
+}
+function Field({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (value: string) => void; type?: string }) { return <label className="block text-[12px] font-medium">{label}<input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-8 w-full rounded-sm border border-desktop-border bg-card px-2.5 text-[13px]" /></label>; }

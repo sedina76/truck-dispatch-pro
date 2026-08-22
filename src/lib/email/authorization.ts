@@ -60,6 +60,7 @@ export type OwnedEntityIds = {
   brokerId?: string | null;
   dispatchId?: string | null;
   driverId?: string | null;
+  carrierSetupPackageId?: string | null;
 };
 
 const ENTITY_TABLE: Record<keyof OwnedEntityIds, string> = {
@@ -69,6 +70,7 @@ const ENTITY_TABLE: Record<keyof OwnedEntityIds, string> = {
   brokerId: "brokers",
   dispatchId: "dispatches",
   driverId: "drivers",
+  carrierSetupPackageId: "carrier_setup_packages",
 };
 
 /**

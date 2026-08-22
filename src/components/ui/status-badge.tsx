@@ -16,6 +16,7 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   hired: "success",
   verified: "success",
   reconciled: "success",
+  generated: "success",
   // warning
   incomplete: "warning",
   paused: "warning",
@@ -27,11 +28,13 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   sent: "warning",
   open: "warning",
   in_progress: "warning",
+  generating: "warning",
   partially_paid: "warning",
   on_hold: "warning",
   applicant: "warning",
   in_maintenance: "warning",
   under_review: "warning",
+  needs_correction: "warning",
   // info
   in_transit: "info",
   dispatched: "info",
@@ -79,6 +82,8 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   problem: "danger",
   past_due: "danger",
   rejected: "danger",
+  failed: "danger",
+  voided: "danger",
   // neutral
   inactive: "neutral",
   missing: "neutral",

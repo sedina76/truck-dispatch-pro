@@ -11,9 +11,11 @@ export type EmailPurpose =
   | "receipt"
   | "statement"
   | "settlement"
-  | "profile_share";
+  | "profile_share"
+  | "carrier_onboarding_invitation"
+  | "carrier_setup_package";
 
-export const EMAIL_PURPOSES: EmailPurpose[] = ["platform_system", "invoice", "billing_packet", "receipt", "statement", "settlement", "profile_share"];
+export const EMAIL_PURPOSES: EmailPurpose[] = ["platform_system", "invoice", "billing_packet", "receipt", "statement", "settlement", "profile_share", "carrier_onboarding_invitation", "carrier_setup_package"];
 
 export const EMAIL_PURPOSE_LABEL: Record<EmailPurpose, string> = {
   platform_system: "Platform / System",
@@ -23,6 +25,8 @@ export const EMAIL_PURPOSE_LABEL: Record<EmailPurpose, string> = {
   statement: "Statement",
   settlement: "Settlement",
   profile_share: "Driver/Carrier Profile Share",
+  carrier_onboarding_invitation: "Carrier Onboarding Invitation",
+  carrier_setup_package: "Carrier Setup Package",
 };
 
 export function isEmailPurpose(value: string): value is EmailPurpose {
@@ -51,4 +55,5 @@ export const PURPOSE_PREFERRED_SENDER_TYPE: Partial<Record<EmailPurpose, string>
   receipt: "billing",
   statement: "billing",
   settlement: "accounting",
+  carrier_setup_package: "dispatch",
 };
