@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 const STEPS = [
   { key: "company", label: "Company", href: "/carrier-onboarding/company" },
+  { key: "w9", label: "Tax Info", href: "/carrier-onboarding/w9" },
   { key: "equipment", label: "Equipment", href: "/carrier-onboarding/equipment" },
   { key: "documents", label: "Documents", href: "/carrier-onboarding/documents" },
   { key: "agreement", label: "Agreement", href: "/carrier-onboarding/agreement" },

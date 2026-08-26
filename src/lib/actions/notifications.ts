@@ -10,6 +10,10 @@ export type NotificationRow = {
   type: string;
   entity_type: string | null;
   entity_id: string | null;
+  // Phase 2P.6B -- links this notification to the specific exception
+  // episode it's about (0107). Null for every non-exception notification
+  // (dispatch_message, etc.) -- unaffected either way.
+  exception_id: string | null;
   read_at: string | null;
   created_at: string;
 };
@@ -29,7 +33,7 @@ export async function getMyNotifications(): Promise<NotificationRow[]> {
   if (!user) return [];
   const { data } = await supabase
     .from("notifications")
-    .select("id, title, body, type, entity_type, entity_id, read_at, created_at")
+    .select("id, title, body, type, entity_type, entity_id, exception_id, read_at, created_at")
     .eq("profile_id", user.id)
     .order("created_at", { ascending: false })
     .limit(20);

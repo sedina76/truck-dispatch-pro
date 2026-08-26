@@ -5,7 +5,7 @@ import Link from "next/link";
 import { X, Loader2, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
-import { getExceptionDetail, acknowledgeException, assignException, resolveException, addExceptionNote } from "@/app/(app)/dispatch/exceptions/actions";
+import { getExceptionDetail, acknowledgeException, assignException, unassignException, resolveException, addExceptionNote } from "@/app/(app)/dispatch/exceptions/actions";
 import { EXCEPTION_TYPE_LABEL, SEVERITY_LABEL, STATUS_LABEL, type ExceptionSeverity, type ExceptionStatus, type ExceptionType } from "@/lib/exceptions/types";
 import { formatMinutes } from "@/lib/dispatch/detention";
 import { formatMiles } from "@/lib/routing/risk";
@@ -23,6 +23,14 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
   const [resolveReason, setResolveReason] = useState(RESOLUTION_REASONS[0]);
   const [resolveNote, setResolveNote] = useState("");
   const [showResolveForm, setShowResolveForm] = useState(false);
+  // Phase 2P.7 -- Section G: disable the mutating buttons for the
+  // duration of the actual server call, not just during the post-mutation
+  // refresh (isPending/useTransition only covers that second part) -- a
+  // rapid double-click on Acknowledge/Assign/Resolve is otherwise still
+  // possible to fire twice before the first response returns. The
+  // underlying actions are already idempotent/guarded at the DB level
+  // either way; this is UX prevention, not the safety boundary.
+  const [actionPending, setActionPending] = useState(false);
   const toast = useToast();
 
   async function load() {
@@ -45,19 +53,45 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
   }
 
   async function handleAcknowledge() {
-    const result = await acknowledgeException(exceptionId);
-    if (result.ok) {
-      toast.show("success", "Acknowledged.");
-      refreshAfterMutation();
-    } else toast.show("error", result.error);
+    if (actionPending) return;
+    setActionPending(true);
+    try {
+      const result = await acknowledgeException(exceptionId);
+      if (result.ok) {
+        toast.show("success", "Acknowledged.");
+        refreshAfterMutation();
+      } else toast.show("error", result.error);
+    } finally {
+      setActionPending(false);
+    }
   }
 
   async function handleAssign(assigneeId: string) {
-    const result = await assignException(exceptionId, assigneeId);
-    if (result.ok) {
-      toast.show("success", "Assigned.");
-      refreshAfterMutation();
-    } else toast.show("error", result.error);
+    if (actionPending) return;
+    setActionPending(true);
+    try {
+      const result = await assignException(exceptionId, assigneeId);
+      if (result.ok) {
+        toast.show("success", "Assigned.");
+        refreshAfterMutation();
+      } else toast.show("error", result.error);
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function handleUnassign() {
+    if (actionPending) return;
+    setActionPending(true);
+    try {
+      const result = await unassignException(exceptionId);
+      if (result.ok) {
+        toast.show("success", "Unassigned.");
+        refreshAfterMutation();
+      } else toast.show("error", result.error);
+    } finally {
+      setActionPending(false);
+    }
   }
 
   if (loading || !detail) {
@@ -83,7 +117,7 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
   const exceptionType = row.exception_type as ExceptionType;
   const severity = row.severity as ExceptionSeverity;
   const status = row.status as ExceptionStatus;
-  const dispatch = row.dispatches as { id: string; status: string; loads: { load_number: string; load_stops: LoadStopRow[] } | null; trucks: { unit_number: string } | null; drivers: { first_name: string; last_name: string } | null } | null;
+  const dispatch = row.dispatches as { id: string; status: string; loads: { id: string; load_number: string; load_stops: LoadStopRow[] } | null; trucks: { unit_number: string } | null; drivers: { id: string; first_name: string; last_name: string } | null } | null;
   const targetStopId = detail.liveRouteIntelligence?.target_stop_id ?? detail.liveRouteDeviation ? row.metadata?.target_stop_id : null;
   const targetStop = dispatch?.loads?.load_stops?.find((s) => s.id === targetStopId) ?? null;
 
@@ -103,6 +137,14 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
         <div className="flex flex-wrap gap-2">
           <Badge tone={SEVERITY_TONE[severity]}>{SEVERITY_LABEL[severity]}</Badge>
           <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
+          {/* Phase 2P.7 -- row.escalated_at already comes back from
+              getExceptionDetail()'s select("*") on the raw table; text +
+              icon, never color alone. */}
+          {row.escalated_at && (
+            <Badge tone="bg-danger/15 text-danger">
+              <AlertTriangle className="size-3 shrink-0" /> Escalated
+            </Badge>
+          )}
           <span className="ml-auto text-muted-foreground">Age {formatAge(row.first_detected_at)}</span>
         </div>
 
@@ -183,27 +225,57 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
           </Section>
         )}
 
+        {/* Phase 2P.5 -- carrier-sourced exceptions (2P.4's insurance_policy
+            and 0063's original compliance_item source_types both write
+            exception_type='compliance'). Live-refetched from the real
+            source table, same discipline as every other section here --
+            never trusted from the row's own metadata snapshot. */}
+        {exceptionType === "compliance" && detail.carrierContext && (
+          <Section title="Compliance Detail">
+            <Row label="Carrier" value={detail.carrierContext.legalName} />
+            {detail.liveInsurancePolicy && (
+              <>
+                <Row label="Policy type" value={detail.liveInsurancePolicy.policy_type.replace(/_/g, " ")} />
+                <Row label="Expires" value={detail.liveInsurancePolicy.expiry_date ? formatStopDateTime(detail.liveInsurancePolicy.expiry_date, "UTC", { timeOnly: false }) : "No expiry on file"} />
+              </>
+            )}
+            {detail.liveComplianceItem && (
+              <>
+                <Row label="Item type" value={detail.liveComplianceItem.item_type.replace(/_/g, " ")} />
+                <Row label="Current status" value={detail.liveComplianceItem.status.replace(/_/g, " ")} />
+                <Row label="Expires" value={detail.liveComplianceItem.expiry_date ? formatStopDateTime(detail.liveComplianceItem.expiry_date, "UTC", { timeOnly: false }) : "No expiry on file"} />
+              </>
+            )}
+          </Section>
+        )}
+
         <Section title="Assignment">
           <Row label="Assigned to" value={row.assigned_to ? staffName(detail.staff, row.assigned_to) : "Unassigned"} />
           <div className="mt-1 flex flex-wrap items-center gap-2">
             {row.assigned_to !== detail.currentUserId && (
-              <button type="button" onClick={() => handleAssign(detail.currentUserId)} className="rounded-sm border border-desktop-border px-2 py-1 text-[12px] font-medium hover:bg-desktop-muted">
+              <button type="button" disabled={actionPending} onClick={() => handleAssign(detail.currentUserId)} className="rounded-sm border border-desktop-border px-2 py-1 text-[12px] font-medium hover:bg-desktop-muted disabled:opacity-50">
                 Assign to Me
+              </button>
+            )}
+            {row.assigned_to && (
+              <button type="button" disabled={actionPending} onClick={handleUnassign} className="rounded-sm border border-desktop-border px-2 py-1 text-[12px] font-medium hover:bg-desktop-muted disabled:opacity-50">
+                Unassign
               </button>
             )}
             <select
               defaultValue=""
+              disabled={actionPending}
               onChange={(e) => {
                 if (!e.target.value) return;
                 handleAssign(e.target.value);
                 e.target.value = "";
               }}
-              className="h-7 rounded-sm border border-desktop-border bg-background px-1.5 text-[12px]"
+              className="h-7 rounded-sm border border-desktop-border bg-background px-1.5 text-[12px] disabled:opacity-50"
             >
               <option value="">Reassign to...</option>
               {detail.staff.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.first_name} {s.last_name}
+                  {s.full_name}
                 </option>
               ))}
             </select>
@@ -219,25 +291,31 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
                 <div key={n.id} className="rounded-sm border border-desktop-border bg-desktop-panel px-2 py-1.5">
                   <p className="text-desktop-text">{n.body}</p>
                   <p className="mt-0.5 text-[10.5px] text-muted-foreground">
-                    {author ? `${author.first_name} ${author.last_name}` : "Staff"} -- {formatStopDateTime(n.created_at, "UTC", { timeOnly: true })}
+                    {author?.full_name ?? "Staff"} -- {formatStopDateTime(n.created_at, "UTC", { timeOnly: true })}
                   </p>
                 </div>
               );
             })}
           </div>
           <div className="mt-2 flex gap-2">
-            <input value={noteBody} onChange={(e) => setNoteBody(e.target.value)} placeholder="Add a note..." className="h-7 flex-1 rounded-sm border border-desktop-border bg-background px-2 text-[12px]" />
+            <input value={noteBody} onChange={(e) => setNoteBody(e.target.value)} disabled={actionPending} placeholder="Add a note..." className="h-7 flex-1 rounded-sm border border-desktop-border bg-background px-2 text-[12px] disabled:opacity-50" />
             <button
               type="button"
+              disabled={actionPending}
               onClick={async () => {
-                if (!noteBody.trim()) return;
-                const result = await addExceptionNote(exceptionId, noteBody);
-                if (result.ok) {
-                  setNoteBody("");
-                  refreshAfterMutation();
-                } else toast.show("error", result.error);
+                if (!noteBody.trim() || actionPending) return;
+                setActionPending(true);
+                try {
+                  const result = await addExceptionNote(exceptionId, noteBody);
+                  if (result.ok) {
+                    setNoteBody("");
+                    refreshAfterMutation();
+                  } else toast.show("error", result.error);
+                } finally {
+                  setActionPending(false);
+                }
               }}
-              className="rounded-sm border border-desktop-border px-2 text-[12px] font-medium hover:bg-desktop-muted"
+              className="rounded-sm border border-desktop-border px-2 text-[12px] font-medium hover:bg-desktop-muted disabled:opacity-50"
             >
               Add
             </button>
@@ -262,17 +340,39 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
         {!showResolveForm ? (
           <div className="flex flex-wrap gap-2">
             {status === "open" && (
-              <ActionButton onClick={handleAcknowledge} label="Acknowledge" />
+              <ActionButton onClick={handleAcknowledge} label="Acknowledge" disabled={actionPending} />
             )}
-            {status !== "resolved" && <ActionButton onClick={() => setShowResolveForm(true)} label="Resolve" />}
+            {status !== "resolved" && <ActionButton onClick={() => setShowResolveForm(true)} label="Resolve" disabled={actionPending} />}
             {dispatch && (
               <Link href={`/dispatch/${dispatch.id}`} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
                 Open Dispatch
               </Link>
             )}
-            <Link href="/tracking" className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
-              View Live Map
-            </Link>
+            {/* Phase 2P.7 -- direct drill-through to the existing load/
+                driver detail pages (no new destination pages), using the
+                ids now selected alongside load_number/first_name/last_name.
+                Existing route/RLS boundary is the only authorization here,
+                same as every other link in this drawer. */}
+            {dispatch?.loads?.id && (
+              <Link href={`/loads/${dispatch.loads.id}`} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
+                View Load
+              </Link>
+            )}
+            {dispatch?.drivers?.id && (
+              <Link href={`/drivers/${dispatch.drivers.id}`} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
+                View Driver
+              </Link>
+            )}
+            {dispatch && (
+              <Link href="/tracking" className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
+                View Live Map
+              </Link>
+            )}
+            {!dispatch && detail.carrierContext && (
+              <Link href={`/carriers/${detail.carrierContext.id}`} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] font-medium hover:bg-desktop-muted">
+                View Carrier
+              </Link>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -292,19 +392,26 @@ export function ExceptionDrawer({ exceptionId, onClose, onChanged, onSelectSibli
             <div className="flex gap-2">
               <button
                 type="button"
+                disabled={actionPending}
                 onClick={async () => {
-                  const result = await resolveException(exceptionId, resolveReason, resolveNote || null);
-                  if (result.ok) {
-                    toast.show("success", "Resolved.");
-                    setShowResolveForm(false);
-                    refreshAfterMutation();
-                  } else toast.show("error", result.error);
+                  if (actionPending) return;
+                  setActionPending(true);
+                  try {
+                    const result = await resolveException(exceptionId, resolveReason, resolveNote || null);
+                    if (result.ok) {
+                      toast.show("success", "Resolved.");
+                      setShowResolveForm(false);
+                      refreshAfterMutation();
+                    } else toast.show("error", result.error);
+                  } finally {
+                    setActionPending(false);
+                  }
                 }}
-                className="rounded-sm bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90"
+                className="rounded-sm bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 Confirm Resolve
               </button>
-              <button type="button" onClick={() => setShowResolveForm(false)} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px]">
+              <button type="button" disabled={actionPending} onClick={() => setShowResolveForm(false)} className="rounded-sm border border-desktop-border px-2.5 py-1.5 text-[12px] disabled:opacity-50">
                 Cancel
               </button>
             </div>
@@ -344,17 +451,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function Row({ label, value }: { label: string; value: string }) {
+  // Phase 2P.5B: min-w-0 + wrap-break-word -- a long carrier legal_name
+  // (new Compliance Detail section) must wrap onto multiple lines inside
+  // this fixed max-w-md drawer rather than overflow/clip. Every prior
+  // usage (load number, truck unit, etc.) stays visually identical since
+  // those values were always short enough to render on one line anyway.
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-medium text-desktop-text">{value}</span>
+    <div className="flex items-start justify-between gap-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 wrap-break-word text-right font-medium text-desktop-text">{value}</span>
     </div>
   );
 }
 
-function ActionButton({ onClick, label }: { onClick: () => void; label: string }) {
+function ActionButton({ onClick, label, disabled }: { onClick: () => void; label: string; disabled?: boolean }) {
   return (
-    <button type="button" onClick={onClick} className="rounded-sm bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90">
+    <button type="button" onClick={onClick} disabled={disabled} className="rounded-sm bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
       {label}
     </button>
   );
@@ -369,7 +481,7 @@ function formatAge(iso: string): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-function staffName(staff: { id: string; first_name: string; last_name: string }[], id: string): string {
+function staffName(staff: { id: string; full_name: string }[], id: string): string {
   const s = staff.find((x) => x.id === id);
-  return s ? `${s.first_name} ${s.last_name}` : "--";
+  return s ? s.full_name : "--";
 }

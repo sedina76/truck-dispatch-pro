@@ -1,6 +1,8 @@
-import { DollarSign, Truck as TruckIcon, PackageOpen, UserCheck, Receipt, ShieldAlert, Landmark, AlertTriangle, CreditCard } from "lucide-react";
+import { DollarSign, Truck as TruckIcon, PackageOpen, UserCheck, Receipt, ShieldAlert, Landmark, AlertTriangle, CreditCard, Siren } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { isActiveLoadStatus } from "@/lib/loads/status";
+import { operationalExceptionsTableExists } from "@/lib/exceptions/sync";
 import type { KpiTileData, KpiTone } from "@/components/dashboard/kpi-tile";
 
 const SPARKLINE_DAYS = 7;
@@ -63,7 +65,11 @@ const ACTIVE_DISPATCH_STATUSES = [
 // established and accepted in getDispatchDrawerData().
 const FINANCIAL_TILE_IDS = new Set(["revenue-today", "outstanding-invoices", "ar-overdue", "collected-this-month", "profit-month"]);
 
-export async function getDashboardKpis(canSeeFinancials: boolean): Promise<KpiTileData[]> {
+// Phase 2P.5: Exception Center visibility mirrors operational_exceptions'
+// own SELECT policy exactly (owner/admin/dispatcher, 0063) -- passed in by
+// the caller (same "compute the boolean once at the page level" pattern
+// canSeeFinancials already uses) rather than re-deriving role here.
+export async function getDashboardKpis(canSeeFinancials: boolean, canSeeExceptions: boolean = false): Promise<KpiTileData[]> {
   const supabase = await createClient();
 
   const now = new Date();
@@ -212,6 +218,27 @@ export async function getDashboardKpis(canSeeFinancials: boolean): Promise<KpiTi
     SPARKLINE_DAYS
   );
 
+  // ---- 9. Open Exceptions (Phase 2P.5 dashboard integration) -------------
+  // Reuses the SAME grouped view + role-scoped RLS policy the Exception
+  // Center page itself queries (operational_exceptions_grouped, 0063) --
+  // no second exception-count implementation. Degrades to omitted (not
+  // zero) if the migration isn't live or the role can't see exceptions,
+  // matching operationalExceptionsTableExists()'s own graceful-degradation
+  // convention rather than a misleading "0".
+  let openExceptions: number | null = null;
+  let openExceptionsCritical = 0;
+  if (canSeeExceptions) {
+    const tableExists = await operationalExceptionsTableExists(createServiceRoleClient());
+    if (tableExists) {
+      const [{ count: activeCount }, { count: criticalCount }] = await Promise.all([
+        supabase.from("operational_exceptions_grouped").select("group_key", { count: "exact", head: true }),
+        supabase.from("operational_exceptions_grouped").select("group_key", { count: "exact", head: true }).eq("max_severity", "critical"),
+      ]);
+      openExceptions = activeCount ?? 0;
+      openExceptionsCritical = criticalCount ?? 0;
+    }
+  }
+
   const updatedAt = now.toISOString();
 
   const tiles: KpiTileData[] = [
@@ -313,6 +340,23 @@ export async function getDashboardKpis(canSeeFinancials: boolean): Promise<KpiTi
       tooltip: "Compliance items (CDL, insurance, DOT, permits) expiring soon or already expired.",
       updatedAt,
     },
+    // Phase 2P.5 -- Exception Center integration. Omitted entirely (not
+    // shown as a misleading "0") when the role can't see exceptions or the
+    // migration isn't live -- see openExceptions computation above.
+    ...(openExceptions !== null
+      ? [
+          {
+            id: "open-exceptions",
+            label: "Open Exceptions",
+            value: String(openExceptions),
+            icon: <Siren className="size-4" />,
+            tone: (openExceptionsCritical > 0 ? "danger" : openExceptions > 0 ? "warning" : "success") as KpiTone,
+            href: "/dispatch/exceptions",
+            tooltip: "Unresolved operational exceptions (route, detention, GPS, compliance, insurance) across your organization.",
+            updatedAt,
+          } satisfies KpiTileData,
+        ]
+      : []),
     {
       id: "profit-month",
       label: "Profit This Month",

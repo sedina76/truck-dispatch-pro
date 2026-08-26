@@ -100,6 +100,17 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   MISSING_COST: "warning",
   MISSING_REVENUE: "warning",
   NOT_DELIVERED: "neutral",
+  // carrier_dispatch_readiness() (0102/Phase 2P.3) -- also uppercase, both
+  // the overall status and the per-requirement status vocabulary.
+  READY: "success",
+  WARNING: "warning",
+  NOT_READY: "danger",
+  SUSPENDED: "danger",
+  VALID: "success",
+  EXPIRING_SOON: "warning",
+  EXPIRED: "danger",
+  MISSING: "danger",
+  UNVERIFIED: "warning",
 };
 
 // Compact desktop-grid status indicator: a small square swatch + colored

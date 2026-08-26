@@ -25,6 +25,8 @@ import {
 } from "../actions";
 import type { RequiredAgreementReadiness } from "@/lib/carrier-agreements/required-readiness";
 import { PackageHistory, type PackageHistoryRow } from "./setup-packages/package-history";
+import { W9StatusCard } from "@/components/carrier-w9/status-card";
+import type { CarrierW9Row } from "@/lib/carrier-w9/types";
 
 export type ApplicationDetailData = {
   id: string;
@@ -76,16 +78,22 @@ export type ApplicationDetailData = {
   activity: { id: string; action: string; createdAt: string; actorName: string | null; changes: Record<string, unknown> | null }[];
   publishedTemplates: { id: string; template_key: string; name: string; version_number: number }[];
   setupPackages: PackageHistoryRow[];
+  w9: CarrierW9Row | null;
+  // Phase 2P.3A -- distinct from "w9 is null because none has been
+  // started". Set only when the carrier_w9s query itself failed; null
+  // w9 with this also null legitimately means no W-9 exists yet.
+  w9LoadError: string | null;
+  organizationId: string;
 };
 
-const TABS = ["Overview", "Company", "Equipment", "Documents", "Agreement", "Setup Packages", "Activity"] as const;
+const TABS = ["Overview", "Company", "Tax (W-9)", "Equipment", "Documents", "Agreement", "Setup Packages", "Activity"] as const;
 type Tab = (typeof TABS)[number];
 
 function formatAction(action: string): string {
   return action.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
-export function ApplicationDetail({ data, canManage, canConvert, canViewPackages }: { data: ApplicationDetailData; canManage: boolean; canConvert: boolean; canViewPackages: boolean }) {
+export function ApplicationDetail({ data, canManage, canConvert, canViewPackages, role }: { data: ApplicationDetailData; canManage: boolean; canConvert: boolean; canViewPackages: boolean; role: string }) {
   const toast = useToast();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("Overview");
@@ -255,6 +263,15 @@ export function ApplicationDetail({ data, canManage, canConvert, canViewPackages
 
       {tab === "Overview" && <OverviewTab data={data} />}
       {tab === "Company" && <CompanyTab data={data} />}
+      {tab === "Tax (W-9)" && (
+        data.w9LoadError ? (
+          <div className="rounded-md border border-danger/30 bg-danger/5 p-4 text-[13px] text-danger">
+            W-9 status could not be loaded: {data.w9LoadError}. This does not mean no W-9 exists -- try reloading the page.
+          </div>
+        ) : (
+          <W9StatusCard w9={data.w9} applicationId={data.id} organizationId={data.organizationId} role={role} pdfRouteBase={`/carriers/onboarding/${data.id}/w9`} />
+        )
+      )}
       {tab === "Equipment" && <EquipmentTab data={data} />}
       {tab === "Documents" && <DocumentsTab data={data} canManage={canManage} onChanged={refresh} />}
       {tab === "Agreement" && <AgreementTab data={data} canManage={canManage} canGenerate={canConvert} onChanged={refresh} />}

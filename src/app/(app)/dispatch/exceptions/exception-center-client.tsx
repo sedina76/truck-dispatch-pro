@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -46,12 +46,25 @@ function compoundTitle(row: ExceptionListRow): string {
   return `${row.title} + ${others.map((t) => EXCEPTION_TYPE_LABEL[t].toUpperCase()).join(" + ")}`;
 }
 
-export function ExceptionCenterClient({ initialData, initialFilters }: { initialData: ExceptionCenterResult; initialFilters: ExceptionFilters }) {
+export function ExceptionCenterClient({
+  initialData,
+  initialFilters,
+  initialOpenExceptionId,
+}: {
+  initialData: ExceptionCenterResult;
+  initialFilters: ExceptionFilters;
+  // Phase 2P.6B -- ?exception=<uuid> from a notification click-through
+  // (see notifications-menu.tsx). The drawer itself independently
+  // re-checks org/role access (getExceptionDetail(), RLS-backed) -- a
+  // foreign-org or random uuid here just renders the drawer's own
+  // existing "Exception not found." state, never a crash or data leak.
+  initialOpenExceptionId?: string | null;
+}) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
   const [filters, setFilters] = useState<ExceptionFilters>(initialFilters);
   const [isPending, startTransition] = useTransition();
-  const [openExceptionId, setOpenExceptionId] = useState<string | null>(null);
+  const [openExceptionId, setOpenExceptionId] = useState<string | null>(initialOpenExceptionId ?? null);
 
   const applyFilters = useCallback((next: ExceptionFilters) => {
     setFilters(next);
@@ -71,7 +84,28 @@ export function ExceptionCenterClient({ initialData, initialFilters }: { initial
     );
   }
 
-  const clearFilters = () => applyFilters({ page: 1, sort: "severity", severity: "all", status: "all", type: "all", assignment: "all", q: "" });
+  const clearFilters = () => applyFilters({ page: 1, sort: "severity", severity: "all", status: "all", type: "all", assignment: "all", escalatedOnly: false, q: "" });
+
+  // Phase 2P.7 -- Section J: distinguishable empty-state copy per the
+  // active filter combination, rather than one generic message for every
+  // case. Checked in a deliberate order (most specific intent first) so a
+  // dispatcher immediately understands WHY the list is empty.
+  const hasCustomFilters = Boolean(filters.q?.trim()) || (filters.type && filters.type !== "all") || filters.escalatedOnly;
+  let emptyStateTitle = "No exceptions";
+  let emptyStateDescription = "Nothing matches the current filters.";
+  if (!hasCustomFilters && filters.assignment === "mine") {
+    emptyStateTitle = "No exceptions assigned to you";
+    emptyStateDescription = "You're not currently the owner of any open or acknowledged exception.";
+  } else if (!hasCustomFilters && filters.assignment === "unassigned") {
+    emptyStateTitle = "No unassigned exceptions";
+    emptyStateDescription = "Every open exception currently has an owner.";
+  } else if (!hasCustomFilters && filters.status === "resolved") {
+    emptyStateTitle = "No resolved exceptions";
+    emptyStateDescription = "Nothing has been resolved yet for the current filters.";
+  } else if (!hasCustomFilters && (!filters.status || filters.status === "all") && (!filters.severity || filters.severity === "all")) {
+    emptyStateTitle = "No open exceptions";
+    emptyStateDescription = "Nothing currently needs attention.";
+  }
 
   return (
     <div className="space-y-4 p-4 md:p-6">
@@ -82,20 +116,25 @@ export function ExceptionCenterClient({ initialData, initialFilters }: { initial
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
-        <button type="button" onClick={() => applyFilters({ ...filters, status: "all", severity: "all", page: 1 })} className="text-left">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+        <button type="button" onClick={() => applyFilters({ ...filters, status: "all", severity: "all", assignment: "all", escalatedOnly: false, page: 1 })} className="text-left">
           <KpiCard label="Active Exceptions" value={data.kpis.active} tone={data.kpis.active > 0 ? "warning" : "neutral"} />
         </button>
-        <button type="button" onClick={() => applyFilters({ ...filters, severity: "critical", status: "all", page: 1 })} className="text-left">
+        <button type="button" onClick={() => applyFilters({ ...filters, severity: "critical", status: "all", assignment: "all", escalatedOnly: false, page: 1 })} className="text-left">
           <KpiCard label="Critical" value={data.kpis.critical} tone={data.kpis.critical > 0 ? "danger" : "neutral"} />
         </button>
-        <button type="button" onClick={() => applyFilters({ ...filters, status: "open", severity: "all", page: 1 })} className="text-left">
+        <button type="button" onClick={() => applyFilters({ ...filters, status: "open", severity: "all", assignment: "all", escalatedOnly: false, page: 1 })} className="text-left">
           <KpiCard label="Unacknowledged" value={data.kpis.unacknowledged} tone={data.kpis.unacknowledged > 0 ? "warning" : "neutral"} />
         </button>
-        <button type="button" onClick={() => applyFilters({ ...filters, assignment: "mine", status: "all", severity: "all", page: 1 })} className="text-left">
+        {/* Phase 2P.7 -- Section E: dispatchers need to quickly find work
+            nobody owns, same shortcut-tile pattern as the others here. */}
+        <button type="button" onClick={() => applyFilters({ ...filters, assignment: "unassigned", status: "all", severity: "all", escalatedOnly: false, page: 1 })} className="text-left">
+          <KpiCard label="Unassigned" value={data.kpis.unassigned} tone={data.kpis.unassigned > 0 ? "warning" : "neutral"} />
+        </button>
+        <button type="button" onClick={() => applyFilters({ ...filters, assignment: "mine", status: "all", severity: "all", escalatedOnly: false, page: 1 })} className="text-left">
           <KpiCard label="Assigned to Me" value={data.kpis.assignedToMe} />
         </button>
-        <button type="button" onClick={() => applyFilters({ ...filters, status: "resolved", severity: "all", page: 1 })} className="text-left">
+        <button type="button" onClick={() => applyFilters({ ...filters, status: "resolved", severity: "all", assignment: "all", escalatedOnly: false, page: 1 })} className="text-left">
           <KpiCard label="Resolved Today" value={data.kpis.resolvedToday} tone="success" />
         </button>
       </div>
@@ -142,11 +181,16 @@ export function ExceptionCenterClient({ initialData, initialFilters }: { initial
         />
         <input
           type="search"
-          placeholder="Search load, truck, driver..."
+          placeholder="Search load, truck, driver, carrier..."
           defaultValue={filters.q}
           onChange={(e) => applyFilters({ ...filters, q: e.target.value, page: 1 })}
           className="h-8 w-56 rounded-sm border border-desktop-border bg-background px-2 text-[12.5px]"
         />
+        {/* Phase 2P.7 -- Section C: escalated-only quick filter. */}
+        <label className="flex h-8 items-center gap-1.5 rounded-sm border border-desktop-border px-2 text-[12.5px] text-desktop-text">
+          <input type="checkbox" checked={filters.escalatedOnly ?? false} onChange={(e) => applyFilters({ ...filters, escalatedOnly: e.target.checked, page: 1 })} className="size-3.5" />
+          Escalated only
+        </label>
         <button type="button" onClick={clearFilters} className="ml-auto flex items-center gap-1 text-[12px] text-muted-foreground hover:text-desktop-text">
           <RotateCcw className="size-3" /> Clear Filters
         </button>
@@ -167,7 +211,16 @@ export function ExceptionCenterClient({ initialData, initialFilters }: { initial
             {displayRows.map((row) => (
               <tr key={row.id} onClick={() => setOpenExceptionId(row.id)} className="cursor-pointer border-b border-desktop-border last:border-0 hover:bg-desktop-muted/40">
                 <td className="px-3 py-2">
-                  <span className={cn("inline-flex items-center rounded-sm border px-1.5 py-0.5 text-[10.5px] font-bold uppercase", SEVERITY_TONE[row.severity])}>{SEVERITY_LABEL[row.severity]}</span>
+                  <span className="flex items-center gap-1">
+                    <span className={cn("inline-flex items-center rounded-sm border px-1.5 py-0.5 text-[10.5px] font-bold uppercase", SEVERITY_TONE[row.severity])}>{SEVERITY_LABEL[row.severity]}</span>
+                    {/* Phase 2P.7 -- text label, not color alone (a shrunk
+                        icon paired with visible text next to it). */}
+                    {row.escalated && (
+                      <span className="inline-flex items-center gap-0.5 rounded-sm bg-danger/15 px-1 py-0.5 text-[10px] font-bold uppercase text-danger" title="Escalated">
+                        <AlertTriangle className="size-3 shrink-0" /> Esc.
+                      </span>
+                    )}
+                  </span>
                 </td>
                 <td className="px-3 py-2 font-medium text-desktop-text">{compoundTitle(row)}</td>
                 <td className="px-3 py-2">{row.loadNumber ?? "--"}</td>
@@ -184,7 +237,7 @@ export function ExceptionCenterClient({ initialData, initialFilters }: { initial
         </table>
         {displayRows.length === 0 && (
           <div className="p-6">
-            <EmptyState title="No exceptions" description="Nothing matches the current filters." />
+            <EmptyState title={emptyStateTitle} description={emptyStateDescription} />
           </div>
         )}
       </div>

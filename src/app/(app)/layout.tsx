@@ -52,7 +52,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // is a select-list addition only, no schema change.
   const { data: notifications } = await supabase
     .from("notifications")
-    .select("id, title, body, type, entity_type, entity_id, read_at, created_at")
+    .select("id, title, body, type, entity_type, entity_id, exception_id, read_at, created_at")
     .eq("profile_id", user.id)
     .order("created_at", { ascending: false })
     .limit(20);

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Camera, FolderOpen, Loader2, FileCheck2 } from "lucide-react";
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import { uploadTripDocument, getTripDocumentSignedUrl } from "@/app/driver-portal/actions";
+import { DocumentScanner } from "@/components/documents/document-scanner";
 
 export type TripDocSlot = {
   documentType: string;
@@ -23,9 +24,13 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
   const router = useRouter();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cameraRef = useRef<HTMLInputElement>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Shared by the plain file/PDF picker and the scanner's onCapture
+  // (Phase 2Q.1) -- both call this exact same server action, so a
+  // scanned trip document (BOL, rate confirmation, ...) gets no different
+  // treatment than a chosen one.
   async function handleFile(file: File | undefined) {
     if (!file) return;
     setUploading(true);
@@ -37,6 +42,7 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");
+      throw e; // re-thrown so the scanner keeps the scan and offers Retry
     } finally {
       setUploading(false);
     }
@@ -65,11 +71,11 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
         <button
           type="button"
           disabled={uploading}
-          onClick={() => cameraRef.current?.click()}
+          onClick={() => setScannerOpen(true)}
           className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs font-medium disabled:opacity-60"
         >
           {uploading ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
-          Take Photo
+          Scan Document
         </button>
         <button
           type="button"
@@ -81,8 +87,11 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
           {slot.fileName ? "Replace File" : "Choose Photo/PDF"}
         </button>
       </div>
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
       <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
+      {/* Trip documents (BOL, rate confirmation, lumper/scale receipts) are
+          the multi-page-prone types called out in spec Section F -- scanned
+          as a PDF once 2+ pages are captured, a single JPEG at one page. */}
+      <DocumentScanner open={scannerOpen} onOpenChange={setScannerOpen} onCapture={handleFile} multiPage documentLabel={slot.label} />
 
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
     </div>

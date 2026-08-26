@@ -20,7 +20,13 @@ export function FormField({
   disabled?: boolean;
 }) {
   return (
-    <div className="space-y-1">
+    // min-w-0: a grid item defaults to min-width:auto, which refuses to
+    // shrink below an intrinsically-long value (a long website/email/legal
+    // name) and can force the whole FormGrid wider than the viewport at
+    // narrow widths -- min-w-0 lets it shrink to the column width instead,
+    // since the Input itself is already w-full and clips/scrolls its own
+    // overflow.
+    <div className="min-w-0 space-y-1">
       <label htmlFor={name} className="text-[12px] font-medium text-desktop-text">
         {label}
         {required && <span className="text-danger"> *</span>}
@@ -53,7 +59,7 @@ export function FormSelect({
   required?: boolean;
 }) {
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       <label htmlFor={name} className="text-[12px] font-medium text-desktop-text">
         {label}
         {required && <span className="text-danger"> *</span>}
@@ -83,14 +89,16 @@ export function FormTextarea({
   name,
   defaultValue,
   rows = 3,
+  disabled,
 }: {
   label: string;
   name: string;
   defaultValue?: string | null;
   rows?: number;
+  disabled?: boolean;
 }) {
   return (
-    <div className="space-y-1 sm:col-span-2">
+    <div className="min-w-0 space-y-1 sm:col-span-2">
       <label htmlFor={name} className="text-[12px] font-medium text-desktop-text">
         {label}
       </label>
@@ -99,6 +107,7 @@ export function FormTextarea({
         name={name}
         rows={rows}
         defaultValue={defaultValue ?? undefined}
+        disabled={disabled}
         className="w-full rounded-sm border border-desktop-border bg-card px-2.5 py-2 text-[13px] shadow-elevation-1 outline-none transition-[box-shadow,border-color] focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
       />
     </div>

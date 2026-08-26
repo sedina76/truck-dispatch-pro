@@ -15,6 +15,8 @@ import { generateExecutedAgreementDocument } from "@/lib/carrier-agreements/exec
 import { getCarrierExecutedAgreementSignedUrl } from "@/lib/carrier-agreements/signed-url";
 import { ExecutedAgreementResourceNotFoundError } from "@/lib/carrier-agreements/errors";
 import { getRequiredAgreementReadiness } from "@/lib/carrier-agreements/required-readiness";
+import { runCarrierW9Generation } from "@/lib/carrier-w9/generate-workflow";
+import { W9_BUCKET, w9StoragePath, type CarrierW9Row, type W9TaxClassification, type W9TinType } from "@/lib/carrier-w9/types";
 
 // ---------------------------------------------------------------------------
 // Every action here follows the exact rule driver-portal/actions.ts already
@@ -539,4 +541,156 @@ export async function submitApplication(): Promise<{ ok: true } | { ok: false; e
 
   revalidatePath("/carrier-onboarding/review");
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2N.2 -- Carrier W-9. NOT YET LIVE: depends on migration 0099,
+// which has not been applied. Included here for review alongside the rest
+// of this phase's implementation.
+//
+// Every function below follows this file's own established rule: resolve
+// identity via getCarrierActionIdentity() first, then verify ownership
+// (here, via the RPCs' own p_organization_id argument plus the row's
+// onboarding_application_id, checked against identity.applicationId --
+// never trusting a client-supplied w9Id's ownership implicitly).
+// ---------------------------------------------------------------------------
+
+async function requireOwnedW9(supabase: ReturnType<typeof createServiceRoleClient>, applicationId: string, w9Id: string): Promise<CarrierW9Row | null> {
+  const { data } = await supabase.from("carrier_w9s").select("*").eq("id", w9Id).eq("onboarding_application_id", applicationId).maybeSingle();
+  return (data as unknown as CarrierW9Row) ?? null;
+}
+
+export async function getMyW9(): Promise<CarrierW9Row | null> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return null;
+  const supabase = createServiceRoleClient();
+  const { data } = await supabase
+    .from("carrier_w9s")
+    .select("*")
+    .eq("onboarding_application_id", identity.applicationId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as unknown as CarrierW9Row) ?? null;
+}
+
+// W9-FIX: this is the one and only caller of createMyW9Draft() --
+// OnboardingW9Page (page.tsx) calls it directly, in its own Server
+// Component body, to lazy-create the draft row the first time the
+// carrier opens the page with none on file yet. That means this function
+// runs DURING the render of /carrier-onboarding/w9 itself, not from a
+// client-triggered mutation -- calling revalidatePath() on that same
+// route from inside its own render is exactly what Next.js forbids
+// ("used during render which is unsupported"), which is what broke the
+// route. No revalidation is actually needed here anyway: the page's own
+// render already re-fetches getMyW9() immediately after this call
+// returns and renders that fresh row directly -- there is no separate
+// cached response for this call to invalidate. Every OTHER W-9 mutation
+// below (saveMyW9Draft, setMyW9Tin, certifyAndGenerateMyW9) is only ever
+// invoked from the client form's onClick/useTransition handlers, never
+// from render, so their revalidatePath calls are legitimate and unchanged.
+export async function createMyW9Draft(): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const { data, error } = await supabase.rpc("create_carrier_w9_draft", {
+    p_organization_id: identity.organizationId, p_onboarding_application_id: identity.applicationId, p_carrier_id: null,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, id: data as string };
+}
+
+export async function saveMyW9Draft(
+  w9Id: string,
+  input: {
+    nameOnTaxReturn: string; businessName: string; taxClassification: W9TaxClassification; llcClassification: string;
+    otherClassificationDescription: string; hasForeignPartnersOwners: boolean; exemptPayeeCode: string; fatcaExemptionCode: string;
+    addressLine1: string; city: string; state: string; postalCode: string;
+  }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const owned = await requireOwnedW9(supabase, identity.applicationId, w9Id);
+  if (!owned) return { ok: false, error: "W-9 draft not found." };
+
+  const { error } = await supabase.rpc("update_carrier_w9_draft", {
+    p_w9_id: w9Id, p_organization_id: identity.organizationId,
+    p_name_on_tax_return: input.nameOnTaxReturn, p_business_name: input.businessName,
+    p_tax_classification: input.taxClassification, p_llc_classification: input.llcClassification,
+    p_other_classification_description: input.otherClassificationDescription, p_has_foreign_partners_owners: input.hasForeignPartnersOwners,
+    p_exempt_payee_code: input.exemptPayeeCode, p_fatca_exemption_code: input.fatcaExemptionCode,
+    p_address_line1: input.addressLine1, p_city: input.city, p_state: input.state, p_postal_code: input.postalCode,
+    p_requester_name_address: null, p_account_numbers: null,
+  });
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/carrier-onboarding/w9");
+  return { ok: true };
+}
+
+export async function setMyW9Tin(w9Id: string, tinType: W9TinType, tin: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const owned = await requireOwnedW9(supabase, identity.applicationId, w9Id);
+  if (!owned) return { ok: false, error: "W-9 draft not found." };
+
+  // Plaintext TIN lives in this one argument for as short a time as this
+  // architecture allows (2N.2 section 6) -- it is never logged, never
+  // returned, never placed in any other variable here.
+  const { error } = await supabase.rpc("set_carrier_w9_tin", { p_w9_id: w9Id, p_organization_id: identity.organizationId, p_tin_type: tinType, p_tin: tin });
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/carrier-onboarding/w9");
+  return { ok: true };
+}
+
+// Certification and generation are one carrier-facing action (the carrier
+// never sees an intermediate "generating" state) -- certify_carrier_w9()
+// freezes the row, then runCarrierW9Generation() renders/uploads/
+// finalizes immediately after, all before this function returns. The
+// plaintext TIN is re-derived here ONLY for the render step (it must
+// reach the PDF filler somehow) -- reveal_carrier_w9_tin() is
+// deliberately NOT used for this (that path is staff-only, reason-
+// audited, and would log an inappropriate reveal event for what is
+// actually routine generation, not a staff reveal). This function instead
+// re-derives the plaintext directly, scoped to this generation call only.
+export async function certifyAndGenerateMyW9(
+  w9Id: string,
+  input: { certifiedName: string; certifiedTitle: string; tinType: W9TinType; tin: string }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const owned = await requireOwnedW9(supabase, identity.applicationId, w9Id);
+  if (!owned) return { ok: false, error: "W-9 draft not found." };
+
+  const { error: tinError } = await supabase.rpc("set_carrier_w9_tin", { p_w9_id: w9Id, p_organization_id: identity.organizationId, p_tin_type: input.tinType, p_tin: input.tin });
+  if (tinError) return { ok: false, error: tinError.message };
+
+  const { error: certifyError } = await supabase.rpc("certify_carrier_w9", {
+    p_w9_id: w9Id, p_organization_id: identity.organizationId, p_certified_name: input.certifiedName, p_certified_title: input.certifiedTitle || null,
+  });
+  if (certifyError) return { ok: false, error: certifyError.message };
+
+  const result = await runCarrierW9Generation(w9Id, identity.organizationId, input.tin);
+  revalidatePath("/carrier-onboarding/w9");
+  revalidatePath("/carrier-onboarding/review");
+  if (!result.ok) return { ok: false, error: "Your W-9 was certified, but the official PDF could not be generated. Please contact your dispatch company." };
+  return { ok: true };
+}
+
+export async function getMyW9Url(w9Id: string, download = false): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const owned = await requireOwnedW9(supabase, identity.applicationId, w9Id);
+  if (!owned || !["completed", "superseded"].includes(owned.status) || !owned.generated_storage_path) {
+    return { ok: false, error: "W-9 not found." };
+  }
+  const expected = w9StoragePath(owned);
+  if (owned.generated_storage_path !== expected) return { ok: false, error: "W-9 storage path is invalid." };
+  const filename = `w9-v${owned.version}.pdf`;
+  const { data: signed, error } = await supabase.storage.from(W9_BUCKET).createSignedUrl(expected, 300, download ? { download: filename } : undefined);
+  if (error || !signed) return { ok: false, error: "Could not create a secure W-9 link." };
+  return { ok: true, url: signed.signedUrl };
 }

@@ -25,6 +25,8 @@ import {
 } from "@/components/desktop/collapsible-section";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { workerTypeRequiresW9, DRIVER_W9_STAFF_SAFE_SELECT, type DriverWorkerType, type DriverW9Row } from "@/lib/driver-w9/types";
+import { DriverW9Card } from "../applications/[id]/driver-w9-card";
 
 // Section ids + default open/closed state (spec: Employment and Personal
 // Information start open, everything else starts closed; Sensitive
@@ -102,7 +104,7 @@ export default async function DriverDetailPage({
          mvr_date, mvr_status, twic_expiry_date, hazmat_endorsement_expiry_date,
          passport_number, passport_expiry_date, work_authorization_status,
          work_authorization_expiry_date, direct_deposit_bank_name,
-         direct_deposit_account_last4, ssn_last4`
+         direct_deposit_account_last4, ssn_last4, worker_type`
       )
       .eq("id", id)
       .single(),
@@ -129,6 +131,13 @@ export default async function DriverDetailPage({
   // as a whole rather than field-by-field (same treatment as
   // Profitability/Settlement sections on Customer/Broker/Carrier Detail).
   const canSeeFinancials = FINANCIAL_ROLES.includes((profile?.role as OrgRole | null) ?? ("viewer" as OrgRole));
+  // Phase 2Q.2B -- Driver W-9, only queried/shown when this driver's own
+  // worker_type actually requires one (Section P).
+  const requiresW9 = workerTypeRequiresW9(driver.worker_type as DriverWorkerType | null);
+  const w9Query = requiresW9
+    ? await supabase.from("driver_w9s").select(DRIVER_W9_STAFF_SAFE_SELECT).eq("driver_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    : { data: null };
+  const driverW9 = (w9Query.data as unknown as DriverW9Row | null) ?? null;
 
   // driver_compensation query itself only runs for canSeeFinancials -- not
   // merely hidden in the Payroll section's JSX below.
@@ -289,6 +298,12 @@ export default async function DriverDetailPage({
                   <FormField label="Hazmat endorsement expiry date" name="hazmat_endorsement_expiry_date" type="date" defaultValue={driver.hazmat_endorsement_expiry_date} />
                 </FormGrid>
               </DesktopCollapsibleSection>
+
+              {requiresW9 && (
+                <DesktopCollapsibleSection id="tax_w9" title="Tax (W-9)" description="Required for this driver's worker type. Full TIN is never shown here.">
+                  <DriverW9Card w9={driverW9} />
+                </DesktopCollapsibleSection>
+              )}
 
               <DesktopCollapsibleSection id="work_auth" title="Identification & Work Authorization" description="Passport and eligibility to work in the US.">
                 <FormGrid>

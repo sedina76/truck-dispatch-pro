@@ -65,12 +65,19 @@ export default async function LoginPage({
                   Driver Sign In
                 </Link>
               </p>
-              <p className="mt-1 text-xs">
-                <Link href="/driver-application" className="text-[#9a9a92] underline-offset-2 hover:underline">
-                  Apply for Employment
-                </Link>
-              </p>
             </div>
+            {/* Phase 2Q.2: "Apply for Employment" removed from the main
+                entry point (business decision -- carrier-invited
+                onboarding, initiated from Drivers -> Invite Driver, is now
+                the primary/authoritative driver onboarding workflow). The
+                route, its data, and every existing driver_applications row
+                are untouched -- only this link is gone. Also: the public
+                submit route currently resolves ALL applicants to whichever
+                organization was created first (a real single-tenant
+                shortcut, see src/app/api/driver-application/submit/
+                route.ts's own comment), so leaving it linked from a
+                multi-tenant login page would silently misroute a real
+                applicant to the wrong company -- see 2Q.2 report Section 3. */}
           </div>
         </AuthCard>
       </div>

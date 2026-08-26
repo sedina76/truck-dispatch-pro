@@ -6,6 +6,7 @@ import { Check } from "lucide-react";
 import { verifySignupOtp, resendSignupOtp, type VerifyOtpState, type ResendOtpState } from "@/lib/supabase/actions";
 import { OtpInput } from "@/components/ui/otp-input";
 import { AuthButton } from "@/components/auth/auth-button";
+import { SIGNUP_OTP_LENGTH } from "@/lib/auth/otp";
 
 const verifyInitial: VerifyOtpState = { error: null };
 const resendInitial: ResendOtpState = { error: null, sent: false };
@@ -35,7 +36,7 @@ export function VerifyEmailForm({ email }: { email: string }) {
         <input type="hidden" name="email" value={email} />
         <input type="hidden" name="token" value={otp} />
 
-        <OtpInput value={otp} onChange={setOtp} disabled={verifyPending} autoFocus />
+        <OtpInput value={otp} onChange={setOtp} disabled={verifyPending} autoFocus length={SIGNUP_OTP_LENGTH} />
 
         {/* No "code expires in..." countdown here, deliberately: Supabase
             Auth's verifyOtp/resend responses carry no expires-at value for
@@ -51,7 +52,7 @@ export function VerifyEmailForm({ email }: { email: string }) {
           </p>
         )}
 
-        <AuthButton type="submit" disabled={verifyPending || otp.length !== 6}>
+        <AuthButton type="submit" disabled={verifyPending || otp.length !== SIGNUP_OTP_LENGTH}>
           {verifyPending ? (
             "Verifying…"
           ) : (

@@ -4,6 +4,7 @@ import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { getEffectiveOnboardingRequirements } from "@/lib/carrier-onboarding/requirements";
 import { ApplicationDetail, type ApplicationDetailData } from "./application-detail";
 import { getRequiredAgreementReadiness } from "@/lib/carrier-agreements/required-readiness";
+import { W9_STAFF_SAFE_SELECT } from "@/lib/carrier-w9/types";
 
 export default async function CarrierOnboardingApplicationPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -25,7 +26,7 @@ export default async function CarrierOnboardingApplicationPage({ params }: { par
   const canManage = ["owner", "admin", "dispatcher"].includes(role);
   const canConvert = role === "owner" || role === "admin";
 
-  const [{ data: invitations }, { data: documents }, requirements, { data: signingRows }, { data: activity }, { data: publishedTemplates }, { data: packageRows }, requiredAgreementReadiness] = await Promise.all([
+  const [{ data: invitations }, { data: documents }, requirements, { data: signingRows }, { data: activity }, { data: publishedTemplates }, { data: packageRows }, requiredAgreementReadiness, { data: w9Row, error: w9Error }] = await Promise.all([
     supabase.from("carrier_onboarding_invitations").select("id, expires_at, created_at, first_viewed_at, last_viewed_at, revoked_at, submitted_at").eq("application_id", id).order("created_at", { ascending: false }),
     supabase.from("documents").select("id, document_type, file_name, file_path, is_verified, rejected_at, rejection_reason, created_at").eq("entity_type", "carrier_onboarding_application").eq("entity_id", id).order("created_at", { ascending: false }),
     getEffectiveOnboardingRequirements(supabase, application.organization_id),
@@ -36,6 +37,12 @@ export default async function CarrierOnboardingApplicationPage({ params }: { par
       ? supabase.from("carrier_setup_packages").select("id, version, status, prepared_for_name, recipient_name, document_count, generated_at, last_sent_at, generated_by").eq("onboarding_application_id", id).order("version", { ascending: false })
       : Promise.resolve({ data: [] as never[] }),
     getRequiredAgreementReadiness(supabase, id),
+    // Phase 2N.2/2N.2A -- W-9 status for this application. 0099 is live.
+    // Phase 2P.3A: carrier_w9s's authenticated SELECT grant deliberately
+    // excludes tin_encrypted, so select("*") fails outright for every
+    // authenticated caller (Postgres requires SELECT on every column of
+    // the table for a bare "*") -- must use the exact safe column list.
+    supabase.from("carrier_w9s").select(W9_STAFF_SAFE_SELECT).eq("onboarding_application_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   const generatedByIds = [...new Set((packageRows ?? []).map((p) => p.generated_by).filter((value): value is string => Boolean(value)))];
@@ -152,6 +159,9 @@ export default async function CarrierOnboardingApplicationPage({ params }: { par
     })),
     publishedTemplates: publishedTemplates ?? [],
     setupPackages: (packageRows ?? []).map((pkg) => ({ ...pkg, generated_by_profile: pkg.generated_by ? generatorById.get(pkg.generated_by) ?? null : null })),
+    w9: (w9Row as ApplicationDetailData["w9"]) ?? null,
+    w9LoadError: w9Error?.message ?? null,
+    organizationId: application.organization_id,
   };
 
   return (
@@ -162,7 +172,7 @@ export default async function CarrierOnboardingApplicationPage({ params }: { par
           { label: application.legal_name ?? "Application", href: `/carriers/onboarding/${id}` },
         ]}
       />
-      <ApplicationDetail data={data} canManage={canManage} canConvert={canConvert} canViewPackages={["owner", "admin", "dispatcher", "accountant"].includes(role)} />
+      <ApplicationDetail data={data} canManage={canManage} canConvert={canConvert} canViewPackages={["owner", "admin", "dispatcher", "accountant"].includes(role)} role={role} />
     </div>
   );
 }

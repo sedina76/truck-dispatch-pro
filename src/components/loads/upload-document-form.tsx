@@ -2,10 +2,11 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Camera, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { uploadLoadDocument } from "@/app/(app)/loads/pod-actions";
 import { MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_MIME_TYPES } from "@/lib/documents/upload-limits";
+import { DocumentScanner } from "@/components/documents/document-scanner";
 
 // Calls uploadLoadDocument()/uploadPod() directly rather than via a plain
 // <form action={...}> -- same reasoning as GeneratePacketButton
@@ -51,12 +52,14 @@ export function UploadDocumentForm({
   const inputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const file = inputRef.current?.files?.[0];
-    if (!file) return;
-
+  // Shared by the plain <input>'s submit below and by the scanner's
+  // onCapture (Phase 2Q.1) -- both paths end at uploadLoadDocument(), so a
+  // scanned document is validated, stored, and logged exactly like a
+  // chosen one. Throws on failure so the scanner (when it's the caller)
+  // keeps the scan on screen and offers Retry instead of losing it.
+  async function submitFile(file: File) {
     setError(null);
 
     // Pre-check size/type client-side, BEFORE ever sending the request --
@@ -69,14 +72,18 @@ export function UploadDocumentForm({
     // check ever runs, even with next.config.ts's serverActions.
     // bodySizeLimit raised. Rejecting oversized/wrong-type files here
     // means that request is never sent at all, so that platform boundary
-    // never comes into play for the common case.
+    // never comes into play for the common case. A scanner-produced File
+    // is always a real image/jpeg or application/pdf blob, so it always
+    // passes this unchanged.
     if (file.size > MAX_UPLOAD_BYTES) {
-      setError("File is too large (15 MB max).");
-      return;
+      const msg = "File is too large (15 MB max).";
+      setError(msg);
+      throw new Error(msg);
     }
     if (!(ALLOWED_UPLOAD_MIME_TYPES as readonly string[]).includes(file.type)) {
-      setError("Unsupported file type. Use PDF, JPG, or PNG.");
-      return;
+      const msg = "Unsupported file type. Use PDF, JPG, or PNG.";
+      setError(msg);
+      throw new Error(msg);
     }
 
     setLoading(true);
@@ -91,18 +98,30 @@ export function UploadDocumentForm({
       // expected validation failure, but a genuinely unexpected error
       // (e.g. a network drop mid-request) still could -- never let that
       // hang the button silently or crash the page.
-      setError(e instanceof Error ? e.message : "Could not upload this file.");
+      const msg = e instanceof Error ? e.message : "Could not upload this file.";
+      setError(msg);
       setLoading(false);
-      return;
+      throw new Error(msg);
     }
     setLoading(false);
     if (!result.ok) {
       setError(result.error);
-      return;
+      throw new Error(result.error);
     }
     if (inputRef.current) inputRef.current.value = "";
     router.refresh();
     await onUploaded?.();
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const file = inputRef.current?.files?.[0];
+    if (!file) return;
+    try {
+      await submitFile(file);
+    } catch {
+      // already surfaced via setError above
+    }
   }
 
   return (
@@ -124,6 +143,17 @@ export function UploadDocumentForm({
         {loading ? <Loader2 className="size-3.5 animate-spin" /> : null}
         {label}
       </Button>
+      <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => setScannerOpen(true)}>
+        <Camera className="size-3.5" />
+        Scan
+      </Button>
+      <DocumentScanner
+        open={scannerOpen}
+        onOpenChange={setScannerOpen}
+        onCapture={submitFile}
+        multiPage
+        documentLabel={documentType.replace(/_/g, " ")}
+      />
       {error && <span className="w-full text-xs text-danger">{error}</span>}
     </form>
   );

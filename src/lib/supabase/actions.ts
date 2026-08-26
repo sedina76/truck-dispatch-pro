@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { SIGNUP_OTP_LENGTH } from "@/lib/auth/otp";
 
 export type ActionState = { error: string | null };
 
@@ -18,6 +19,14 @@ function friendlyAuthError(raw: string): string {
   if ((m.includes("token") || m.includes("otp") || m.includes("code")) && m.includes("expired")) return "Verification code expired.";
   if (m.includes("token has expired or is invalid") || m.includes("invalid otp") || m.includes("invalid token")) return "Invalid verification code.";
   if (m.includes("for security purposes") || m.includes("rate limit") || m.includes("too many requests")) return "Too many attempts — try again shortly.";
+  // Auth signup/verification defect audit: resend({type:"signup"}) returns
+  // this exact message for an email that's already confirmed -- distinct
+  // from "email not confirmed" above (that's the LOGIN-time message for an
+  // unconfirmed account). Belt-and-suspenders: signup() below now avoids
+  // ever sending an already-confirmed user to the verify-email screen in
+  // the first place, but this still covers a stale link or a direct
+  // /verify-email visit.
+  if (m.includes("already confirmed")) return "This email is already verified. Try signing in instead.";
   return raw;
 }
 
@@ -47,6 +56,32 @@ export async function signup(_prev: ActionState, formData: FormData): Promise<Ac
   const { data, error } = await supabase.auth.signUp({ email, password });
 
   if (error) return { error: friendlyAuthError(error.message) };
+
+  // Auth signup/verification defect audit -- root cause: Supabase Auth's
+  // signUp() has a deliberate, documented anti-enumeration behavior for an
+  // email that already belongs to a CONFIRMED user -- it returns success
+  // (no `error`), `data.session === null` (same shape as a genuine new
+  // signup), and sends NO email at all. GoTrue logs this exact case as
+  // "User repeated signup: request completed". Before this fix, the `if
+  // (!data.session)` check below couldn't tell that case apart from a real
+  // new signup and sent the user to "We sent a verification code to..."
+  // regardless -- which is exactly why a repeated signup with an
+  // already-verified test address showed that screen but no email ever
+  // arrived; nothing was ever sent to arrive.
+  //
+  // Supabase's own documented signal for this is `data.user.identities`:
+  // empty for the already-confirmed short-circuit, populated for a
+  // genuine new user AND for an existing-but-UNCONFIRMED user (which DOES
+  // get a real resend, and is correctly left on the path below unchanged).
+  // This does mean the response now distinguishes "this email already has
+  // a verified account" for someone submitting the signup form with it --
+  // the same trade-off essentially every production signup form makes
+  // (and one Supabase itself hands the calling application this exact
+  // signal to make), not a new information leak: nothing here exposes any
+  // OTHER account detail, and login/password-reset are unaffected.
+  if (data.user && data.user.identities && data.user.identities.length === 0) {
+    return { error: "This email is already registered and verified. Try signing in, or use “Forgot password” if you don't remember your password." };
+  }
 
   // Email confirmation enabled: no session yet -- send to the OTP
   // verification screen (spec section 7), not straight to login. A
@@ -137,7 +172,16 @@ export async function verifySignupOtp(_prev: VerifyOtpState, formData: FormData)
   const email = String(formData.get("email") || "");
   const token = String(formData.get("token") || "");
 
-  if (!/^\d{6}$/.test(token)) return { error: "Enter the 6-digit code." };
+  // Auth OTP length mismatch repair: this project's live Supabase Dashboard
+  // OTP-length setting issues an 8-digit signup code (confirmed against a
+  // real "Confirm signup" email using {{ .Token }}), not Supabase's
+  // 6-digit default this check was originally written against. Shorter or
+  // longer input is rejected here, before ever calling Supabase, with a
+  // clear message naming the actual required length -- never silently
+  // truncated or padded.
+  if (!new RegExp(`^\\d{${SIGNUP_OTP_LENGTH}}$`).test(token)) {
+    return { error: `Enter the ${SIGNUP_OTP_LENGTH}-digit code.` };
+  }
 
   const { error } = await supabase.auth.verifyOtp({ email, token, type: "signup" });
   if (error) return { error: friendlyAuthError(error.message) };

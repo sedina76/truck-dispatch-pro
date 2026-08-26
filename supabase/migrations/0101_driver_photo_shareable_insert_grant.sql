@@ -1,0 +1,65 @@
+-- =============================================================================
+-- 0101_driver_photo_shareable_insert_grant.sql
+-- Phase 2O.1: closes the single missing column-level grant that makes
+-- EVERY createDriver() call fail with "permission denied for table
+-- drivers" (Postgres 42501), for every role, regardless of organization.
+--
+-- Root cause (confirmed live, reproduced end-to-end through the real app
+-- and isolated at the database layer via a 5-test binary search): 0014
+-- locked public.drivers down to an explicit column-level allow-list for
+-- authenticated (SELECT/INSERT/UPDATE), excluding only the three
+-- encrypted PII columns. 0042 (profile sharing) added drivers.photo_shareable
+-- and granted authenticated SELECT and UPDATE on it, but never INSERT --
+-- an oversight, not a deliberate restriction (photo_shareable is not a
+-- sensitive column; it already carries the same trust level as
+-- first_name/status/etc. for the other two privileges). Because
+-- driverValues() (src/app/(app)/drivers/actions.ts) always includes
+-- photo_shareable as a key in its INSERT payload -- even when the New
+-- Driver form doesn't render that field at all, defaulting it to false --
+-- Postgres evaluates the missing column-level INSERT privilege for that
+-- one targeted column and rejects the ENTIRE insert statement, reporting
+-- the table-level phrasing "permission denied for table drivers" rather
+-- than a column-specific message. This is Postgres's standard behavior
+-- for a missing column privilege, not a bug in the error reporting.
+--
+-- This is the exact same class of defect 0020_fix_middle_name_grants.sql
+-- repaired for drivers.middle_name -- a late-added ordinary column whose
+-- column-level grant set never included every one of the three verbs a
+-- normal field needs. The fix here is identical in shape: a single,
+-- idempotent, additive GRANT, nothing else.
+--
+-- Full audit performed before writing this (Phase 2O.1 section 1/2):
+-- every column added to public.drivers after the 0014 baseline --
+-- middle_name (0017, later re-confirmed by 0020) and photo_shareable
+-- (0042) -- was cross-checked against createDriver()'s full insert
+-- payload and against 0014's original SELECT/INSERT/UPDATE grant lists.
+-- middle_name already has all three verbs granted (0017 + 0020's
+-- idempotent re-grant). photo_shareable is the ONLY column missing one of
+-- the three verbs (INSERT). No other mismatch exists between
+-- driverValues()'s emitted columns (including the organization_id
+-- createDriver() adds separately) and the current effective grant set.
+--
+-- Explicitly NOT touched, and verified unaffected by this migration:
+--   - RLS: drivers_insert/drivers_update/drivers_select/drivers_delete
+--     (0010, `standard_tables` loop) are completely untouched -- this
+--     migration contains no ALTER POLICY, no DROP POLICY, no CREATE
+--     POLICY. RLS remains the actual authorization boundary; this GRANT
+--     only lets Postgres reach the RLS check for this one column at all,
+--     exactly the same relationship 0014's original grants already have
+--     to RLS for every other ordinary column.
+--   - The three encrypted PII columns (ssn_encrypted,
+--     direct_deposit_account_encrypted, direct_deposit_routing_encrypted)
+--     remain completely outside every one of authenticated's SELECT/
+--     INSERT/UPDATE grants, exactly as 0014 left them -- they stay
+--     reachable ONLY through set_driver_pii()/reveal_driver_pii()
+--     (SECURITY DEFINER, owner/admin-only, audited). This migration does
+--     not reference those columns or those functions at all.
+--   - createDriver()/updateDriver() application code: unchanged. The
+--     existing payload is already correct; only the missing database-side
+--     privilege is being added.
+-- =============================================================================
+
+grant insert (photo_shareable) on public.drivers to authenticated;
+
+comment on column public.drivers.photo_shareable is
+  'Whether this driver''s photo may be shown on shareable profile links (0042). Same trust tier as first_name/status/etc. -- SELECT/UPDATE were granted to authenticated at introduction (0042); INSERT was not, which broke every driver creation until this migration (0101) added it. Never part of the encrypted-PII column set.';

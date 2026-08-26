@@ -24,6 +24,8 @@ type NotificationRow = {
   // only behavior untouched.
   entity_type: string | null;
   entity_id: string | null;
+  // Phase 2P.6B -- set only for exception-sourced notifications (0107).
+  exception_id: string | null;
   read_at: string | null;
   created_at: string;
 };
@@ -115,6 +117,27 @@ export function NotificationsMenu({ notifications: initialNotifications }: { not
                 <Link
                   key={n.id}
                   href={`/dispatch/board?dispatch=${n.entity_id}`}
+                  onClick={() => {
+                    markNotificationRead(n.id).catch(() => {});
+                  }}
+                  className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-2.5 text-left transition-colors hover:bg-muted"
+                >
+                  <div className="flex w-full items-center gap-2">
+                    {!n.read_at && <span className="size-1.5 shrink-0 rounded-full bg-primary" />}
+                    <p className="flex-1 truncate text-sm font-medium">{n.title}</p>
+                  </div>
+                  {n.body && <p className="line-clamp-2 pl-3.5 text-xs text-muted-foreground">{n.body}</p>}
+                </Link>
+              ) : n.exception_id ? (
+                // Phase 2P.6B -- an exception-sourced notification (0107:
+                // opened/escalated/assigned/reassigned) navigates to the
+                // Exception Center rather than just marking itself read.
+                // Normal Exception Center RLS/role-guard still applies on
+                // arrival -- a foreign-org or resolved-historical exception
+                // is handled safely by that page, not by this link.
+                <Link
+                  key={n.id}
+                  href={`/dispatch/exceptions?exception=${n.exception_id}`}
                   onClick={() => {
                     markNotificationRead(n.id).catch(() => {});
                   }}

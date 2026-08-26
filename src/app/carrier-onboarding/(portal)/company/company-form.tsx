@@ -27,7 +27,7 @@ export function CompanyForm({ application }: { application: MyApplication }) {
         return;
       }
       if (continueNext) {
-        router.push("/carrier-onboarding/equipment");
+        router.push("/carrier-onboarding/w9");
       } else {
         toast.show("success", "Saved.");
       }

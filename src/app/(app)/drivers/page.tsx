@@ -151,24 +151,31 @@ export default async function DriversPage({
     <div className="space-y-3">
       <DesktopWorkspaceTabs tabs={[{ label: "Drivers", href: "/drivers" }]} />
       <RegisterDesktopActions title="Drivers" exportOptions={[{ label: "Export CSV (Filtered)", href: `/drivers/export${q ? `?q=${encodeURIComponent(q)}` : ""}` }]} />
+      {/* Phase 2Q.2: Invite Driver is now the primary onboarding action
+          (business decision -- carrier-initiated invitation, not a staff
+          member typing in the driver's whole file). Add Driver remains
+          available as a plain secondary link for e.g. migrating an
+          existing driver in directly, not removed. */}
       <PageHeader
         title="Drivers"
         description="Drivers across all carriers, with CDL and medical card status."
-        primaryAction={{ label: "Add Driver", href: "/drivers/new" }}
+        primaryAction={{ label: "Invite Driver", href: "/drivers/invite" }}
       />
 
-      <Link
-        href="/drivers/applications"
-        className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-primary hover:underline"
-      >
-        <UserPlus className="size-3.5" />
-        Driver Applications
-        {!!newApplicationsCount && (
-          <span className="ml-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-semibold">
-            {newApplicationsCount} new
-          </span>
-        )}
-      </Link>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <Link href="/drivers/applications" className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-primary hover:underline">
+          <UserPlus className="size-3.5" />
+          Driver Applications
+          {!!newApplicationsCount && (
+            <span className="ml-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-semibold">
+              {newApplicationsCount} new
+            </span>
+          )}
+        </Link>
+        <Link href="/drivers/new" className="text-[12.5px] font-medium text-muted-foreground hover:underline">
+          Add Driver Manually
+        </Link>
+      </div>
 
       <DesktopKpiStrip>
         <DesktopKpiBox label="Total Drivers" value={totalCount ?? 0} />
@@ -182,8 +189,8 @@ export default async function DriversPage({
       {drivers.length === 0 ? (
         <EmptyState
           title={q ? "No drivers match your search" : "No drivers yet"}
-          description={q ? "Try a different search term." : "Add a driver to assign them to trucks and dispatches."}
-          action={{ label: "Add Driver", href: "/drivers/new" }}
+          description={q ? "Try a different search term." : "Invite a driver to get them onboarded, or add one manually."}
+          action={{ label: "Invite Driver", href: "/drivers/invite" }}
         />
       ) : (
         <DataTable

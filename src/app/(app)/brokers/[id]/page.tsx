@@ -1,115 +1,36 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { deleteRecord } from "@/lib/actions/records";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormTextarea } from "@/components/ui/form-field";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { PartyArSection } from "@/components/finance/party-ar-section";
-import { BrokerProfitabilitySection } from "@/components/brokers/broker-profitability-section";
-import { updateBroker } from "../actions";
-import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { BrokerActions } from "@/components/brokers/broker-actions";
+import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { updateBroker, saveBrokerContact, deleteBrokerContact } from "../actions";
 
-// Phase 2G.9 (item 3): same treatment as Customer Detail -- Brokers is
-// Business, open to every role, no layout guard.
-export default async function BrokerDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const supabase = await createClient();
-
-  const { data: roleData } = await supabase.rpc("current_role");
-  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
-
-  const { data: broker } = await supabase.from("brokers").select("*").eq("id", id).single();
-  if (!broker) notFound();
-
-  // Phase 2G.12: payment_terms_days moved to broker_financials (2G.10
-  // writer cutover) -- brokers' own copy is stale the moment it's edited.
-  // credit_rating has no reader anywhere in this app (confirmed by
-  // inspection) so there's nothing to display/cut over for it here.
-  const { data: brokerFinancials } = canSeeFinancials
-    ? await supabase.from("broker_financials").select("payment_terms_days").eq("broker_id", id).maybeSingle()
-    : { data: null };
-
-  // `rate` dropped from this select -- see identical fix/reasoning in
-  // customers/[id]/page.tsx.
-  const { data: loadsData } = await supabase
-    .from("loads")
-    .select("id, load_number, status")
-    .eq("broker_id", id)
-    .order("created_at", { ascending: false })
-    .limit(10);
-  const loadsRaw = (loadsData ?? []) as { id: string; load_number: string; status: string }[];
-  const rateByLoadId = new Map<string, number>();
-  if (canSeeFinancials && loadsRaw.length > 0) {
-    const { data: lf } = await supabase.from("load_financials").select("load_id, rate").in("load_id", loadsRaw.map((l) => l.id));
-    for (const row of lf ?? []) rateByLoadId.set(row.load_id, Number(row.rate));
-  }
-  const loads = loadsRaw.map((l) => ({ ...l, rate: rateByLoadId.get(l.id) }));
-
-  return (
-    <div className="space-y-6">
-      <FormCard
-        title={broker.company_name}
-        description="Broker profile. Changes save immediately."
-        action={updateBroker.bind(null, id)}
-        cancelHref="/brokers"
-        deleteAction={deleteRecord.bind(null, "brokers", id, "/brokers")}
-      >
-        <FormGrid>
-          <FormField label="Company name" name="company_name" defaultValue={broker.company_name} required />
-          <FormField label="MC number" name="mc_number" defaultValue={broker.mc_number} />
-          <FormField label="Contact name" name="contact_name" defaultValue={broker.contact_name} />
-          <FormField label="Phone" name="phone" type="tel" defaultValue={broker.phone} />
-          <FormField label="Email" name="email" type="email" defaultValue={broker.email} />
-          <FormField label="City" name="city" defaultValue={broker.city} />
-          <FormField label="State" name="state" defaultValue={broker.state} />
-          {canSeeFinancials && (
-            <FormField
-              label="Payment terms (days)"
-              name="payment_terms_days"
-              type="number"
-              defaultValue={brokerFinancials?.payment_terms_days}
-            />
-          )}
-          <label className="flex items-center gap-2 text-sm font-medium sm:col-span-2">
-            <input
-              type="checkbox"
-              name="is_blacklisted"
-              defaultChecked={broker.is_blacklisted}
-              className="size-4 rounded border-[var(--color-border)]"
-            />
-            Blacklisted (do not book loads from this broker)
-          </label>
-          <FormTextarea label="Notes" name="notes" defaultValue={broker.notes} />
-        </FormGrid>
-      </FormCard>
-
-      {canSeeFinancials && <PartyArSection brokerId={id} />}
-
-      {canSeeFinancials && <BrokerProfitabilitySection brokerId={id} />}
-
-      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <p className="text-sm font-medium">Recent loads</p>
-        {!loads || loads.length === 0 ? (
-          <p className="mt-2 text-sm text-[var(--color-text-muted)]">No loads from this broker yet.</p>
-        ) : (
-          <ul className="mt-2 divide-y divide-[var(--color-border)]">
-            {loads.map((load) => (
-              <li key={load.id} className="flex items-center justify-between py-2 text-sm">
-                <Link href={`/loads/${load.id}`} className="font-medium text-[var(--color-brand)]">
-                  {load.load_number}
-                </Link>
-                {canSeeFinancials && <span>${Number(load.rate ?? 0).toLocaleString()}</span>}
-                <StatusBadge status={load.status} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+const TABS=['overview','contacts','loads','broker-packets','documents','invoices','payments','activity'] as const;
+const LABEL:Record<string,string>={overview:'Overview',contacts:'Contacts',loads:'Loads','broker-packets':'Broker Packets',documents:'Documents',invoices:'Invoices',payments:'Payments',activity:'Activity'};
+export default async function BrokerDetailPage({params,searchParams}:{params:Promise<{id:string}>;searchParams:Promise<{tab?:string}>}){
+ const {id}=await params; const {tab:raw='overview'}=await searchParams; const tab=(TABS as readonly string[]).includes(raw)?raw:'overview'; const role=await requireRole(['owner','admin','dispatcher','accountant','viewer']); const supabase=await createClient(); const financial=FINANCIAL_ROLES.includes(role); const canOperate=['owner','admin','dispatcher'].includes(role); const canEditFinancial=['owner','admin','accountant'].includes(role); const canManage=role==='owner'||role==='admin';
+ const [{data:broker},{data:contacts},{data:loads},{data:documents},{data:invoices},{data:activity},{data:fin},{data:packets}]=await Promise.all([
+  supabase.from('brokers').select('*').eq('id',id).maybeSingle(),supabase.from('broker_contacts').select('*').eq('broker_id',id).order('contact_type').order('name'),supabase.from('loads').select('id,load_number,status,created_at').eq('broker_id',id).order('created_at',{ascending:false}),supabase.from('documents').select('id,document_type,file_name,is_verified,created_at').eq('entity_type','broker').eq('entity_id',id).order('created_at',{ascending:false}),financial?supabase.from('invoices').select('id,invoice_number,issue_date,total_amount,balance_due,due_date,status').eq('broker_id',id).order('created_at',{ascending:false}):Promise.resolve({data:[]}),supabase.from('activity_logs').select('id,action,created_at,changes,actor_id').eq('entity_type','broker').eq('entity_id',id).order('created_at',{ascending:false}),financial?supabase.from('broker_financials').select('*').eq('broker_id',id).maybeSingle():Promise.resolve({data:null}),supabase.from('broker_packets').select('id,version,status,document_count,generated_at,created_at').eq('broker_id',id).order('created_at',{ascending:false}),
+ ]); if(!broker) notFound();
+ const invoiceIds=(invoices??[]).map(x=>x.id); const {data:payments}=financial&&invoiceIds.length?await supabase.from('payments').select('id,invoice_id,amount,method,received_at,reference_number').in('invoice_id',invoiceIds).order('received_at',{ascending:false}):{data:[]};
+ const activeLoads=(loads??[]).filter(x=>!['delivered','cancelled'].includes(x.status)).length, delivered=(loads??[]).filter(x=>x.status==='delivered').length, outstanding=(invoices??[]).reduce((s,x)=>s+Number(x.balance_due),0), overdue=(invoices??[]).filter(x=>x.due_date&&x.due_date<new Date().toISOString().slice(0,10)&&Number(x.balance_due)>0).reduce((s,x)=>s+Number(x.balance_due),0), revenue=(invoices??[]).reduce((s,x)=>s+Number(x.total_amount),0);
+ return <div className="space-y-4"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><Link href="/brokers" className="text-xs text-muted-foreground hover:text-foreground">← Brokers</Link><h1 className="mt-1 text-xl font-semibold">{broker.legal_name}</h1><div className="mt-1 flex gap-2"><StatusBadge status={broker.archived_at?'archived':broker.status}/>{financial&&<StatusBadge status={fin?.credit_status??'review'}/>}</div></div><BrokerActions id={id} name={broker.legal_name} archived={Boolean(broker.archived_at)} canManage={canManage}/></div>
+ <nav className="flex max-w-full gap-1 overflow-x-auto rounded-md border bg-card p-1">{TABS.map(t=><Link key={t} href={`/brokers/${id}?tab=${t}`} className={`whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium ${tab===t?'bg-primary text-primary-foreground':'hover:bg-muted'}`}>{LABEL[t]}</Link>)}</nav>
+ {tab==='overview'&&<div className="space-y-4"><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[['Active Loads',activeLoads],['Delivered Loads',delivered],['Outstanding',financial?`$${outstanding.toLocaleString()}`:'Restricted'],['Overdue',financial?`$${overdue.toLocaleString()}`:'Restricted'],['Total Revenue',financial?`$${revenue.toLocaleString()}`:'Restricted'],['Avg Days to Pay',financial?(fin?.average_days_to_pay??'--'):'Restricted'],['Last Load',loads?.[0]?new Date(loads[0].created_at).toLocaleDateString():'--'],['Last Payment',payments?.[0]?new Date(payments[0].received_at).toLocaleDateString():'--']].map(([l,v])=><div key={l} className="rounded-md border bg-card p-3"><p className="text-xs text-muted-foreground">{l}</p><p className="mt-1 font-semibold">{v}</p></div>)}</div>
+  <FormCard title="Broker Profile" description="Operational identity and relationship settings." action={updateBroker.bind(null,id)} cancelHref="/brokers"><FormGrid><FormField label="Legal name" name="legal_name" defaultValue={broker.legal_name} required disabled={!canOperate}/><FormField label="DBA" name="dba_name" defaultValue={broker.dba_name} disabled={!canOperate}/><FormField label="MC number" name="mc_number" defaultValue={broker.mc_number} disabled={!canOperate}/><FormField label="USDOT" name="dot_number" defaultValue={broker.dot_number} disabled={!canOperate}/><FormField label="Website" name="website" type="url" defaultValue={broker.website} disabled={!canOperate}/><FormField label="Primary phone" name="phone" defaultValue={broker.phone} disabled={!canOperate}/><FormField label="Primary email" name="email" type="email" defaultValue={broker.email} disabled={!canOperate}/><FormField label="City" name="city" defaultValue={broker.city} disabled={!canOperate}/><FormField label="State" name="state" defaultValue={broker.state} disabled={!canOperate}/><Select label="Status" name="status" value={broker.status} options={['prospect','setup_pending','active','inactive','do_not_use']} disabled={!canOperate}/><Select label="Onboarding" name="onboarding_status" value={broker.onboarding_status} options={['not_started','collecting','ready','complete']} disabled={!canOperate}/>{financial&&<><FormField label="Payment terms" name="payment_terms_days" type="number" defaultValue={fin?.payment_terms_days} disabled={!canEditFinancial}/><Select label="Credit status" name="credit_status" value={fin?.credit_status??'review'} options={['review','approved','hold','do_not_use']} disabled={!canEditFinancial}/><FormField label="Credit limit" name="credit_limit" type="number" defaultValue={fin?.credit_limit} disabled={!canEditFinancial}/><Select label="Payment method" name="payment_method" value={fin?.payment_method??''} options={['','ach','check','wire','credit_card','cash','other']} disabled={!canEditFinancial}/><FormTextarea label="Financial notes" name="financial_notes" defaultValue={fin?.financial_notes} disabled={!canEditFinancial}/></>}<FormTextarea label="Internal notes" name="notes" defaultValue={broker.notes} disabled={!canOperate}/></FormGrid></FormCard></div>}
+ {tab==='contacts'&&<Section title="Broker Contacts">{canOperate&&<form action={saveBrokerContact.bind(null,id)} className="mb-4 grid gap-2 rounded-md border bg-muted/30 p-3 sm:grid-cols-2 lg:grid-cols-4"><FormField label="Name" name="name" required/><Select label="Type" name="contact_type" value="general" options={['general','dispatch','accounting','carrier_setup','claims','after_hours','management']}/><FormField label="Title" name="title"/><FormField label="Department" name="department"/><FormField label="Email" name="email" type="email"/><FormField label="Phone" name="phone"/><FormField label="Extension" name="extension"/><label className="flex items-center gap-2 pt-6 text-sm"><input type="checkbox" name="is_primary"/> Primary for type</label><FormTextarea label="Notes" name="notes"/><button className="h-9 self-end rounded-md bg-primary px-3 text-sm text-primary-foreground">Add Contact</button></form>}<div className="grid gap-3 md:grid-cols-2">{(contacts??[]).map(c=><div key={c.id} className="min-w-0 rounded-md border p-3"><div className="flex justify-between gap-2"><div className="min-w-0 wrap-break-word"><p className="font-medium">{c.name}</p><p className="text-xs text-muted-foreground">{c.contact_type.replaceAll('_',' ')}{c.is_primary?' · Primary':''}</p></div>{canOperate&&<form action={deleteBrokerContact.bind(null,id,c.id)} className="shrink-0"><button className="text-xs text-destructive">Delete</button></form>}</div><p className="mt-2 wrap-break-word text-sm">{c.email??'--'} · {c.phone??'--'}</p>{canOperate&&<details className="mt-3 border-t pt-2"><summary className="cursor-pointer text-xs font-medium text-primary">Edit contact</summary><form action={saveBrokerContact.bind(null,id)} className="mt-2 grid gap-2 sm:grid-cols-2"><input type="hidden" name="contact_id" value={c.id}/><FormField label="Name" name="name" defaultValue={c.name} required/><Select label="Type" name="contact_type" value={c.contact_type} options={['general','dispatch','accounting','carrier_setup','claims','after_hours','management']}/><FormField label="Title" name="title" defaultValue={c.title}/><FormField label="Department" name="department" defaultValue={c.department}/><FormField label="Email" name="email" type="email" defaultValue={c.email}/><FormField label="Phone" name="phone" defaultValue={c.phone}/><FormField label="Extension" name="extension" defaultValue={c.extension}/><label className="flex items-center gap-2 pt-6 text-sm"><input type="checkbox" name="is_primary" defaultChecked={c.is_primary}/> Primary for type</label><FormTextarea label="Notes" name="notes" defaultValue={c.notes}/><button className="h-9 rounded-md bg-primary px-3 text-sm text-primary-foreground">Save Contact</button></form></details>}</div>)}</div>{!contacts?.length&&<Empty label="No contacts yet."/>}</Section>}
+ {tab==='loads'&&<Section title="Loads"><Rows rows={(loads??[]).map(x=>[<Link key="load" className="text-primary" href={`/loads/${x.id}`}>{x.load_number}</Link>,<StatusBadge key="status" status={x.status}/>,new Date(x.created_at).toLocaleDateString()])}/></Section>}
+ {tab==='broker-packets'&&<Section title="Broker Packets">{canOperate&&<Link href={`/brokers/${id}/packets/new`} className="mb-3 inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground">New Broker Packet</Link>}<Rows rows={(packets??[]).map(p=>[<Link key="v" className="text-primary" href={`/brokers/${id}/packets/${p.id}`}>{p.version?`v${p.version}`:'Draft'}</Link>,<StatusBadge key="status" status={p.status}/>,`${p.document_count} document${p.document_count===1?'':'s'}`,p.generated_at?new Date(p.generated_at).toLocaleDateString():new Date(p.created_at).toLocaleDateString()])}/>{!packets?.length&&<Empty label="No broker packets yet."/>}</Section>}
+ {tab==='documents'&&<Section title="Broker Documents"><Rows rows={(documents??[]).map(x=>[x.file_name,x.document_type.replaceAll('_',' '),x.is_verified?'Verified':'Pending',new Date(x.created_at).toLocaleDateString()])}/>{!documents?.length&&<Empty label="No broker-owned documents."/>}</Section>}
+ {tab==='invoices'&&<Section title="Invoices">{financial?<Rows rows={(invoices??[]).map(x=>[<Link key="invoice" className="text-primary" href={`/invoices/${x.id}`}>{x.invoice_number}</Link>,x.issue_date,`$${Number(x.total_amount).toLocaleString()}`,`$${Number(x.balance_due).toLocaleString()}`,<StatusBadge key="status" status={x.status}/>])}/>:<Empty label="Financial access is restricted."/>}</Section>}
+ {tab==='payments'&&<Section title="Payments">{financial?<Rows rows={(payments??[]).map(x=>[new Date(x.received_at).toLocaleDateString(),`$${Number(x.amount).toLocaleString()}`,x.method,x.reference_number??'--'])}/>:<Empty label="Financial access is restricted."/>}</Section>}
+ {tab==='activity'&&<Section title="Activity"><Rows rows={(activity??[]).map(x=>[x.action.replaceAll('_',' '),new Date(x.created_at).toLocaleString()])}/>{!activity?.length&&<Empty label="No broker activity yet."/>}</Section>}
+ </div>;
 }
+function Select({label,name,value,options,disabled=false}:{label:string;name:string;value:string;options:string[];disabled?:boolean}){return <label className="space-y-1 text-sm"><span className="font-medium">{label}</span><select name={name} defaultValue={value} disabled={disabled} className="h-9 w-full rounded-md border bg-background px-3 disabled:cursor-not-allowed disabled:opacity-60">{options.map(x=><option key={x} value={x}>{x?x.replaceAll('_',' '):'Not set'}</option>)}</select></label>}
+function Section({title,children}:{title:string;children:React.ReactNode}){return <section className="rounded-md border bg-card p-4"><h2 className="mb-3 font-semibold">{title}</h2>{children}</section>}
+function Empty({label}:{label:string}){return <p className="py-6 text-center text-sm text-muted-foreground">{label}</p>}
+function Rows({rows}:{rows:React.ReactNode[][]}){return <div className="grid gap-2">{rows.map((row,i)=><div key={i} className="grid gap-1 rounded-md border p-3 text-sm sm:grid-flow-col sm:auto-cols-fr">{row.map((cell,j)=><div key={j}>{cell}</div>)}</div>)}</div>}

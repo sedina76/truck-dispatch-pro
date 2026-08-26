@@ -17,6 +17,7 @@ type Application = {
   position_applied_for: string | null;
   status: string;
   submitted_at: string;
+  carriers: { legal_name: string } | null;
 };
 
 export default async function DriverApplicationsPage() {
@@ -26,12 +27,17 @@ export default async function DriverApplicationsPage() {
   // the caller's own organization and to owner/admin/dispatcher roles --
   // no manual organization_id filter needed here, same as every other
   // tenant-scoped list page in this app.
+  //
+  // Phase 2Q.2B: carriers(legal_name) added -- a multi-carrier
+  // organization needs this visible here, not just on the detail page,
+  // to avoid ambiguity across carrier-invited applications (Section F).
+  // null for the public /driver-application flow, which has no carrier.
   const { data } = await supabase
     .from("driver_applications")
-    .select("id, first_name, last_name, phone, email, cdl_class, years_of_experience, position_applied_for, status, submitted_at")
+    .select("id, first_name, last_name, phone, email, cdl_class, years_of_experience, position_applied_for, status, submitted_at, carriers(legal_name)")
     .order("submitted_at", { ascending: false });
 
-  const applications = (data ?? []) as Application[];
+  const applications = (data ?? []) as unknown as Application[];
 
   const newCount = applications.filter((a) => a.status === "submitted").length;
   const underReviewCount = applications.filter((a) => ["under_review", "interview"].includes(a.status)).length;
@@ -46,6 +52,7 @@ export default async function DriverApplicationsPage() {
         </span>
       ),
     },
+    { header: "Carrier", cell: (row) => row.carriers?.legal_name ?? "--" },
     { header: "Phone", cell: (row) => row.phone ?? "--" },
     { header: "Email", cell: (row) => row.email ?? "--" },
     { header: "CDL Class", cell: (row) => (row.cdl_class ? `Class ${row.cdl_class}` : "--") },

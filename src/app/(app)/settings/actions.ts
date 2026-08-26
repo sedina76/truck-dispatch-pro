@@ -13,6 +13,55 @@ function milesToMeters(formData: FormData, name: string, fallbackMiles: number):
   return Math.round((miles ?? fallbackMiles) * METERS_PER_MILE);
 }
 
+// Phase 2P.6B -- 0107's two escalation-threshold columns are deliberately
+// wider-permission than the rest of this page: the surrounding
+// organization form is Owner-only (see organization/page.tsx's own
+// isOwner-gated <fieldset>), but this specific setting is Owner/Admin per
+// explicit product decision -- its own separate <FormCard>/action, not
+// folded into updateOrganization(), so the two permission models never
+// collide. A sensible upper bound (7 days) rejects nonsensical values
+// without inventing an unrequested general-purpose validation framework.
+const MAX_ESCALATION_MINUTES = 10080; // 7 days
+
+function parseEscalationMinutes(formData: FormData, name: string): number | null {
+  const raw = String(formData.get(name) ?? "").trim();
+  if (raw === "") return null; // blank = disabled
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0 || n > MAX_ESCALATION_MINUTES) {
+    throw new Error(`${name === "critical_exception_escalation_minutes" ? "Critical" : "High"} exception escalation must be a whole number of minutes between 1 and ${MAX_ESCALATION_MINUTES}, or left blank to disable.`);
+  }
+  return n;
+}
+
+export async function updateExceptionEscalationSettings(formData: FormData) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated.");
+
+  // Server-side role enforcement, independent of the page's own disabled
+  // fieldset -- the client-side disable is UX only, never the boundary.
+  const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+  if (!profile || !["owner", "admin"].includes(profile.role)) throw new Error("Only Owner or Admin may change exception escalation settings.");
+
+  const orgId = await getCurrentOrgId(); // organization derived server-side, never a client-supplied id
+
+  const criticalMinutes = parseEscalationMinutes(formData, "critical_exception_escalation_minutes");
+  const highMinutes = parseEscalationMinutes(formData, "high_exception_escalation_minutes");
+
+  // A plain UPDATE of two nullable integer columns -- never touches
+  // escalated_at/notifications, so saving settings creates no exception
+  // notification by construction.
+  const { error } = await supabase
+    .from("organizations")
+    .update({ critical_exception_escalation_minutes: criticalMinutes, high_exception_escalation_minutes: highMinutes })
+    .eq("id", orgId);
+  if (error) throw new Error("Could not save exception escalation settings.");
+
+  revalidatePath("/settings/organization");
+}
+
 export async function updateOrganization(formData: FormData) {
   const supabase = await createClient();
   const orgId = await getCurrentOrgId();

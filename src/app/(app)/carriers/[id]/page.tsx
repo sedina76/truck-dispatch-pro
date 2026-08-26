@@ -4,11 +4,15 @@ import { createClient } from "@/lib/supabase/server";
 import { deleteRecord } from "@/lib/actions/records";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid } from "@/components/ui/form-field";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { updateCarrier } from "../actions";
 import { CarrierSettlementSummarySection } from "@/components/carriers/carrier-settlement-summary-section";
 import { CarrierCompanyProfitabilitySection } from "@/components/carriers/carrier-company-profitability-section";
 import { CarrierExpenseSummarySection } from "@/components/carriers/carrier-expense-summary-section";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
+import { ComplianceTab } from "@/components/carrier-compliance/compliance-tab";
+import type { CarrierComplianceReadiness } from "@/lib/carrier-compliance/types";
+import { W9_STAFF_SAFE_SELECT, type CarrierW9Row } from "@/lib/carrier-w9/types";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Phase 2G.9 (item 3): same treatment as Customer/Broker Detail -- Carriers
@@ -51,8 +55,39 @@ export default async function CarrierDetailPage({
 
   const pendingAdvanceTotal = (pendingAdvances ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
 
+  // Phase 2P.3 -- Compliance tab. carrier_dispatch_readiness() is called
+  // exactly once per page render and is the sole source of readiness truth;
+  // nothing here recomputes W-9/agreement/insurance/identifier status.
+  const { data: readinessData, error: readinessErrorObj } = await supabase.rpc("carrier_dispatch_readiness", { p_carrier_id: id });
+  const readiness = (readinessData ?? null) as CarrierComplianceReadiness | null;
+
+  const [{ data: activeSuspension }, { data: w9Row, error: w9Error }] = await Promise.all([
+    readiness?.status === "SUSPENDED"
+      ? supabase.from("carrier_suspensions").select("reason, suspended_at, suspended_by").eq("carrier_id", id).is("lifted_at", null).limit(1).maybeSingle()
+      : Promise.resolve({ data: null }),
+    // Reused evidence-view path only, never a separate readiness computation.
+    // Phase 2P.3A: carrier_w9s's authenticated SELECT grant deliberately
+    // excludes tin_encrypted, so select("*") fails outright for every
+    // authenticated caller -- must use the exact safe column list.
+    onboardingApplication
+      ? supabase.from("carrier_w9s").select(W9_STAFF_SAFE_SELECT).eq("carrier_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
+
+  let suspendedByName: string | null = null;
+  if (activeSuspension?.suspended_by) {
+    const { data: suspendedByProfile } = await supabase.from("profiles").select("full_name").eq("id", activeSuspension.suspended_by).maybeSingle();
+    suspendedByName = suspendedByProfile?.full_name ?? null;
+  }
+
   return (
-    <div className="space-y-6">
+    <Tabs defaultValue="overview" className="space-y-4">
+      <TabsList>
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        <TabsTrigger value="compliance">Compliance</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="overview" className="space-y-6">
       <FormCard
         title={carrier.legal_name}
         description="Carrier profile. Changes save immediately."
@@ -141,7 +176,19 @@ export default async function CarrierDetailPage({
           )}
         </div>
       )}
-    </div>
+      </TabsContent>
+
+      <TabsContent value="compliance">
+        <ComplianceTab
+          carrierId={id}
+          role={(roleData as OrgRole | null) ?? "viewer"}
+          readiness={readiness}
+          readinessError={readinessErrorObj?.message ?? null}
+          suspension={activeSuspension ? { reason: activeSuspension.reason, suspended_at: activeSuspension.suspended_at, suspended_by_name: suspendedByName } : null}
+          w9Embed={onboardingApplication ? { w9: (w9Row as unknown as CarrierW9Row) ?? null, w9LoadError: w9Error?.message ?? null, applicationId: onboardingApplication.id, organizationId: carrier.organization_id } : null}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }
 

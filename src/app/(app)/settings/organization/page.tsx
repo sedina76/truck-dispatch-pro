@@ -4,7 +4,7 @@ import { getCurrentOrgId } from "@/lib/actions/records";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { SectionHeading } from "@/components/ui/section-heading";
-import { updateOrganization } from "../actions";
+import { updateOrganization, updateExceptionEscalationSettings } from "../actions";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 
 const AUTHORITY_OPTIONS = [
@@ -30,6 +30,11 @@ export default async function OrganizationSettingsPage() {
   } = await supabase.auth.getUser();
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user!.id).single();
   const isOwner = profile?.role === "owner";
+  // Phase 2P.6B -- exception escalation settings are Owner/Admin, wider
+  // than this page's own Owner-only convention (isOwner above) -- kept as
+  // its own separate permission check/FormCard rather than folded into
+  // the isOwner-gated fieldset below.
+  const isOwnerOrAdmin = profile?.role === "owner" || profile?.role === "admin";
 
   return (
     <div className="space-y-4">
@@ -179,6 +184,38 @@ export default async function OrganizationSettingsPage() {
               type="number"
               step="0.05"
               defaultValue={org?.route_deviation_recovery_m != null ? Math.round((org.route_deviation_recovery_m / 1609.344) * 100) / 100 : 0.25}
+            />
+          </FormGrid>
+        </fieldset>
+      </FormCard>
+
+      {/* Phase 2P.6B -- separate FormCard, separate action, separate
+          permission (Owner/Admin -- wider than the isOwner-only fieldset
+          above), separate table columns (0107). Deliberately not folded
+          into the big form above, so this feature's own permission model
+          never collides with the rest of this page's Owner-only
+          convention. */}
+      <FormCard
+        title="Exception Escalation"
+        description="Notifies Owner/Admin/Dispatcher when a critical or high-severity operational exception (route, detention, GPS, compliance, insurance) has gone unaddressed too long. Acknowledging an exception stops escalation for it -- it does not need to be resolved first. Leave a field blank to disable escalation for that severity; every organization starts disabled until configured here."
+        action={updateExceptionEscalationSettings}
+        cancelHref="/settings/organization"
+      >
+        <fieldset disabled={!isOwnerOrAdmin} className="contents">
+          <FormGrid>
+            <FormField
+              label="Critical exception escalation (minutes)"
+              name="critical_exception_escalation_minutes"
+              type="number"
+              placeholder="Disabled"
+              defaultValue={org?.critical_exception_escalation_minutes ?? undefined}
+            />
+            <FormField
+              label="High exception escalation (minutes)"
+              name="high_exception_escalation_minutes"
+              type="number"
+              placeholder="Disabled"
+              defaultValue={org?.high_exception_escalation_minutes ?? undefined}
             />
           </FormGrid>
         </fieldset>

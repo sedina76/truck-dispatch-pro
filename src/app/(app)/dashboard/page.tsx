@@ -57,9 +57,35 @@ export default async function DashboardPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const { data: profile } = await supabase.from("profiles").select("full_name, organization_id, role").eq("id", user!.id).single();
+  // Dashboard greeting fix: organizations(name) is a single joined embed on
+  // this SAME existing query (via profiles.organization_id's FK), not a
+  // second query -- same embed pattern already used elsewhere in this app
+  // (e.g. drivers list's carriers(legal_name)). RLS on organizations
+  // already scopes this to the caller's own org (current_org_id()), so
+  // this can never leak another tenant's name.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("full_name, organization_id, role, organizations(name)")
+    .eq("id", user!.id)
+    .single();
+
+  // Dashboard greeting fallback (organization name -> full name -> email):
+  // every existing reader of profile.full_name/organization_id elsewhere
+  // (top-right header, Company Overview, sidebar) is untouched -- this is
+  // a local greeting-only value, not a shared one.
+  // Defensively handles either shape PostgREST can return for this embed
+  // (a single object for a clean many-to-one FK, or an array if it can't
+  // disambiguate the relationship) -- TypeScript inferred the array shape
+  // here, so this doesn't assume which one actually comes back at runtime.
+  const organizationsEmbed = profile?.organizations as unknown as { name: string | null } | { name: string | null }[] | null;
+  const organizationRecord = Array.isArray(organizationsEmbed) ? organizationsEmbed[0] : organizationsEmbed;
+  const organizationName = organizationRecord?.name?.trim() || null;
+  const greetingName = organizationName || profile?.full_name?.split(" ")[0] || user?.email || null;
   const orgId = profile?.organization_id ?? null;
   const canSeeFinancials = FINANCIAL_ROLES.includes((profile?.role as OrgRole | null) ?? ("viewer" as OrgRole));
+  // Phase 2P.5 -- mirrors operational_exceptions' own SELECT policy (0063)
+  // exactly: owner/admin/dispatcher only.
+  const canSeeExceptions = ["owner", "admin", "dispatcher"].includes((profile?.role as OrgRole | null) ?? "viewer");
 
   // Phase 2G.9 (item 3): Revenue Trend, Top Brokers by Revenue, and the
   // MTD Profitability/Expenses/Collections sections below are all
@@ -89,7 +115,7 @@ export default async function DashboardPage() {
     expenseSummaryRes,
     loadFinancialsForRevenue,
   ] = await Promise.all([
-    getDashboardKpis(canSeeFinancials),
+    getDashboardKpis(canSeeFinancials, canSeeExceptions),
     supabase.rpc("get_expiring_compliance_items", { p_days_ahead: 30 }),
     // Phase 2G.12: `rate` dropped from both loads selects below --
     // load_financials is authoritative now (0068 writer cutover). Both
@@ -277,7 +303,7 @@ export default async function DashboardPage() {
       <DesktopWorkspaceTabs tabs={[{ label: "Dashboard", href: "/dashboard" }]} />
       <div>
         <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">
-          Welcome back{profile?.full_name ? `, ${profile.full_name.split(" ")[0]}` : ""}
+          Welcome back{greetingName ? `, ${greetingName}` : ""}
         </h1>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })} -- here&apos;s what&apos;s happening across your operation today.

@@ -1,3 +1,4 @@
+import { requireRole } from "@/lib/auth/require-role";
 import { getExceptionCenterData, type ExceptionFilters } from "./actions";
 import { ExceptionCenterClient } from "./exception-center-client";
 
@@ -8,11 +9,22 @@ import { ExceptionCenterClient } from "./exception-center-client";
 // action (see exception-center-client.tsx). Auth/org-membership is already
 // enforced by the (app) route group's layout, same as every other page
 // under it.
+//
+// Phase 2P.5B -- explicit role guard, defense-in-depth alongside the
+// database RLS boundary (0063's SELECT policy + 0106's security_invoker
+// repair), which remains authoritative either way. Before this, an
+// authenticated Accountant/Viewer/Driver reaching this URL directly would
+// have received a real page shell whose data queries simply returned
+// nothing -- correct in outcome, but not the project's standard
+// unauthorized-access UX (requireRole() redirects to /access-denied, the
+// same convention Billing/Reports/Email History/Expenses/Settlements
+// already use -- see require-role.ts's own header comment).
 export default async function ExceptionCenterPage({
   searchParams,
 }: {
-  searchParams: Promise<{ severity?: string; status?: string; type?: string; assignment?: string; q?: string; page?: string; sort?: string }>;
+  searchParams: Promise<{ severity?: string; status?: string; type?: string; assignment?: string; q?: string; page?: string; sort?: string; exception?: string }>;
 }) {
+  await requireRole(["owner", "admin", "dispatcher"]);
   const sp = await searchParams;
   const initialFilters: ExceptionFilters = {
     severity: (sp.severity as ExceptionFilters["severity"]) ?? "all",
@@ -26,5 +38,5 @@ export default async function ExceptionCenterPage({
 
   const initialData = await getExceptionCenterData(initialFilters);
 
-  return <ExceptionCenterClient initialData={initialData} initialFilters={initialFilters} />;
+  return <ExceptionCenterClient initialData={initialData} initialFilters={initialFilters} initialOpenExceptionId={sp.exception ?? null} />;
 }

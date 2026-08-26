@@ -7,12 +7,19 @@ import { RevealPiiButton } from "@/components/ui/reveal-pii-button";
 import { Button } from "@/components/ui/button";
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import {
-  updateApplicationStatus,
   updateApplicationReviewNotes,
   revealApplicationSsn,
   convertApplicationToDriver,
   getApplicationDocumentUrl,
+  getDriverOnboardingInvitations,
+  setDriverApplicationNeedsCorrection,
 } from "../actions";
+import { InvitationCard } from "./invitation-card";
+import { NeedsCorrectionForm } from "./needs-correction-form";
+import { DriverW9Card } from "./driver-w9-card";
+import { StatusControl } from "./status-control";
+import { workerTypeRequiresW9, WORKER_TYPE_LABELS, type DriverWorkerType } from "@/lib/driver-w9/types";
+import { DRIVER_W9_STAFF_SAFE_SELECT, type DriverW9Row } from "@/lib/driver-w9/types";
 
 type EmploymentHistoryEntry = {
   employer: string;
@@ -28,14 +35,6 @@ type UploadedDocument = {
   file_name: string;
   uploaded_at: string;
 };
-
-const STATUS_OPTIONS = [
-  { value: "submitted", label: "New" },
-  { value: "under_review", label: "Under Review" },
-  { value: "interview", label: "Interview" },
-  { value: "approved", label: "Approved" },
-  { value: "rejected", label: "Rejected" },
-];
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -84,17 +83,31 @@ export default async function DriverApplicationDetailPage({
          uploaded_documents, emergency_contact_name, emergency_contact_phone,
          signature_name, signature_agreed_at, submitted_from_ip,
          reviewed_by, reviewed_at, review_notes, converted_driver_id,
+         invited_by, correction_reason, carrier_id, worker_type, carriers(legal_name),
          submitted_at, updated_at`
       )
       .eq("id", id)
       .single(),
-    supabase.from("carriers").select("id, legal_name").order("legal_name"),
+    supabase.from("carriers").select("id, legal_name").eq("is_active", true).order("legal_name"),
   ]);
   if (!application) notFound();
 
   const employmentHistory = (application.employment_history ?? []) as EmploymentHistoryEntry[];
   const uploadedDocuments = (application.uploaded_documents ?? []) as UploadedDocument[];
   const isConverted = application.status === "converted";
+  const isInvitedFlow = Boolean(application.invited_by);
+  const isApproved = application.status === "approved";
+  const invitations = isInvitedFlow ? await getDriverOnboardingInvitations(id) : [];
+  const assignedCarrierName = (application.carriers as unknown as { legal_name: string } | null)?.legal_name ?? null;
+  const requiresW9 = workerTypeRequiresW9(application.worker_type as DriverWorkerType | null);
+  // .select() built from a shared string constant (DRIVER_W9_STAFF_SAFE_SELECT)
+  // defeats supabase-js's column-name type inference (same reasoning as
+  // W9_STAFF_SAFE_SELECT's own callers elsewhere) -- cast explicitly to
+  // the real row shape rather than the generic-error type it infers.
+  const w9Query = requiresW9
+    ? await supabase.from("driver_w9s").select(DRIVER_W9_STAFF_SAFE_SELECT).eq("application_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    : { data: null };
+  const driverW9 = (w9Query.data as unknown as DriverW9Row | null) ?? null;
 
   return (
     <div className="space-y-6">
@@ -110,6 +123,14 @@ export default async function DriverApplicationDetailPage({
             Applied for {application.position_applied_for ?? "a driving position"} &middot; Submitted{" "}
             {new Date(application.submitted_at).toLocaleString()}
           </p>
+          {assignedCarrierName && (
+            <p className="mt-1 text-sm">
+              <span className="text-muted-foreground">Carrier:</span> <span className="font-medium">{assignedCarrierName}</span>
+              {application.worker_type && (
+                <span className="ml-2 text-muted-foreground">&middot; {WORKER_TYPE_LABELS[application.worker_type as DriverWorkerType]}</span>
+              )}
+            </p>
+          )}
         </div>
         <StatusBadge status={application.status} />
       </div>
@@ -210,6 +231,18 @@ export default async function DriverApplicationDetailPage({
             </CardContent>
           </Card>
 
+          {requiresW9 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Tax (W-9)</CardTitle>
+                <CardDescription>Required for this driver&apos;s worker type. Full TIN is never shown here.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DriverW9Card w9={driverW9} />
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle>Documents</CardTitle>
@@ -236,13 +269,15 @@ export default async function DriverApplicationDetailPage({
             <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <Field label="Emergency contact" value={application.emergency_contact_name} />
               <Field label="Emergency contact phone" value={application.emergency_contact_phone} />
-              <Field label="Electronic signature" value={application.signature_name} />
-              <Field label="Signed at" value={new Date(application.signature_agreed_at).toLocaleString()} />
+              <Field label="Electronic signature" value={application.signature_name || null} />
+              <Field label="Signed at" value={application.signature_name ? new Date(application.signature_agreed_at).toLocaleString() : null} />
             </CardContent>
           </Card>
         </div>
 
         <div className="space-y-5">
+          {isInvitedFlow && <InvitationCard applicationId={id} status={application.status} invitations={invitations} />}
+
           <Card>
             <CardHeader>
               <CardTitle>Status</CardTitle>
@@ -259,25 +294,22 @@ export default async function DriverApplicationDetailPage({
                   )}
                 </p>
               ) : (
-                <form action={updateApplicationStatus.bind(null, id)} className="space-y-3">
-                  <select
-                    name="status"
-                    defaultValue={application.status}
-                    className="h-10 w-full rounded-lg border border-border bg-card px-3.5 text-sm shadow-elevation-1 outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
-                  >
-                    {STATUS_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <Button type="submit" className="w-full">
-                    Update Status
-                  </Button>
-                </form>
+                <StatusControl applicationId={id} currentStatus={application.status} />
               )}
             </CardContent>
           </Card>
+
+          {!isConverted && application.status === "submitted" && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Needs Correction</CardTitle>
+                <CardDescription>Send the driver back to fix something specific, with a note explaining what.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <NeedsCorrectionForm applicationId={id} action={setDriverApplicationNeedsCorrection} />
+              </CardContent>
+            </Card>
+          )}
 
           {!isConverted && (
             <Card>
@@ -289,7 +321,28 @@ export default async function DriverApplicationDetailPage({
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                {!carriers || carriers.length === 0 ? (
+                {!isApproved ? (
+                  <p className="text-sm text-muted-foreground">
+                    Set this application&apos;s status to <span className="font-medium text-desktop-text">Approved</span> before it can be converted to a driver record.
+                  </p>
+                ) : requiresW9 && driverW9?.status !== "completed" ? (
+                  <p className="text-sm text-muted-foreground">
+                    This driver&apos;s worker type requires a completed Form W-9 before conversion. Current status:{" "}
+                    <span className="font-medium text-desktop-text">{driverW9 ? driverW9.status : "not started"}</span>.
+                  </p>
+                ) : assignedCarrierName ? (
+                  // Phase 2Q.2B: carrier is fixed from Invite Driver onward
+                  // for a carrier-invited application -- no dropdown, no
+                  // reassignment surface at all (Section D/G).
+                  <form action={convertApplicationToDriver.bind(null, id)} className="space-y-3">
+                    <p className="text-sm">
+                      Carrier: <span className="font-medium">{assignedCarrierName}</span>
+                    </p>
+                    <Button type="submit" variant="success" className="w-full">
+                      Hire &amp; Create Driver Record
+                    </Button>
+                  </form>
+                ) : !carriers || carriers.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
                     Add a carrier first before converting an application to a driver.
                   </p>

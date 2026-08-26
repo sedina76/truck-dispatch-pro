@@ -67,4 +67,10 @@ export type ExceptionListRow = {
   assignedTo: string | null;
   assignedToName: string | null;
   acknowledgedAt: string | null;
+  // Phase 2P.7 -- operational_exceptions_grouped (0063) does not expose
+  // escalated_at (added by 0107, after the view was created) -- resolved
+  // via a small supplementary query against the raw table by id, same
+  // "second cheap query, merge by id" pattern assignedToName already uses
+  // for profiles. Never null vs. undefined-confused: always a real boolean.
+  escalated: boolean;
 };
