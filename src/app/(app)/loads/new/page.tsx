@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { FormField, FormSelect, FormGrid, FormTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
@@ -47,7 +48,12 @@ const SECTION_DEFAULTS: Record<string, boolean> = {
   references: false,
 };
 
-export default async function NewLoadPage() {
+export default async function NewLoadPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ load_numbering_inactive?: string }>;
+}) {
+  const { load_numbering_inactive } = await searchParams;
   const supabase = await createClient();
   const [{ data: brokers }, { data: customers }, { data: { user } }, { data: roleData }] = await Promise.all([
     supabase.from("brokers").select("id, company_name").order("company_name"),
@@ -81,6 +87,13 @@ export default async function NewLoadPage() {
     <div className="space-y-3">
       <DesktopWorkspaceTabs tabs={[{ label: "Loads", href: "/loads" }, { label: "New Load", href: "/loads/new" }]} />
 
+      {load_numbering_inactive === "1" && (
+        <div className="flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm">
+          <AlertTriangle className="size-4 shrink-0 text-danger" />
+          Automatic load numbering is not activated in the database. Apply and verify migration 0114 before creating loads.
+        </div>
+      )}
+
       <form action={createLoadWithStops} className="space-y-3">
         <CollapsibleSectionsProvider defaults={SECTION_DEFAULTS}>
           <div className="flex items-center justify-between">
@@ -94,12 +107,17 @@ export default async function NewLoadPage() {
           <div className="space-y-3">
             <DesktopCollapsibleSection id="load_info" title="Load Information">
               <FormGrid>
-                <FormField label="Load Number" name="load_number" required placeholder="LD-100004" />
                 <FormSelect label="Status" name="status" defaultValue="draft" options={STATUS_OPTIONS} />
                 <div className="space-y-1">
                   <label className="text-[12px] font-medium text-desktop-text">Dispatcher / Booked By</label>
                   <div className="flex h-8 items-center rounded-sm border border-desktop-border bg-desktop-muted px-2.5 text-[13px] text-desktop-text-muted">
                     {me?.full_name ?? "You"} (recorded automatically)
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[12px] font-medium text-desktop-text">Load Number</label>
+                  <div className="flex h-8 items-center rounded-sm border border-desktop-border bg-desktop-muted px-2.5 text-[13px] text-desktop-text-muted">
+                    Assigned automatically on creation
                   </div>
                 </div>
               </FormGrid>

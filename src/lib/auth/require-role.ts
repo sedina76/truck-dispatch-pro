@@ -65,3 +65,13 @@ export async function requireRoleForApi(allowed: OrgRole[]): Promise<NextRespons
 // others, and no "approved non-sensitive financial area" has been defined
 // for viewer yet, so it stays excluded until one is.
 export const FINANCIAL_ROLES: OrgRole[] = ["owner", "admin", "dispatcher", "accountant"];
+
+// The tier allowed to change a load's internal load_number after creation
+// (0114 revision 2 -- controlled Owner/Admin override). Matches the
+// database's own has_role(['owner','admin']) check inside
+// guard_load_number_change()/change_load_number() exactly -- this
+// constant only controls whether the UI offers the control at all;
+// Dispatcher and every other role are rejected at the database layer
+// regardless of what this constant says, so it is never the actual
+// security boundary, only the UI's mirror of it.
+export const OWNER_ADMIN_ROLES: OrgRole[] = ["owner", "admin"];

@@ -6,6 +6,7 @@ import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
 import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
+import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
 
 // Every action here follows the same rule (spec section 31): resolve the
 // authenticated driver-portal session FIRST, then verify ownership of
@@ -29,14 +30,27 @@ async function requireIdentity() {
 // 0028_auto_invoice_dispatch_sync_fix.sql) -- this action never touches
 // loads or invoices directly. Forward-only transition, validated
 // server-side against DISPATCH_STATUS_ORDER; no new status enum invented.
-// ---------------------------------------------------------------------------
+//
+// CONFIRMED GAP FIXED (completed-dispatch retention workflow): this was
+// the one status-transition path in the app that did NOT call
+// computeOperationalTimestampUpdates() (src/lib/dispatch/operational-
+// timestamps.ts -- the same shared, idempotent bookkeeping
+// updateDispatchBoardStatus() and updateDispatch() already use). A driver
+// marking their own trip "Delivered" through the Driver Portal therefore
+// never set delivered_at at all -- which the Dispatch Board's 24-hour
+// retention rule depends on entirely (a null delivered_at fails OPEN, so
+// this didn't hide anything incorrectly, but it also meant that
+// dispatch's card would never leave the active board after 24h, the
+// opposite of the intended behavior, for every driver-marked delivery).
+// Fixed by calling the exact same shared helper every other transition
+// path already uses -- no new bookkeeping logic invented here.
 export async function updateMyDispatchStatus(dispatchId: string, targetStatus: string) {
   const identity = await requireIdentity();
   const supabase = createServiceRoleClient();
 
   const { data: dispatch } = await supabase
     .from("dispatches")
-    .select("id, status, driver_id, organization_id")
+    .select("id, status, driver_id, organization_id, en_route_pickup_at, loaded_at, in_transit_at, delivered_at, cancelled_at")
     .eq("id", dispatchId)
     .maybeSingle();
   if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {
@@ -50,7 +64,13 @@ export async function updateMyDispatchStatus(dispatchId: string, targetStatus: s
     throw new Error("Status can only move forward, one trip at a time.");
   }
 
-  const { error } = await supabase.from("dispatches").update({ status: targetStatus }).eq("id", dispatchId);
+  const now = new Date().toISOString();
+  const dispatchUpdates: Record<string, string> = {
+    status: targetStatus,
+    ...computeOperationalTimestampUpdates(targetStatus, dispatch, now),
+  };
+
+  const { error } = await supabase.from("dispatches").update(dispatchUpdates).eq("id", dispatchId);
   if (error) throw new Error(error.message);
 
   // Status History (spec section 4/6): load_tracking_events already exists

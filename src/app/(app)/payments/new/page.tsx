@@ -5,6 +5,7 @@ import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
 import { getBillingParty } from "@/lib/billing/party";
+import { InvoicePicker, type InvoicePaymentCandidate } from "@/components/payments/invoice-picker";
 import { recordPayment } from "../actions";
 
 const PAYMENT_METHODS = [
@@ -169,8 +170,11 @@ export default async function NewPaymentPage({
           <DesktopPanelHeader
             title="Record Payment"
             actions={
-              <Link href="/payments/new" className="text-[11px] text-desktop-header-text/80 hover:underline">
-                Choose a different invoice
+              <Link
+                href="/payments/new"
+                className="rounded border border-desktop-header-text/30 px-2 py-0.5 text-[11px] text-desktop-header-text/90 hover:bg-desktop-header-text/10"
+              >
+                Change
               </Link>
             }
           />
@@ -225,11 +229,37 @@ export default async function NewPaymentPage({
   }
 
   // Fully manual fallback: no invoice/party preselected.
-  const { data: invoices } = await supabase
+  //
+  // Collectible-status repair: the previous "status <> void/paid" rule
+  // still let draft and disputed invoices through -- both have a real
+  // guard_payment_amount() gap of their own (that trigger only ever
+  // excludes 'void', so a forged/direct request could record a payment
+  // against a draft or disputed invoice, bypassing this picker entirely).
+  // Narrowed to the exact four collectible statuses per the confirmed
+  // business rule, matching migration 0113 (invoice_collectible_status_
+  // guard.sql, authored but NOT applied)'s own authoritative allow-list
+  // exactly -- this query and that trigger must never drift apart.
+  //
+  // Test/demo invoices are NOT filtered out by name pattern here -- doing
+  // so was explicitly out of scope for this repair; if any exist among
+  // eligible invoices they will appear like any other, and their cleanup
+  // is a separate, deliberate decision.
+  const { data: invoicesRaw } = await supabase
     .from("invoices")
-    .select("id, invoice_number, balance_due")
-    .not("status", "in", "(paid,void)")
-    .order("issue_date", { ascending: false });
+    .select("id, invoice_number, bill_to_name, total_amount, balance_due, due_date, status, loads(load_number)")
+    .in("status", ["sent", "viewed", "overdue", "partially_paid"])
+    .gt("balance_due", 0)
+    .order("due_date", { ascending: true, nullsFirst: false });
+
+  const pickerInvoices: InvoicePaymentCandidate[] = (invoicesRaw ?? []).map((i) => ({
+    id: i.id,
+    invoiceNumber: i.invoice_number,
+    billToName: i.bill_to_name ?? "",
+    loadNumber: (i.loads as unknown as { load_number: string } | null)?.load_number ?? null,
+    totalAmount: Number(i.total_amount),
+    balanceDue: Number(i.balance_due),
+    dueDate: i.due_date,
+  }));
 
   return (
     <FormCard title="Record Payment" description="Log a payment received against an invoice." action={recordPayment} cancelHref="/payments" submitLabel="Record Payment">
@@ -240,15 +270,13 @@ export default async function NewPaymentPage({
         </div>
       )}
       <FormGrid>
-        <FormSelect
-          label="Invoice"
-          name="invoice_id"
-          required
-          options={(invoices ?? []).map((i) => ({
-            value: i.id,
-            label: `${i.invoice_number} -- $${Number(i.balance_due).toLocaleString()} due`,
-          }))}
-        />
+        {/* Selecting an invoice navigates to /payments/new?invoice_id=<id>
+            -- the "invoice preselected" branch above -- rather than
+            submitting invoice_id as part of THIS form at all, so there is
+            no invoice_id field here to forge or leave stale. */}
+        <div className="sm:col-span-2">
+          <InvoicePicker invoices={pickerInvoices} />
+        </div>
         <FormField label="Payment Date" name="payment_date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
         <FormField label="Amount ($)" name="amount" type="number" step="0.01" required />
         <FormSelect label="Method" name="method" defaultValue="ach" options={PAYMENT_METHODS} />

@@ -22,7 +22,8 @@ import { DesktopCollapsibleSection, CollapsibleSectionsProvider, CollapsibleSect
 import { formatStopDateTime } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { verifyPod, getPodSignedUrl } from "../pod-actions";
-import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { ChangeLoadNumberDialog } from "@/components/loads/change-load-number-dialog";
 
 // Phase POST-0069 finding: rate/detention_rate/layover_rate were dropped
 // from `loads` entirely by 0069 -- this page's own select(canSeeFinancials
@@ -83,10 +84,10 @@ export default async function LoadDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ delivered?: string; rate_con_upload_failed?: string }>;
+  searchParams: Promise<{ delivered?: string; rate_con_upload_failed?: string; created?: string }>;
 }) {
   const { id } = await params;
-  const { delivered, rate_con_upload_failed } = await searchParams;
+  const { delivered, rate_con_upload_failed, created } = await searchParams;
   const supabase = await createClient();
 
   // Phase 2G.7: resolved BEFORE the data Promise.all below, so the choice
@@ -94,6 +95,13 @@ export default async function LoadDetailPage({
   // everything, decide what to show after."
   const { data: roleData } = await supabase.rpc("current_role");
   const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+  // 0114 revision 2: only owner/admin get the "Change Load Number"
+  // control -- everyone else (including dispatcher) sees a plain
+  // read-only value. This is a UI convenience only; the database's own
+  // has_role(['owner','admin']) check inside guard_load_number_change()/
+  // change_load_number() is the actual, unconditional boundary regardless
+  // of what this renders.
+  const canChangeLoadNumber = OWNER_ADMIN_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
 
   const [{ data: load }, { data: brokers }, { data: customers }, { data: stops }, { data: dispatch }, { data: invoice }, { data: stopTzRows }, { data: orgTzRow }, { data: loadFinancials }] =
     await Promise.all([
@@ -210,6 +218,12 @@ export default async function LoadDetailPage({
   return (
     <div className="space-y-3">
       <DesktopWorkspaceTabs tabs={[{ label: "Loads", href: "/loads" }, { label: loadRow.load_number, href: `/loads/${id}` }]} />
+      {created === "1" && (
+        <div className="flex items-center gap-2 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm">
+          <CheckCircle2 className="size-4 shrink-0 text-success" />
+          Load created. Assigned load number <span className="font-semibold">{loadRow.load_number}</span>.
+        </div>
+      )}
       {rate_con_upload_failed === "1" && (
         <div className="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm">
           <AlertTriangle className="size-4 shrink-0 text-warning" />
@@ -266,7 +280,29 @@ export default async function LoadDetailPage({
               deleteAction={deleteRecord.bind(null, "loads", id, "/loads")}
             >
               <FormGrid>
-                <FormField label="Load number" name="load_number" defaultValue={loadRow.load_number} required />
+                {/* Read-only display, not a submittable field of THIS form
+                    (0114 revision 2: load_number is no longer
+                    unconditionally immutable, but it is never changed
+                    through this generic edit form either way -- this
+                    input is intentionally never given a `name`, so a
+                    forged extra field on this form couldn't reach it, and
+                    the database's own guard_load_number_change() trigger
+                    rejects any unauthorized/out-of-lifecycle attempt
+                    regardless. Owner/Admin gets a dedicated, reason-
+                    required control below instead of an inline editable
+                    field, matching the "controlled" product decision --
+                    everyone else sees a plain read-only value.) */}
+                <div className="min-w-0 space-y-1">
+                  <label className="text-[12px] font-medium text-desktop-text">Load number</label>
+                  <div className="flex h-8 items-center rounded-sm border border-desktop-border bg-desktop-muted px-2.5 text-[13px] text-desktop-text-muted">
+                    {loadRow.load_number}
+                  </div>
+                  {canChangeLoadNumber && (
+                    <div className="pt-1">
+                      <ChangeLoadNumberDialog loadId={id} currentLoadNumber={loadRow.load_number} />
+                    </div>
+                  )}
+                </div>
                 <FormSelect
                   label="Status"
                   name="status"

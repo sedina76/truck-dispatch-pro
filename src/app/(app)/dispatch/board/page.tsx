@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -8,7 +9,7 @@ import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { calculateDetention } from "@/lib/dispatch/detention";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
-import { boardRetentionOrFilter } from "@/lib/dispatch/board-retention";
+import { boardRetentionOrFilter, boardHiddenByRetentionFilter } from "@/lib/dispatch/board-retention";
 
 type DispatchRow = {
   id: string;
@@ -55,7 +56,13 @@ const BEFORE_PICKUP = new Set(["assigned", "accepted", "en_route_to_pickup"]);
 const BEFORE_DELIVERY = new Set(["assigned", "accepted", "en_route_to_pickup", "at_pickup", "loaded", "en_route_to_delivery"]);
 const DELIVERED_LIKE = new Set(["delivered", "completed"]);
 
-export default async function DispatchBoardPage() {
+export default async function DispatchBoardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ show_completed?: string }>;
+}) {
+  const { show_completed } = await searchParams;
+  const showCompleted = show_completed === "1";
   const supabase = await createClient();
 
   const { data: roleData } = await supabase.rpc("current_role");
@@ -69,23 +76,42 @@ export default async function DispatchBoardPage() {
   // operational board query below never asks for a financial column, and
   // the real values are fetched from dispatch_financials in a SEPARATE
   // query issued only when canSeeFinancials.
-  // Phase 2I.1 (Part A): the ACTIVE Dispatch Board excludes delivered/
-  // completed dispatches once they're more than 24h past delivered_at --
-  // query-level only (see board-retention.ts's own header comment for the
-  // full "fail open on null" reasoning). The load/dispatch record itself
-  // is never touched, archived, or hidden anywhere else -- Load Detail,
-  // Billing, Invoices, Reports, Driver history, and Driver Portal all
-  // keep reading the exact same dispatches/loads rows with no filter at
-  // all, unaffected by this query.
-  const [{ data }, { data: org }] = await Promise.all([
-    supabase
-      .from("dispatches")
-      .select(
-        "id, status, load_id, delivered_at, loads(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
-      )
-      .or(boardRetentionOrFilter())
-      .order("dispatched_at", { ascending: false }),
+  // Phase 2I.1 (Part A) + completed-dispatch retention workflow revision:
+  // the ACTIVE Dispatch Board excludes delivered/completed/cancelled
+  // dispatches once they're more than 24h past their respective
+  // delivered_at/cancelled_at -- query-level only (see board-retention.ts's
+  // own header comment for the full "fail open on null" reasoning). The
+  // load/dispatch record itself is never touched, archived, or hidden
+  // anywhere else -- Load Detail, Billing, Invoices, Reports, Driver
+  // history, and Driver Portal all keep reading the exact same dispatches/
+  // loads rows with no filter at all, unaffected by this query.
+  //
+  // "Show completed" (?show_completed=1): the SAME query, with the
+  // retention filter simply omitted -- every dispatch in the organization
+  // (still fully RLS-scoped) is fetched, regardless of age. Nothing about
+  // the filter/query logic branches beyond this one .or() call being
+  // present or absent -- search/carrier/driver/truck filtering
+  // (kanban-board.tsx's FilterBar) already operates client-side over
+  // whatever cards it's given, so it applies identically either way with
+  // no separate wiring.
+  let dispatchesQuery = supabase
+    .from("dispatches")
+    .select(
+      "id, status, load_id, delivered_at, loads(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
+    )
+    .order("dispatched_at", { ascending: false });
+  if (!showCompleted) dispatchesQuery = dispatchesQuery.or(boardRetentionOrFilter());
+
+  const [{ data }, { data: org }, { count: hiddenCount }] = await Promise.all([
+    dispatchesQuery,
     supabase.from("organizations").select("pickup_detention_free_minutes, delivery_detention_free_minutes").single(),
+    // Requirement: "preserve a separate historical/completed count" --
+    // only meaningful (and only queried) when the default, filtered view
+    // is showing -- once show_completed is on, there is nothing hidden to
+    // count. head:true -- count only, no rows fetched.
+    showCompleted
+      ? Promise.resolve({ count: null })
+      : supabase.from("dispatches").select("id", { count: "exact", head: true }).or(boardHiddenByRetentionFilter()),
   ]);
 
   const dispatches = (data ?? []) as unknown as DispatchRow[];
@@ -229,8 +255,16 @@ export default async function DispatchBoardPage() {
   const deliveryFreeMinutes = org?.delivery_detention_free_minutes ?? 120;
   const now = new Date();
 
+  // Both counts describe exactly what's in `dispatches` -- i.e. exactly
+  // what's currently rendered as cards -- never a separate, unfiltered
+  // total that could disagree with what's actually on screen. This was
+  // already true before the retention/show-completed work (dispatches was
+  // always the already-filtered result set); still true now that the
+  // filter itself is conditional on showCompleted, since both branches
+  // still just read from whatever `dispatches` ends up holding.
   const activeCount = dispatches.filter((d) => !["completed", "cancelled", "delivered"].includes(d.status)).length;
   const completedCount = dispatches.filter((d) => DELIVERED_LIKE.has(d.status)).length;
+  const cancelledCount = dispatches.filter((d) => d.status === "cancelled").length;
   const totalNet = dispatches
     .filter((d) => d.status !== "cancelled")
     .reduce((sum, d) => sum + (netAmountByDispatch.get(d.id) ?? 0), 0);
@@ -336,9 +370,53 @@ export default async function DispatchBoardPage() {
         <DesktopKpiBox label="Total Dispatches" value={dispatches.length} />
         <DesktopKpiBox label="Active" value={activeCount} />
         <DesktopKpiBox label="Delivered" value={completedCount} tone="success" />
+        <DesktopKpiBox label="Cancelled" value={cancelledCount} />
         {canSeeFinancials && <DesktopKpiBox label="Carrier Net Value" value={`$${totalNet.toLocaleString()}`} />}
       </DesktopKpiStrip>
 
+      {/* Completed-dispatch retention workflow: delivered/completed/
+          cancelled dispatches clear the active board 24h after their own
+          delivered_at/cancelled_at (fail-open if that timestamp is
+          somehow missing -- see board-retention.ts). This never deletes,
+          archives, or changes any dispatch/load row -- it only changes
+          what this one query fetches. "Show completed" fetches every
+          dispatch in the organization regardless of age; existing search/
+          carrier/driver/truck filters (below, in the board itself)
+          continue to work unchanged on whatever set this toggle produces. */}
+      <div className="flex flex-wrap items-center gap-3 text-[12.5px] text-desktop-text-muted">
+        <Link
+          href={showCompleted ? "/dispatch/board" : "/dispatch/board?show_completed=1"}
+          className="inline-flex items-center gap-1.5 rounded-sm border border-desktop-border bg-desktop-panel px-2.5 py-1 font-medium text-desktop-text transition-colors hover:bg-muted"
+        >
+          <span
+            className={`inline-block size-3 rounded-sm border ${showCompleted ? "border-primary bg-primary" : "border-desktop-border bg-transparent"}`}
+            aria-hidden="true"
+          />
+          Show completed
+        </Link>
+        {showCompleted ? (
+          <span>Showing every delivered/completed/cancelled dispatch, regardless of age.</span>
+        ) : (
+          hiddenCount != null &&
+          hiddenCount > 0 && (
+            <span>
+              {hiddenCount} older delivered/cancelled dispatch{hiddenCount === 1 ? "" : "es"} hidden (24h+) --{" "}
+              <Link href="/dispatch/board?show_completed=1" className="font-medium text-primary hover:underline">
+                show them
+              </Link>
+              .
+            </span>
+          )
+        )}
+      </div>
+
+      {/* key forces a clean remount when the toggle changes -- KanbanBoard
+          seeds its own drag/drop card state from `initialCards` via
+          useState on mount only (no prop-sync effect, by original design,
+          since it also owns local optimistic updates); without a key
+          change here, toggling "Show completed" would re-render this
+          Server Component with a fresh `cards` array but the already-
+          mounted client component would keep displaying its stale state. */}
       {dispatches.length === 0 ? (
         <EmptyState
           title="No dispatches yet"
@@ -346,7 +424,7 @@ export default async function DispatchBoardPage() {
           action={{ label: "New Dispatch", href: "/dispatch/new" }}
         />
       ) : (
-        <KanbanBoard initialCards={cards} />
+        <KanbanBoard key={showCompleted ? "all" : "active"} initialCards={cards} />
       )}
     </div>
   );

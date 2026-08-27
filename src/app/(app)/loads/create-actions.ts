@@ -99,9 +99,13 @@ export async function createLoadWithStops(formData: FormData) {
   const supabase = await createClient();
 
   // ---- Validation (spec section 15) --------------------------------------
-  const loadNumber = String(formData.get("load_number") || "").trim();
-  if (!loadNumber) throw new Error("Load number is required.");
-
+  // Load number is no longer read from the form at all (0114: automatic
+  // organization-scoped load-number generation) -- it is allocated
+  // server-side, inside create_load_with_stops() itself, by
+  // allocate_load_number(), which derives the organization exclusively
+  // from the caller's own authenticated session. A client-supplied
+  // "load_number" field, if a stale request still sent one, is never
+  // looked at anywhere in this function.
   const brokerId = emptyToNull(formData.get("broker_id"));
   const customerId = emptyToNull(formData.get("customer_id"));
   if (!brokerId && !customerId) throw new Error("Select a broker (brokered load) or a customer (direct load).");
@@ -244,7 +248,6 @@ export async function createLoadWithStops(formData: FormData) {
 
   // ---- Atomic create (load + every stop, one function call) -------------
   const loadPayload = {
-    load_number: loadNumber,
     broker_id: brokerId,
     customer_id: customerId,
     status: String(formData.get("status") || "draft"),
@@ -262,7 +265,34 @@ export async function createLoadWithStops(formData: FormData) {
     p_stops: stops,
   });
   if (error) {
-    if (error.code === "23505") throw new Error(`Load number "${loadNumber}" already exists.`);
+    // A 23505 here would mean the org-scoped unique index on
+    // (organization_id, load_number) rejected the number
+    // allocate_load_number() just generated -- effectively impossible
+    // (that function is the only writer of the counter it reads from,
+    // inside this same transaction), but the index remains as the final
+    // backstop per spec section 6, so its error is still surfaced rather
+    // than swallowed.
+    if (error.code === "23505") throw new Error("Could not create this load: a load number conflict was detected. Please try again.");
+
+    // DEPLOYMENT-ORDER MISMATCH (0114): this application code no longer
+    // sends a "load_number" key in p_load at all (server-side allocation
+    // replaced it), but if migration 0114 has not yet been applied, the
+    // DATABASE is still running the pre-0114 create_load_with_stops()
+    // body, which reads p_load->>'load_number' and inserts it directly --
+    // that now evaluates to SQL NULL, which loads.load_number's NOT NULL
+    // constraint rejects (23502) before any row is created. This is a
+    // deployment-sequencing error, not a user-facing data problem, and the
+    // real Postgres message ("null value in column \"load_number\"...")
+    // would be both confusing and an internal-schema leak if shown as-is
+    // -- redirect to a clean, actionable banner instead of throwing, so
+    // this never reaches a thrown-error / Next.js error-overlay path.
+    // Removable once 0114 is confirmed applied in every environment this
+    // code runs against; the RPC calling convention itself does not
+    // change when that happens; this branch simply stops being reachable.
+    if (error.code === "23502" && error.message?.includes("load_number")) {
+      redirect("/loads/new?load_numbering_inactive=1");
+    }
+
     throw new Error(error.message);
   }
 
@@ -285,6 +315,11 @@ export async function createLoadWithStops(formData: FormData) {
     }
   }
 
+  // ---- Display the generated number (spec section 10) --------------------
+  // The detail page's own header already renders loadRow.load_number --
+  // the ?created=1 flag just adds a one-time success banner calling it out
+  // explicitly, since the dispatcher who just submitted this form never
+  // typed or saw a load number themselves.
   revalidatePath("/loads");
-  redirect(`/loads/${loadId}`);
+  redirect(`/loads/${loadId}?created=1`);
 }

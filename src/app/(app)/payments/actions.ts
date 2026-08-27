@@ -6,14 +6,30 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
-// Record Payment. Overpayment/void-invoice/amount<=0 are all rejected by
-// the DB itself (guard_payment_amount(), 0026_accounts_receivable.sql) --
-// this validates the same things client-side first only so the error
-// message is friendly, never as the actual authority. payment_number is
-// never set here; it's generated concurrency-safely by the column default
-// (public.generate_payment_number()), and amount_paid/status on the
-// invoice are never touched here either -- apply_payment_to_invoice()
-// rolls those up automatically once this insert commits.
+// Record Payment. Collectible-status/overpayment/void-invoice/amount<=0
+// are all rejected by the DB itself -- guard_payment_amount() as extended
+// by migration 0113 (invoice_collectible_status_guard.sql, authored but
+// NOT applied), which is what actually enforces this under a lock at
+// insert time -- this validates the same things client-side first only so
+// the error message is friendly, never as the actual authority.
+// payment_number is never set here; it's generated concurrency-safely by
+// the column default (public.generate_payment_number()), and
+// amount_paid/status on the invoice are never touched here either --
+// apply_payment_to_invoice() rolls those up automatically once this
+// insert commits.
+//
+// Collectible-status repair: previously only checked invoiceId presence
+// and amount>0 here, relying entirely on the DB trigger for status/balance
+// validation. Now re-fetches the invoice's own current status/balance_due
+// (RLS-scoped, so a cross-org id simply returns nothing) and rejects
+// up front against the exact same four-status allow-list migration 0113
+// enforces authoritatively -- so a real user sees a clear, specific error
+// immediately, without needing the DB round-trip to fail first. This is a
+// friendly pre-check duplicating the DB rule, never a replacement for it:
+// a forged request that skips this action entirely still hits the
+// unmodified, race-proof DB guard.
+const COLLECTIBLE_INVOICE_STATUSES = new Set(["sent", "viewed", "overdue", "partially_paid"]);
+
 export async function recordPayment(formData: FormData) {
   const invoiceId = String(formData.get("invoice_id") || "");
   const amount = toNumber(formData.get("amount"));
@@ -26,6 +42,26 @@ export async function recordPayment(formData: FormData) {
 
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
+
+  // Friendly pre-check (see header comment) -- "not found" and "belongs
+  // to another organization" are indistinguishable here on purpose, same
+  // convention as the invoice-eligibility check in
+  // src/app/(app)/invoices/actions.ts's createInvoice().
+  const { data: invoice } = await supabase.from("invoices").select("status, balance_due").eq("id", invoiceId).maybeSingle();
+  if (!invoice) {
+    redirect(`/payments/new?error=${encodeURIComponent("This invoice is not available.")}`);
+  }
+  if (!COLLECTIBLE_INVOICE_STATUSES.has(invoice.status)) {
+    redirect(`/payments/new?invoice_id=${invoiceId}&error=${encodeURIComponent("This invoice is not in a collectible status (Sent, Viewed, Overdue, or Partially Paid) -- a payment cannot be recorded against it.")}`);
+  }
+  const balance = Number(invoice.balance_due);
+  if (!(balance > 0)) {
+    redirect(`/payments/new?invoice_id=${invoiceId}&error=${encodeURIComponent("This invoice has no balance due -- there is nothing left to record a payment against.")}`);
+  }
+  if (amount > balance) {
+    redirect(`/payments/new?invoice_id=${invoiceId}&error=${encodeURIComponent(`Payment amount ($${amount}) exceeds the invoice balance due ($${balance}). Overpayment is not supported -- record a partial payment for the remaining balance instead.`)}`);
+  }
+
   const {
     data: { user },
   } = await supabase.auth.getUser();

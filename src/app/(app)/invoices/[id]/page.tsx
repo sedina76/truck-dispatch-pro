@@ -72,13 +72,33 @@ export default async function InvoiceDetailPage({
   let pod = null as Awaited<ReturnType<typeof getLatestDocument>>;
   let rateConDoc = null as Awaited<ReturnType<typeof getLatestDocument>>;
   let bolDoc = null as Awaited<ReturnType<typeof getLatestDocument>>;
+  let linkedLoadNumber: string | null = null;
   if (invoice.load_id) {
-    [pod, rateConDoc, bolDoc] = await Promise.all([
+    const [podResult, rateConResult, bolResult, loadResult] = await Promise.all([
       getLatestDocument(supabase, "load", invoice.load_id, "pod"),
       getLatestDocument(supabase, "load", invoice.load_id, "rate_confirmation"),
       getLatestDocument(supabase, "load", invoice.load_id, "bol"),
+      supabase.from("loads").select("load_number").eq("id", invoice.load_id).maybeSingle(),
     ]);
+    pod = podResult;
+    rateConDoc = rateConResult;
+    bolDoc = bolResult;
+    linkedLoadNumber = loadResult.data?.load_number ?? null;
   }
+  // Invoice edit UX repair (A1 completion): the invoice's own broker_id/
+  // customer_id are, as of updateInvoice()'s server-side fix, always
+  // re-derived from the linked load on every save -- never independently
+  // choosable once load_id is set. Editable Broker/Customer selects for a
+  // load-linked invoice would therefore visibly do nothing, which is worse
+  // than not offering them; this just looks up the display name for
+  // whichever party the load already determined, from the same brokers/
+  // customers lists already fetched for the manual-invoice case below.
+  const linkedPartyName = invoice.broker_id
+    ? (brokers ?? []).find((b) => b.id === invoice.broker_id)?.company_name ?? null
+    : invoice.customer_id
+      ? (customers ?? []).find((c) => c.id === invoice.customer_id)?.company_name ?? null
+      : null;
+  const linkedPartyType = invoice.broker_id ? "Broker" : invoice.customer_id ? "Customer" : null;
   const podStatus = computePodStatus(pod);
   const readyToSend = podStatus === "verified";
   const rateConReady = rateConDoc !== null;
@@ -295,18 +315,50 @@ export default async function InvoiceDetailPage({
               ]}
             />
           )}
-          <FormSelect
-            label="Broker"
-            name="broker_id"
-            defaultValue={invoice.broker_id}
-            options={(brokers ?? []).map((b) => ({ value: b.id, label: b.company_name }))}
-          />
-          <FormSelect
-            label="Customer"
-            name="customer_id"
-            defaultValue={invoice.customer_id}
-            options={(customers ?? []).map((c) => ({ value: c.id, label: c.company_name }))}
-          />
+          {invoice.load_id ? (
+            // Load-linked invoice (A1 completion): no editable Broker/
+            // Customer selects, no hidden load_id/broker_id/customer_id
+            // input either -- none of the three is client-submittable at
+            // all for this invoice, so there is nothing here for a forged
+            // request to relink, unlink, or re-party even before migration
+            // 0112's database-level backstop is applied. Read-only display
+            // only; updateInvoice() derives the real values itself,
+            // directly from the load, on every save.
+            <div className="min-w-0 space-y-1 sm:col-span-2">
+              <span className="text-[12px] font-medium text-desktop-text">Billing Party</span>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-muted px-3.5 py-2.5 text-sm">
+                <Link href={`/loads/${invoice.load_id}`} className="font-medium text-primary hover:underline">
+                  Load {linkedLoadNumber ?? "--"}
+                </Link>
+                <span className="text-muted-foreground">&middot;</span>
+                <span className="text-muted-foreground">
+                  {linkedPartyType && linkedPartyName ? `${linkedPartyType}: ${linkedPartyName}` : "No broker/customer on file for this load"}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Billing information comes from the linked load and cannot be changed here. To bill a different party, correct it on the load itself
+                (if the load has not yet been invoiced elsewhere) or void this invoice and create a manual one.
+              </p>
+            </div>
+          ) : (
+            // Manual invoice (load_id is null and updateInvoice() keeps it
+            // that way): Broker/Customer remain fully editable, exactly as
+            // before this repair.
+            <>
+              <FormSelect
+                label="Broker"
+                name="broker_id"
+                defaultValue={invoice.broker_id}
+                options={(brokers ?? []).map((b) => ({ value: b.id, label: b.company_name }))}
+              />
+              <FormSelect
+                label="Customer"
+                name="customer_id"
+                defaultValue={invoice.customer_id}
+                options={(customers ?? []).map((c) => ({ value: c.id, label: c.company_name }))}
+              />
+            </>
+          )}
           <FormField label="Bill to name" name="bill_to_name" defaultValue={invoice.bill_to_name} required />
           <FormField label="Bill to email" name="bill_to_email" type="email" defaultValue={invoice.bill_to_email} />
           <FormField label="Due date" name="due_date" type="date" defaultValue={invoice.due_date} />

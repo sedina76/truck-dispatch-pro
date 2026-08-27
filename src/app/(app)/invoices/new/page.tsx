@@ -4,10 +4,41 @@ import { createClient } from "@/lib/supabase/server";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
-import { LoadPicker } from "@/components/invoices/load-picker";
-import { resolveBillingPartyDisplay, suggestedDueDate } from "@/lib/billing/party";
+import { LoadPicker, type InvoiceLoadCandidate } from "@/components/invoices/load-picker";
+import { INVOICEABLE_LOAD_STATUSES, resolveBillingPartyDisplay, suggestedDueDate } from "@/lib/billing/party";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { createInvoice } from "../actions";
+
+// Shape of one candidateLoads row per the enriched select() above --
+// broker_id/customer_id determine which embed (if either) is populated,
+// exactly like getBillingParty()'s own broker-wins-over-customer rule
+// (src/lib/billing/party.ts), and load_stops carries every stop so the
+// delivery one can be picked out here rather than trusting stop order.
+type CandidateLoadRow = {
+  id: string;
+  load_number: string;
+  broker_id: string | null;
+  customer_id: string | null;
+  brokers: { company_name: string } | null;
+  customers: { company_name: string } | null;
+  load_stops: { stop_type: "pickup" | "delivery"; stop_sequence: number; arrived_at: string | null; scheduled_at: string | null }[] | null;
+};
+
+// Display-only resolution for the load picker (Section C/J): picks the
+// LAST delivery stop (multi-stop loads may have more than one; the final
+// one is the one that actually matters for "when was this delivered"),
+// preferring its real arrived_at over its scheduled_at -- a load already
+// in an invoiceable status (delivered/pod_received/invoiced/closed) should
+// normally have arrived_at set, but scheduled_at is a safe fallback for an
+// edge case where a load was moved straight to a terminal status without
+// ever logging an arrival.
+function resolveLoadCandidate(row: CandidateLoadRow, rate: number): InvoiceLoadCandidate {
+  const deliveryStops = (row.load_stops ?? []).filter((s) => s.stop_type === "delivery").sort((a, b) => b.stop_sequence - a.stop_sequence);
+  const lastDelivery = deliveryStops[0];
+  const deliveredAt = lastDelivery ? (lastDelivery.arrived_at ?? lastDelivery.scheduled_at)?.slice(0, 10) ?? null : null;
+  const partyName = row.broker_id ? (row.brokers?.company_name ?? null) : row.customer_id ? (row.customers?.company_name ?? null) : null;
+  return { id: row.id, load_number: row.load_number, rate, partyName, deliveredAt };
+}
 
 export default async function NewInvoicePage({
   searchParams,
@@ -28,11 +59,24 @@ export default async function NewInvoicePage({
   // load_financials is authoritative now (0068 writer cutover). This
   // whole route is already layout-guarded to FINANCIAL_ROLES (see
   // invoices/layout.tsx), so no additional role gating is needed.
+  // Invoice eligibility repair (Section C): candidateLoads already excluded
+  // ineligible/already-invoiced/foreign-org loads (RLS + the .in()/.is()
+  // filters below) before this repair -- what was missing was enough
+  // context in the rendered option to make that filtering visible/trusted
+  // (see LoadPicker's own header comment). broker_id/customer_id and their
+  // company names, plus each load's delivery stop, are now selected so the
+  // picker can show "Load # -- Broker/Customer -- Amount -- Delivered
+  // <date>" instead of just "Load # -- Amount".
   const [{ data: candidateLoads }, { data: brokers }, { data: customers }, { data: suggestedNumberData }] = await Promise.all([
     supabase
       .from("loads")
-      .select("id, load_number, invoices!left(id)")
-      .in("status", ["delivered", "pod_received", "invoiced", "closed"])
+      .select(
+        "id, load_number, broker_id, customer_id, " +
+          "brokers(company_name), customers(company_name), " +
+          "load_stops(stop_type, stop_sequence, arrived_at, scheduled_at), " +
+          "invoices!left(id)"
+      )
+      .in("status", INVOICEABLE_LOAD_STATUSES)
       .is("invoices.id", null)
       .order("created_at", { ascending: false })
       .limit(100),
@@ -51,21 +95,29 @@ export default async function NewInvoicePage({
 
   const suggestedNumber = suggestedNumberData ?? "";
 
+  // Supabase's select-string type inference can't fully resolve this many
+  // combined embeds (two singular relations plus a one-to-many) -- cast
+  // once, immediately, to the shape this route actually reads, same as
+  // this file's own `loadRow` cast further down for its single-load query.
+  const candidateLoadRows = (candidateLoads ?? []) as unknown as CandidateLoadRow[];
+
   // No load selected: existing fully-manual workflow, unchanged, just with
   // the load picker added above it (spec 3's "If no load is selected,
   // allow the existing manual billing-party workflow").
   if (!load_id) {
-    const candidateLoadIds = (candidateLoads ?? []).map((l) => l.id);
+    const candidateLoadIds = candidateLoadRows.map((l) => l.id);
     const { data: candidateLoadFinancials } = candidateLoadIds.length > 0
       ? await supabase.from("load_financials").select("load_id, rate").in("load_id", candidateLoadIds)
       : { data: [] as { load_id: string; rate: number }[] };
     const rateByLoadId = new Map((candidateLoadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
 
+    const pickerLoads: InvoiceLoadCandidate[] = candidateLoadRows.map((l) => resolveLoadCandidate(l, rateByLoadId.get(l.id) ?? 0));
+
     return (
       <div className="space-y-3">
         <DesktopPanel>
           <DesktopPanelBody>
-            <LoadPicker loads={(candidateLoads ?? []).map((l) => ({ id: l.id, load_number: l.load_number, rate: rateByLoadId.get(l.id) ?? 0 }))} />
+            <LoadPicker loads={pickerLoads} />
           </DesktopPanelBody>
         </DesktopPanel>
 
@@ -208,7 +260,22 @@ export default async function NewInvoicePage({
   return (
     <div className="space-y-3">
       <DesktopPanel>
-        <DesktopPanelHeader title={`Load ${loadRow.load_number}`} actions={<Link href="/invoices/new" className="text-[11px] text-desktop-header-text/80 hover:underline">Change load</Link>} />
+        {/* Compact summary card + Change button (Section 10): this panel
+            IS that summary once a load is selected -- rendered instead of
+            the picker, not alongside it, since selecting a load navigates
+            to this same route with ?load_id set, replacing the "no load"
+            branch's UI entirely. */}
+        <DesktopPanelHeader
+          title={`Load ${loadRow.load_number}`}
+          actions={
+            <Link
+              href="/invoices/new"
+              className="rounded border border-desktop-header-text/30 px-2 py-0.5 text-[11px] text-desktop-header-text/90 hover:bg-desktop-header-text/10"
+            >
+              Change
+            </Link>
+          }
+        />
         <DesktopPanelBody>
           {display.party.type === "none" ? (
             <p className="flex items-start gap-2 text-sm text-warning">
@@ -247,22 +314,30 @@ export default async function NewInvoicePage({
               { value: "viewed", label: "Viewed" },
             ]}
           />
-          <FormSelect
-            label="Broker (if brokered)"
-            name="broker_id"
-            defaultValue={display.party.type === "broker" ? display.party.id : undefined}
-            options={(brokers ?? []).map((b) => ({ value: b.id, label: b.company_name }))}
-          />
-          <FormSelect
-            label="Customer (if direct)"
-            name="customer_id"
-            defaultValue={display.party.type === "customer" ? display.party.id : undefined}
-            options={(customers ?? []).map((c) => ({ value: c.id, label: c.company_name }))}
-          />
+          {/* Party-integrity repair (follow-up audit): no editable Broker/
+              Customer selects here anymore -- broker_id/customer_id are the
+              load's own authoritative fields (public.loads.broker_id/
+              customer_id, the exact ones auto_generate_invoice_from_
+              delivered_load() (0022/0028) copies onto an automatic
+              invoice); createInvoice() now derives them from the load
+              server-side and ignores whatever a form submits, so an
+              editable dropdown here would have silently done nothing while
+              looking like it worked. The resolved party is already shown
+              above in the "Bill To" summary panel -- this is not a second,
+              separate confirmation, it IS the value that will be saved. */}
           <FormField label="Bill to name" name="bill_to_name" required defaultValue={display.billToName} />
           <FormField label="Bill to email" name="bill_to_email" type="email" defaultValue={display.billToEmail ?? undefined} />
           <FormField label="Due date" name="due_date" type="date" defaultValue={dueDate} />
-          <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadRate} />
+          {/* Financial data source repair (Section F): this used to be a
+              plain editable input whose submitted value became the
+              invoice's starting line-item rate verbatim -- createInvoice()
+              now always re-derives the rate from load_financials server-
+              side when a load is selected, so this is disabled (a disabled
+              input never appears in FormData at all) rather than left
+              editable-but-ignored, which would silently mislead whoever
+              edits it. The rate can still be adjusted afterward from the
+              invoice detail page's own line-item editor, unchanged. */}
+          <FormField label="Rate ($) -- from load, add line items after to adjust" name="rate" type="number" step="0.01" defaultValue={loadRate} disabled />
           <FormTextarea label="Notes" name="notes" />
         </FormGrid>
       </FormCard>

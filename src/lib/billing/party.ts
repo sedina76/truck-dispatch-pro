@@ -15,6 +15,21 @@
 // (New Invoice, Record Payment, profile pages) present that same rule
 // consistently instead of each screen inventing its own priority.
 
+// Invoice eligibility repair: the ONE list of public.load_status values a
+// load must be in before it can be manually invoiced -- shared by the New
+// Invoice load selector query and createInvoice()'s own server-side
+// re-check (src/app/(app)/invoices/actions.ts), so the two can never drift
+// apart the way they briefly could when each spelled the list out inline.
+// Matches auto_generate_invoice_from_delivered_load()'s own trigger
+// condition (0022/0028_auto_invoice_dispatch_sync_fix.sql fires on
+// NEW.status = 'delivered'; the extra 'pod_received'/'invoiced'/'closed'
+// states are loads that reached delivered and moved on, still eligible for
+// a MANUAL invoice if the automatic one never fired for any reason) --
+// deliberately excludes every pre-delivery status (draft/posted/booked/
+// dispatched/in_transit/at_pickup/at_delivery) and both terminal-but-
+// non-billable statuses (cancelled/problem).
+export const INVOICEABLE_LOAD_STATUSES = ["delivered", "pod_received", "invoiced", "closed"] as const;
+
 export type BillingPartyRef = { broker_id: string | null | undefined; customer_id: string | null | undefined };
 
 export type BillingParty =

@@ -406,7 +406,26 @@ export function KanbanBoard({ initialCards }: { initialCards: DispatchCard[] }) 
     <div className="space-y-3">
       <FilterBar cards={cards} filters={filters} onChange={setFilters} />
       <RiskSummaryBar cards={cards} filters={filters} onChange={setFilters} />
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+      {/* Explicit, stable id (SSR hydration fix): with no id prop,
+          @dnd-kit's DndContext derives its aria-describedby value
+          (DndDescribedBy-N) from a MODULE-LEVEL counter (useUniqueId(),
+          @dnd-kit/utilities) that is NOT request-scoped -- confirmed by
+          reading that function's own source (`let ids = {}` at module
+          scope, incremented on every call with no id/value argument). A
+          long-lived server process's counter keeps climbing across
+          unrelated requests/renders (so a given SSR pass can easily land
+          on "-1", "-2", etc.), while a fresh browser page load always
+          starts its own copy of that same module at "-0" -- a mismatch
+          that exists independently of this board's own code and would
+          reproduce on ANY DndContext with no explicit id, on any server
+          that has handled more than one request. Passing a fixed id here
+          makes useUniqueId() return it immediately (see its own
+          `if (value) return value` short-circuit) -- byte-identical
+          between server and client on every render, regardless of how
+          many times this component (or any other DndContext elsewhere)
+          has mounted before. This is the library's own documented
+          escape hatch -- not a manual aria-describedby override. */}
+      <DndContext id="dispatch-board-dnd" sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <div className="flex gap-4 overflow-x-auto pb-2">
           {COLUMNS.map((column) => (
             <KanbanColumn key={column.key} column={column} cards={filteredCards.filter((c) => column.statuses.includes(c.status))} onOpen={handleOpen} />

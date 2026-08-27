@@ -14,9 +14,15 @@ import { emptyToNull, toNumber } from "@/lib/utils/form";
 // inspection (2G.9/2G.10 full search) that no form in this app has ever
 // written them; they carry only their column default through every
 // existing load, so there is nothing to cut over for those two fields.
+// load_number is deliberately absent from this shape (0114: automatic
+// organization-scoped load-number generation) -- it is never read from a
+// form here. A client-supplied "load_number" field, if a stale request
+// still sent one, is simply never looked at; loads.load_number is also
+// immutable after creation at the database level
+// (loads_guard_load_number_immutable), so updateLoad() below could never
+// change it even if it tried to.
 function loadValues(formData: FormData) {
   return {
-    load_number: String(formData.get("load_number")),
     broker_id: emptyToNull(formData.get("broker_id")),
     customer_id: emptyToNull(formData.get("customer_id")),
     status: String(formData.get("status") || "draft"),
@@ -42,16 +48,22 @@ async function writeLoadFinancials(supabase: Awaited<ReturnType<typeof createCli
   if (error) throw new Error(error.message);
 }
 
-export async function createLoad(formData: FormData) {
-  const supabase = await createClient();
-  const organizationId = await getCurrentOrgId();
-  const { data, error } = await supabase.from("loads").insert({ ...loadValues(formData), organization_id: organizationId }).select("id").single();
-  if (error) throw new Error(error.message);
-  await writeLoadFinancials(supabase, data.id, organizationId, formData);
-  await supabase.rpc("log_activity", { p_entity_type: "load", p_entity_id: data.id, p_action: "created" });
-  revalidatePath("/loads");
-  redirect("/loads");
-}
+// REMOVED (0114 hardening pass): this file used to also export a plain
+// createLoad(), confirmed by search to have zero references anywhere in
+// this codebase (the New Load form uses createLoadWithStops() in
+// create-actions.ts exclusively). It allocated a load number and inserted
+// the row as two separate PostgREST calls -- outside any single
+// transaction, unlike create_load_with_stops() (allocation and insert in
+// one PL/pgSQL function body) -- so a failed insert could strand an
+// allocated number with no load ever created at it. Rather than carry
+// that nontransactional shape forward (even dormant), it was deleted
+// outright: no load-creation code path may allocate a number outside the
+// transaction that creates the load, and this file had no live caller to
+// preserve. If a plain (non-multi-stop) load-creation entry point is ever
+// needed again, it should call create_load_with_stops() with a single
+// stop, or a new dedicated SQL function following that same
+// allocate-then-insert-in-one-transaction shape -- never a client-side
+// two-call sequence.
 
 // Bespoke rather than the generic updateRecord() helper: this needs to know
 // whether the save just transitioned the load into 'delivered' (to route

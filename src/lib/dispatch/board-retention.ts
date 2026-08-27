@@ -18,21 +18,61 @@ import { formatStopDateTime } from "@/lib/timezone/format";
 export const DELIVERED_RETENTION_HOURS = 24;
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]);
 
+// REVISION (completed-dispatch retention workflow): 'cancelled' now
+// follows the identical 24-hour rule, keyed off cancelled_at instead of
+// delivered_at -- previously this filter's own "not delivered-like"
+// branch (`status.not.in.(delivered,completed)`) meant a cancelled
+// dispatch matched unconditionally and NEVER left the active board,
+// regardless of age. That was a real gap relative to the desired
+// behavior (delivered/completed and cancelled should both clear the
+// active board after 24h), not a deliberate design choice -- fixed here,
+// in the ONE shared place both statuses' rules are expressed, rather
+// than adding a second, parallel filter definition elsewhere.
+export const TERMINAL_STATUSES = new Set(["delivered", "completed", "cancelled"]);
+
 // The exact PostgREST `.or()` fragment the board query filters on --
 // isolated here so the query and every display helper below share the
 // identical cutoff instant for a single request (computed once, not
-// re-derived slightly differently in two places).
+// re-derived slightly differently in two places). Uses PostgREST's
+// nested and()-within-or() syntax (documented, standard filter grammar)
+// since delivered/completed and cancelled each need their OWN timestamp
+// column compared against the SAME cutoff -- a flat comma-separated list
+// of column.op.value conditions can't express "this status AND this
+// column" pairing on its own.
 export function boardRetentionOrFilter(now: Date = new Date()): string {
   const cutoff = new Date(now.getTime() - DELIVERED_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
-  // Three independent reasons a row survives the filter, matching the
-  // approved design exactly:
-  //   1. not delivered-like at all -- still an active operational status.
-  //   2. delivered_at is unexpectedly null -- FAIL OPEN, never silently
-  //      hide a row just because its timestamp bookkeeping is missing
-  //      (see the Part A2 migration/report for why this can still
-  //      theoretically happen even after the write-side fix).
-  //   3. delivered_at is within the retention window.
-  return `status.not.in.(delivered,completed),delivered_at.is.null,delivered_at.gte.${cutoff}`;
+  // Five independent reasons a row survives the filter:
+  //   1. not a terminal status at all -- still an active operational status.
+  //   2/3. delivered-like (delivered/completed), with delivered_at either
+  //      unexpectedly null (FAIL OPEN -- never silently hide a row just
+  //      because its timestamp bookkeeping is missing; see this
+  //      migration's own report for the one currently-known write path
+  //      that could historically produce this, now fixed) or within the
+  //      retention window.
+  //   4/5. cancelled, with the identical null-fails-open / within-window
+  //      treatment, keyed off cancelled_at instead.
+  return [
+    `status.not.in.(${[...TERMINAL_STATUSES].join(",")})`,
+    `and(status.in.(delivered,completed),delivered_at.is.null)`,
+    `and(status.in.(delivered,completed),delivered_at.gte.${cutoff})`,
+    `and(status.eq.cancelled,cancelled_at.is.null)`,
+    `and(status.eq.cancelled,cancelled_at.gte.${cutoff})`,
+  ].join(",");
+}
+
+// The logical complement of boardRetentionOrFilter() above -- rows that
+// are CURRENTLY hidden from the default board by the 24-hour rule (never
+// rows with a missing timestamp, which fail open and are therefore never
+// "hidden" by this rule in the first place). Used only for a lightweight
+// count (requirement: "preserve a separate historical/completed count"),
+// never to actually fetch/display rows -- kept in this one file so it can
+// never drift from the rule it's the mirror image of.
+export function boardHiddenByRetentionFilter(now: Date = new Date()): string {
+  const cutoff = new Date(now.getTime() - DELIVERED_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
+  return [
+    `and(status.in.(delivered,completed),delivered_at.not.is.null,delivered_at.lt.${cutoff})`,
+    `and(status.eq.cancelled,cancelled_at.not.is.null,cancelled_at.lt.${cutoff})`,
+  ].join(",");
 }
 
 // Same rule, evaluated in JS for a single already-fetched row -- used by
