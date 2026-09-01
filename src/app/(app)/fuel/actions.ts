@@ -68,11 +68,48 @@ function fuelLogValues(formData: FormData) {
   };
 }
 
+// DRIVER / TRUCK OWNERSHIP INTEGRITY (fuel-log defect repair). fuel_logs.
+// driver_id is "who purchased" (attribution only -- recovery/settlement is
+// the separate responsible_driver_id lane). It must be a driver of the
+// SAME carrier the truck belongs to: drivers.carrier_id = trucks.carrier_id
+// (both real NOT NULL FKs, 0003). guard_fuel_log_org() (0051) only checks
+// same-organization -- this closes the same-org-but-wrong-carrier gap the
+// pilot hit. Generic message; a forged wrong-carrier driver_id is rejected
+// here regardless of what the dropdown offered. No schema change.
+async function assertDriverEligibleForTruckCarrier(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
+  truckId: string,
+  driverId: string | null
+) {
+  if (!driverId) return;
+  const { data: truck } = await supabase
+    .from("trucks")
+    .select("carrier_id, organization_id")
+    .eq("id", truckId)
+    .maybeSingle();
+  if (!truck || truck.organization_id !== organizationId) {
+    throw new Error("Select a valid truck.");
+  }
+  const { data: driver } = await supabase
+    .from("drivers")
+    .select("id")
+    .eq("id", driverId)
+    .eq("organization_id", organizationId)
+    .eq("carrier_id", truck.carrier_id)
+    .maybeSingle();
+  if (!driver) {
+    throw new Error("The selected driver is not associated with this truck's carrier.");
+  }
+}
+
 export async function createFuelLog(formData: FormData): Promise<{ id: string }> {
   if (!String(formData.get("gallons") || "").trim()) throw new Error("Gallons is required.");
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const values = fuelLogValues(formData);
+
+  await assertDriverEligibleForTruckCarrier(supabase, organizationId, values.truck_id, values.driver_id);
 
   const { data, error } = await supabase
     .from("fuel_logs")
@@ -97,10 +134,25 @@ export async function updateFuelLog(id: string, _prevState: FuelActionState, for
     const supabase = await createClient();
     const organizationId = await getCurrentOrgId();
 
-    const { data: existing } = await supabase.from("fuel_logs").select("expense_id, recovered_amount").eq("id", id).single();
+    const { data: existing } = await supabase.from("fuel_logs").select("expense_id, recovered_amount, driver_id, truck_id").eq("id", id).single();
     if (!existing) throw new Error("Fuel log not found.");
 
     const values = fuelLogValues(formData);
+
+    // Only re-validate driver<->carrier alignment when driver_id is
+    // actually changing -- a historical row with a pre-existing mismatch
+    // (see the read-only diagnostic) must still be editable for its other
+    // fields without this repair rejecting the save. truck_id is frozen
+    // once locked, so check against the effective truck.
+    if (values.driver_id && values.driver_id !== existing.driver_id) {
+      const locked = !!existing.expense_id || Number(existing.recovered_amount) > 0;
+      await assertDriverEligibleForTruckCarrier(
+        supabase,
+        organizationId,
+        locked ? existing.truck_id : values.truck_id,
+        values.driver_id
+      );
+    }
 
     // Once an expense has been created or any recovery has actually
     // happened, the payment/recovery decision is locked -- changing it out

@@ -22,7 +22,7 @@ export function DataTable<T extends { id: string }>({
   columns: Column<T>[];
   rows: T[];
   getDetailHref?: (row: T) => string;
-  getDeleteAction?: (row: T) => () => Promise<void>;
+  getDeleteAction?: (row: T) => (() => Promise<void>) | undefined;
   pageSize?: number;
 }) {
   const renderedColumns: RenderedColumn[] = columns.map((col) => ({

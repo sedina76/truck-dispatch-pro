@@ -42,7 +42,7 @@ export default async function FuelLogDetailPage({ params }: { params: Promise<{ 
 
   const [{ data: trucksRaw }, { data: driversRaw }, recovery, documents, { data: activity }, { data: recoveryLines }, { data: driverRecoveryLines }] = await Promise.all([
     supabase.from("trucks").select("id, unit_number, carrier_id, ownership_type, current_odometer, carriers(legal_name)").order("unit_number"),
-    supabase.from("drivers").select("id, carrier_id, first_name, last_name").eq("status", "active").order("last_name"),
+    supabase.from("drivers").select("id, carrier_id, first_name, last_name, carriers(legal_name)").eq("status", "active").order("last_name"),
     getFuelRecoveryStatus(supabase, id),
     Promise.all(DOC_TYPES.map((d) => getLatestDocument(supabase, "fuel", id, d.type))),
     supabase
@@ -60,6 +60,12 @@ export default async function FuelLogDetailPage({ params }: { params: Promise<{ 
     const row = t as unknown as { id: string; unit_number: string; carrier_id: string | null; ownership_type: string | null; current_odometer: number | null; carriers: { legal_name: string } | null };
     return { id: row.id, unit_number: row.unit_number, carrier_id: row.carrier_id, carrier_name: row.carriers?.legal_name ?? null, ownership_type: row.ownership_type, current_odometer: row.current_odometer };
   });
+
+  const fuelDrivers = ((driversRaw ?? []) as unknown as {
+    id: string; carrier_id: string | null; first_name: string; last_name: string; carriers: { legal_name: string } | null;
+  }[]).map((d) => ({
+    id: d.id, carrier_id: d.carrier_id, first_name: d.first_name, last_name: d.last_name, carrier_name: d.carriers?.legal_name ?? null,
+  }));
 
   const truck = trucks.find((t) => t.id === log.truck_id) ?? null;
   const locked = !!log.expense_id || Number(log.recovered_amount) > 0;
@@ -104,7 +110,7 @@ export default async function FuelLogDetailPage({ params }: { params: Promise<{ 
             <FuelEditForm id={id}>
               <FuelPurchaseFields
                 trucks={trucks}
-                drivers={driversRaw ?? []}
+                drivers={fuelDrivers}
                 defaultTruckId={log.truck_id}
                 defaultDriverId={log.driver_id}
                 defaultGallons={log.gallons}

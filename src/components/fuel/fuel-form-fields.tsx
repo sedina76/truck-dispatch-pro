@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { resolveEquipmentCarrier } from "@/lib/equipment/carrier-derivation";
+import { RecordPicker, type RecordOption } from "@/components/ui/record-picker";
 
 export type FuelTruckOption = { id: string; unit_number: string; carrier_id: string | null; carrier_name: string | null; ownership_type: string | null; current_odometer: number | null };
-export type FuelDriverOption = { id: string; first_name: string; last_name: string };
+export type FuelDriverOption = { id: string; first_name: string; last_name: string; carrier_id: string | null; carrier_name?: string | null };
 
 const selectClass =
   "h-8 w-full rounded-sm border border-desktop-border bg-card px-2.5 text-[13px] shadow-elevation-1 outline-none transition-[box-shadow,border-color] focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20";
@@ -16,6 +17,16 @@ const labelClass = "text-[12px] font-medium text-desktop-text";
 // carrier-derivation.ts) -- the SAME rule already live-verified for
 // Maintenance -- called with trailer=null since fuel_logs has no
 // trailer_id at all (spec section 3: no second derivation rule).
+//
+// Driver integrity repair: the "Driver" field here is "who purchased the
+// fuel" (attribution only -- it never drives recovery/settlement, which is
+// the separate Responsible Driver field). It is now scoped to drivers of
+// the SELECTED TRUCK'S CARRIER (drivers.carrier_id = trucks.carrier_id --
+// both real NOT NULL FKs, 0003), replacing the previous org-wide list.
+// createFuelLog()/updateFuelLog() re-enforce this server-side; this filter
+// is the UI half, never the authority. The separate Responsible Driver
+// field (payment-responsibility-fields.tsx) is intentionally left org-wide
+// per its own design comment and is NOT touched here.
 export function FuelPurchaseFields({
   trucks,
   drivers,
@@ -56,6 +67,7 @@ export function FuelPurchaseFields({
   truckDisabled?: boolean;
 }) {
   const [truckId, setTruckId] = useState(defaultTruckId ?? "");
+  const [driverId, setDriverId] = useState(defaultDriverId ?? "");
   const [gallons, setGallons] = useState(defaultGallons != null ? String(defaultGallons) : "");
   const [pricePerGallon, setPricePerGallon] = useState(defaultPricePerGallon != null ? String(defaultPricePerGallon) : "");
   const [odometerReading, setOdometerReading] = useState(defaultOdometerReading != null ? String(defaultOdometerReading) : "");
@@ -63,27 +75,65 @@ export function FuelPurchaseFields({
   const selectedTruck = trucks.find((t) => t.id === truckId) ?? null;
   const derivation = resolveEquipmentCarrier(selectedTruck, null);
   const resolvedCarrierName = derivation.kind === "resolved" ? derivation.carrierName : null;
+  const truckCarrierId = selectedTruck?.carrier_id ?? null;
 
-  // Gallons x Price/Gallon vs. Total Amount -- purely a comparison shown
-  // to staff (spec section 17: "If Total Amount is the canonical actual
-  // charge: preserve it while showing calculated comparison"). fuel_logs
-  // has no tax/fee column to justify inventing a numeric tolerance for,
-  // so this never blocks submission -- it's informational only, never a
-  // silent overwrite of the actual charge.
+  // Eligible = drivers whose own carrier is this truck's carrier. Plus, on
+  // an edit where the truck is unchanged, the already-saved driver even if
+  // its carrier no longer matches (a pre-existing mismatch) -- so editing
+  // an unrelated field never silently drops that historical value. The
+  // server only re-checks carrier alignment when driver_id actually
+  // changes, so leaving it pinned is safe.
+  const eligibleDrivers = useMemo(
+    () => (truckCarrierId ? drivers.filter((d) => d.carrier_id === truckCarrierId) : []),
+    [drivers, truckCarrierId]
+  );
+  const pinnedHistorical = useMemo(() => {
+    if (!defaultDriverId || truckId !== (defaultTruckId ?? "")) return null;
+    if (eligibleDrivers.some((d) => d.id === defaultDriverId)) return null;
+    return drivers.find((d) => d.id === defaultDriverId) ?? null;
+  }, [defaultDriverId, defaultTruckId, truckId, drivers, eligibleDrivers]);
+
+  const driverOptions: RecordOption[] = useMemo(() => {
+    const base: RecordOption[] = eligibleDrivers.map((d) => ({
+      id: d.id,
+      primary: `${d.first_name} ${d.last_name}`.trim(),
+      secondary: d.carrier_name ?? resolvedCarrierName ?? null,
+      searchText: `${d.first_name} ${d.last_name} ${d.carrier_name ?? ""}`.toLowerCase(),
+    }));
+    if (pinnedHistorical) {
+      base.unshift({
+        id: pinnedHistorical.id,
+        primary: `${pinnedHistorical.first_name} ${pinnedHistorical.last_name}`.trim(),
+        secondary: `${pinnedHistorical.carrier_name ?? "Other carrier"} — currently on file`,
+        searchText: `${pinnedHistorical.first_name} ${pinnedHistorical.last_name}`.toLowerCase(),
+      });
+    }
+    return base;
+  }, [eligibleDrivers, pinnedHistorical, resolvedCarrierName]);
+
+  // Reconcile the driver selection whenever the truck's carrier changes:
+  // drop a now-ineligible pick, and auto-select when exactly one eligible
+  // driver exists. Keyed on truckCarrierId only (not driverId) so it
+  // reacts to truck changes, not to the user's own driver choice.
+  useEffect(() => {
+    const validIds = new Set(driverOptions.map((o) => o.id));
+    setDriverId((current) => {
+      if (current && !validIds.has(current)) {
+        return eligibleDrivers.length === 1 ? eligibleDrivers[0].id : "";
+      }
+      if (!current && eligibleDrivers.length === 1) {
+        return eligibleDrivers[0].id;
+      }
+      return current;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [truckCarrierId]);
+
   const gallonsNum = Number(gallons);
   const priceNum = Number(pricePerGallon);
   const hasCalc = gallons !== "" && pricePerGallon !== "" && !Number.isNaN(gallonsNum) && !Number.isNaN(priceNum);
   const calculatedTotal = hasCalc ? gallonsNum * priceNum : null;
 
-  // Odometer rollback warning (spec section 18) -- informational only, no
-  // auto-advance of trucks.current_odometer: nothing else in this app
-  // treats an operational log as an odometer-update source (confirmed by
-  // inspection -- only the Truck edit form itself sets it), so this
-  // doesn't invent that behavior "blindly." A lower reading than the
-  // truck's last known odometer is flagged so staff can catch a
-  // data-entry error, but a genuinely backdated fuel log (an earlier
-  // purchase entered after a later one) is a real scenario too -- never
-  // blocked.
   const odometerNum = Number(odometerReading);
   const showOdometerWarning =
     odometerReading !== "" && !Number.isNaN(odometerNum) && selectedTruck?.current_odometer != null && odometerNum < selectedTruck.current_odometer;
@@ -111,13 +161,29 @@ export function FuelPurchaseFields({
         </div>
         <div className="space-y-1">
           <label htmlFor="driver_id" className={labelClass}>Driver</label>
-          <select id="driver_id" name="driver_id" defaultValue={defaultDriverId ?? ""} className={selectClass}>
-            <option value="">None</option>
-            {drivers.map((d) => (
-              <option key={d.id} value={d.id}>{d.first_name} {d.last_name}</option>
-            ))}
-          </select>
-          <p className="text-[11px] text-desktop-text-muted">Who purchased the fuel -- for reporting/attribution only. Does not determine who financially owes for it.</p>
+          <input type="hidden" name="driver_id" value={driverId} />
+          {!selectedTruck ? (
+            <div className={`${selectClass} flex items-center text-muted-foreground`}>Select a truck first</div>
+          ) : driverOptions.length === 0 ? (
+            <div className={`${selectClass} flex items-center text-muted-foreground`}>
+              No eligible drivers are linked to {resolvedCarrierName ?? "this carrier"}.
+            </div>
+          ) : (
+            <RecordPicker
+              id="driver_id"
+              options={driverOptions}
+              value={driverId || null}
+              onChange={setDriverId}
+              placeholder={`Search & select a ${resolvedCarrierName ?? "carrier"} driver...`}
+              searchPlaceholder="Search driver name..."
+              emptyLabel={`No eligible drivers are linked to ${resolvedCarrierName ?? "this carrier"}.`}
+              ariaLabel="Driver who purchased the fuel"
+            />
+          )}
+          <p className="text-[11px] text-desktop-text-muted">
+            Who purchased the fuel -- for reporting/attribution only. Only drivers of this truck&apos;s carrier are listed.
+            Does not determine who financially owes for it.
+          </p>
         </div>
       </div>
 

@@ -20,13 +20,21 @@ export default async function NewFuelLogPage() {
   const supabase = await createClient();
   const [{ data: trucksRaw }, { data: driversRaw }] = await Promise.all([
     supabase.from("trucks").select("id, unit_number, carrier_id, ownership_type, current_odometer, carriers(legal_name)").order("unit_number"),
-    supabase.from("drivers").select("id, carrier_id, first_name, last_name").eq("status", "active").order("last_name"),
+    supabase.from("drivers").select("id, carrier_id, first_name, last_name, carriers(legal_name)").eq("status", "active").order("last_name"),
   ]);
 
   const trucks = (trucksRaw ?? []).map((t) => {
     const row = t as unknown as { id: string; unit_number: string; carrier_id: string | null; ownership_type: string | null; current_odometer: number | null; carriers: { legal_name: string } | null };
     return { id: row.id, unit_number: row.unit_number, carrier_id: row.carrier_id, carrier_name: row.carriers?.legal_name ?? null, ownership_type: row.ownership_type, current_odometer: row.current_odometer };
   });
+
+  // Fuel "Driver" (who purchased) is scoped to the selected truck's carrier
+  // in the form -- carrier_name is passed for display only.
+  const fuelDrivers = ((driversRaw ?? []) as unknown as {
+    id: string; carrier_id: string | null; first_name: string; last_name: string; carriers: { legal_name: string } | null;
+  }[]).map((d) => ({
+    id: d.id, carrier_id: d.carrier_id, first_name: d.first_name, last_name: d.last_name, carrier_name: d.carriers?.legal_name ?? null,
+  }));
 
   return (
     <div className="space-y-3">
@@ -44,10 +52,12 @@ export default async function NewFuelLogPage() {
 
           <div className="space-y-3">
             <DesktopCollapsibleSection id="purchase" title="Fuel Purchase Details">
-              <FuelPurchaseFields trucks={trucks} drivers={driversRaw ?? []} />
+              <FuelPurchaseFields trucks={trucks} drivers={fuelDrivers} />
             </DesktopCollapsibleSection>
 
             <DesktopCollapsibleSection id="payment" title="Payment & Responsibility">
+              {/* Responsible Driver stays org-wide by design (see
+                  payment-responsibility-fields.tsx) -- unchanged. */}
               <PaymentResponsibilityFields drivers={driversRaw ?? []} amountCapLabel="the fuel purchase total" />
             </DesktopCollapsibleSection>
           </div>

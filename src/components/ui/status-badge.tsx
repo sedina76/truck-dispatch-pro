@@ -35,6 +35,7 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   in_maintenance: "warning",
   under_review: "warning",
   needs_correction: "warning",
+  unverified: "warning",
   // info
   in_transit: "info",
   dispatched: "info",

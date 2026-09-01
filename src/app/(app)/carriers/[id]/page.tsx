@@ -11,22 +11,33 @@ import { CarrierCompanyProfitabilitySection } from "@/components/carriers/carrie
 import { CarrierExpenseSummarySection } from "@/components/carriers/carrier-expense-summary-section";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
 import { ComplianceTab } from "@/components/carrier-compliance/compliance-tab";
+import { CarrierDocumentsSection, type CarrierDocumentRow } from "@/components/carriers/carrier-documents-section";
 import type { CarrierComplianceReadiness } from "@/lib/carrier-compliance/types";
 import { W9_STAFF_SAFE_SELECT, type CarrierW9Row } from "@/lib/carrier-w9/types";
-import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Phase 2G.9 (item 3): same treatment as Customer/Broker Detail -- Carriers
 // is Business, open to every role, no layout guard.
 export default async function CarrierDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }) {
   const { id } = await params;
+  const { tab } = await searchParams;
   const supabase = await createClient();
 
   const { data: roleData } = await supabase.rpc("current_role");
-  const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+  const role = (roleData as OrgRole | null) ?? null;
+  const canSeeFinancials = FINANCIAL_ROLES.includes(role ?? ("viewer" as OrgRole));
+  // Matches documents_insert RLS (0010) + load_documents_insert storage
+  // policy (0023): owner/admin/dispatcher may upload; owner/admin may
+  // mark verified.
+  const canUploadDocs = !!role && (["owner", "admin", "dispatcher"] as OrgRole[]).includes(role);
+  const canVerifyDocs = !!role && OWNER_ADMIN_ROLES.includes(role);
+  const activeTab = tab === "documents" || tab === "compliance" ? tab : "overview";
 
   const { data: carrier } = await supabase.from("carriers").select("*").eq("id", id).single();
   if (!carrier) notFound();
@@ -52,6 +63,16 @@ export default async function CarrierDetailPage({
       : Promise.resolve({ data: null }),
     supabase.from("carrier_onboarding_applications").select("id, status").eq("converted_carrier_id", id).order("converted_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
+
+  // Carrier's own documents (entity_type='carrier') -- includes rows
+  // re-pointed here at onboarding conversion (migration 0111) and those
+  // uploaded through the Documents tab below. RLS-scoped to this org.
+  const { data: carrierDocuments } = await supabase
+    .from("documents")
+    .select("id, document_type, file_name, expiry_date, is_verified, created_at")
+    .eq("entity_type", "carrier")
+    .eq("entity_id", id)
+    .order("created_at", { ascending: false });
 
   const pendingAdvanceTotal = (pendingAdvances ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
 
@@ -81,9 +102,10 @@ export default async function CarrierDetailPage({
   }
 
   return (
-    <Tabs defaultValue="overview" className="space-y-4">
+    <Tabs defaultValue={activeTab} className="space-y-4">
       <TabsList>
         <TabsTrigger value="overview">Overview</TabsTrigger>
+        <TabsTrigger value="documents">Documents</TabsTrigger>
         <TabsTrigger value="compliance">Compliance</TabsTrigger>
       </TabsList>
 
@@ -176,6 +198,15 @@ export default async function CarrierDetailPage({
           )}
         </div>
       )}
+      </TabsContent>
+
+      <TabsContent value="documents">
+        <CarrierDocumentsSection
+          carrierId={id}
+          documents={(carrierDocuments ?? []) as CarrierDocumentRow[]}
+          canUpload={canUploadDocs}
+          canVerify={canVerifyDocs}
+        />
       </TabsContent>
 
       <TabsContent value="compliance">
