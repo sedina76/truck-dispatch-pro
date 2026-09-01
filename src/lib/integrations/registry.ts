@@ -138,12 +138,19 @@ export const PROVIDERS: ProviderDefinition[] = [
     supportsOAuth: true,
     credentialScope: "organization",
     setupRequirements: [
-      "A registered QuickBooks Developer app",
-      "QUICKBOOKS_CLIENT_ID (platform server environment variable)",
-      "QUICKBOOKS_CLIENT_SECRET (platform server environment variable)",
-      "A registered OAuth redirect URI",
+      "A registered QuickBooks (Intuit) Developer app",
+      "QUICKBOOKS_CLIENT_ID / QUICKBOOKS_CLIENT_SECRET (server env vars -- never NEXT_PUBLIC_*)",
+      "QUICKBOOKS_ENVIRONMENT=sandbox and QUICKBOOKS_REDIRECT_URI (server env vars)",
+      "Redirect URI registered in Intuit: https://truck-dispatch-pro.vercel.app/api/integrations/quickbooks/callback",
+      "Database migration 0116_quickbooks_oauth_foundation.sql applied",
     ],
-    notImplementedReason: "Platform OAuth configuration required -- no QuickBooks Developer app is registered for this deployment yet, and no OAuth callback route exists.",
+    // The OAuth foundation (callback route, encrypted token storage design,
+    // connect/disconnect flow) exists in the codebase. `implemented` stays
+    // false until migration 0116 is applied AND the QUICKBOOKS_* env vars
+    // are set -- the /settings/integrations/quickbooks page renders its own
+    // QuickBooks connection card regardless and shows exactly what is still
+    // needed.
+    notImplementedReason: "OAuth foundation is in the codebase but not yet activated for this deployment -- apply migration 0116 and set the QUICKBOOKS_* server environment variables. See the QuickBooks page for the exact steps.",
   },
 
   // ---------------------------------------------------------------------

@@ -9,6 +9,8 @@ import { PROVIDER_BY_ID, CATEGORY_LABEL, isProviderId } from "@/lib/integrations
 import { deriveIntegrationStatus } from "@/lib/integrations/status";
 import { getIntegrationRows, getIntegrationActivity } from "@/lib/integrations/queries";
 import { testConnection, setIntegrationEnabled, disconnectIntegration } from "../actions";
+import { QuickbooksConnectionCard, type QuickbooksConnectionView } from "@/components/integrations/quickbooks-connection-card";
+import { isQuickbooksConfigured, getQuickbooksRedirectUri } from "@/lib/integrations/providers/quickbooks";
 
 function cap(s: string): string {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -22,8 +24,15 @@ const ACTIVITY_LABEL: Record<string, string> = {
   integration_disconnected: "Integration disconnected",
 };
 
-export default async function ProviderDetailPage({ params }: { params: Promise<{ provider: string }> }) {
+export default async function ProviderDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ provider: string }>;
+  searchParams: Promise<{ error?: string; connected?: string }>;
+}) {
   const { provider: providerParam } = await params;
+  const sp = await searchParams;
   if (!isProviderId(providerParam)) notFound();
   const provider = PROVIDER_BY_ID[providerParam];
 
@@ -33,6 +42,29 @@ export default async function ProviderDetailPage({ params }: { params: Promise<{
   const row = rows.get(provider.id) ?? null;
   const result = deriveIntegrationStatus(provider, row);
   const activity = await getIntegrationActivity(supabase, orgId, row?.id ?? null);
+
+  // QuickBooks renders its own connection card (below) regardless of the
+  // generic `implemented` flag. The connection row lives in
+  // quickbooks_connections (migration 0116) -- a missing table (0116 not
+  // applied yet) degrades cleanly to "not connected".
+  let quickbooksConnection: QuickbooksConnectionView = null;
+  if (provider.id === "quickbooks") {
+    const { data } = await supabase
+      .from("quickbooks_connections")
+      .select("status, company_name, realm_id, connected_at, last_refreshed_at, last_error_message")
+      .eq("organization_id", orgId)
+      .maybeSingle();
+    if (data) {
+      quickbooksConnection = {
+        status: data.status as "connected" | "reconnect_required" | "disconnected",
+        companyName: data.company_name,
+        realmId: data.realm_id,
+        connectedAt: data.connected_at,
+        lastRefreshedAt: data.last_refreshed_at,
+        lastErrorMessage: data.last_error_message,
+      };
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -97,7 +129,17 @@ export default async function ProviderDetailPage({ params }: { params: Promise<{
         </CardContent>
       </Card>
 
-      {!provider.implemented && (
+      {provider.id === "quickbooks" && (
+        <QuickbooksConnectionCard
+          configured={isQuickbooksConfigured()}
+          redirectUri={getQuickbooksRedirectUri()}
+          connection={quickbooksConnection}
+          errorCode={sp.error}
+          justConnected={sp.connected === "1"}
+        />
+      )}
+
+      {!provider.implemented && provider.id !== "quickbooks" && (
         <Card>
           <CardHeader>
             <CardTitle>{provider.managedByPlatform ? "Managed by Platform" : "Not Yet Available"}</CardTitle>
