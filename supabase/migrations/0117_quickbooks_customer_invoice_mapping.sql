@@ -83,8 +83,20 @@ create policy quickbooks_customer_mappings_update on public.quickbooks_customer_
     organization_id = public.current_org_id()
     and public.has_role(array['owner', 'admin']::public.org_role[])
   )
-  with check (organization_id = public.current_org_id());
+  with check (
+    organization_id = public.current_org_id()
+    and public.has_role(array['owner', 'admin']::public.org_role[])
+  );
 -- No delete policy: a mapping is corrected via update, never silently removed.
+
+-- Explicit table privileges (Supabase's default privileges would otherwise
+-- grant ALL -- incl. DELETE -- to anon + authenticated on a new public
+-- table). Mirrors the explicit revoke/grant shape in 0099/0109. RLS above
+-- still restricts every authenticated row to the current org's owner/admin.
+-- service_role is deliberately untouched: it keeps its normal full access.
+revoke all on public.quickbooks_customer_mappings from public, anon, authenticated;
+grant select, insert, update on public.quickbooks_customer_mappings to authenticated;
+-- No DELETE grant to authenticated; anon + public get nothing.
 
 -- Polymorphic FK guard: local_entity_id must be a real customers/brokers
 -- row in the SAME organization. Mirrors guard_document_carrier_link()
@@ -169,8 +181,17 @@ create policy quickbooks_invoice_syncs_update on public.quickbooks_invoice_syncs
     organization_id = public.current_org_id()
     and public.has_role(array['owner', 'admin']::public.org_role[])
   )
-  with check (organization_id = public.current_org_id());
+  with check (
+    organization_id = public.current_org_id()
+    and public.has_role(array['owner', 'admin']::public.org_role[])
+  );
 -- No delete policy.
+
+-- Explicit table privileges -- same rationale as quickbooks_customer_mappings
+-- above. service_role untouched (keeps normal full access).
+revoke all on public.quickbooks_invoice_syncs from public, anon, authenticated;
+grant select, insert, update on public.quickbooks_invoice_syncs to authenticated;
+-- No DELETE grant to authenticated; anon + public get nothing.
 
 -- Polymorphic guard: invoice must belong to the same organization.
 create or replace function public.guard_quickbooks_invoice_sync()
