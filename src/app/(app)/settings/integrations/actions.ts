@@ -123,6 +123,12 @@ export async function setIntegrationEnabled(providerId: string, enabled: boolean
   const provider = requireProvider(providerId);
   const def = PROVIDER_BY_ID[provider];
   if (!def.implemented) throw new Error(`${def.name} is not yet available to enable.`);
+  // QuickBooks is enabled/disabled implicitly by its own connect/disconnect
+  // flow (which also owns token revoke). The generic per-org toggle here
+  // must never touch its integration_settings row -- that would desync it
+  // from quickbooks_connections. The UI does not offer this for QuickBooks;
+  // this rejects a forged/stale call.
+  if (provider === "quickbooks") throw new Error("Manage the QuickBooks connection from its own page.");
 
   const supabase = await createClient();
   await requireOwnerOrAdmin(supabase);
@@ -149,6 +155,12 @@ export async function disconnectIntegration(providerId: string) {
   const provider = requireProvider(providerId);
   const def = PROVIDER_BY_ID[provider];
   if (!def.implemented) throw new Error(`${def.name} is not connected.`);
+  // QuickBooks disconnect must go through disconnectQuickbooks() (revokes
+  // the token at Intuit + tears down quickbooks_connections). The generic
+  // disconnect here would only clear integration_settings and leave live
+  // encrypted tokens behind. Not offered in the UI for QuickBooks; reject
+  // a forged/stale call.
+  if (provider === "quickbooks") throw new Error("Disconnect QuickBooks from its own page.");
 
   const supabase = await createClient();
   await requireOwnerOrAdmin(supabase);

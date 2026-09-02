@@ -127,30 +127,28 @@ export const PROVIDERS: ProviderDefinition[] = [
   {
     id: "quickbooks",
     name: "QuickBooks Online",
-    description: "Push invoices and payments, sync customers.",
+    description: "Connect a QuickBooks Online company via OAuth. Accounting sync is a future phase.",
     category: "accounting",
     connectionType: "oauth2",
     capabilities: ["invoices", "payments", "customers"],
-    implemented: false,
+    // The OAuth connector is real and live (callback route + encrypted
+    // token storage, migration 0116). `supportsTest`/`supportsSync` stay
+    // false: connection validity is confirmed by the OAuth callback's own
+    // read-only CompanyInfo check, not the generic testConnection() path,
+    // and no accounting sync exists yet. The generic per-org Enable/Disable/
+    // Disconnect controls are deliberately NOT offered for QuickBooks (in
+    // ProviderCard and the detail page) -- it is managed only through its
+    // own connection card, which owns token revoke + teardown.
+    implemented: true,
     supportsTest: false,
     supportsSync: false,
     supportsWebhook: false,
     supportsOAuth: true,
     credentialScope: "organization",
     setupRequirements: [
-      "A registered QuickBooks (Intuit) Developer app",
-      "QUICKBOOKS_CLIENT_ID / QUICKBOOKS_CLIENT_SECRET (server env vars -- never NEXT_PUBLIC_*)",
-      "QUICKBOOKS_ENVIRONMENT=sandbox and QUICKBOOKS_REDIRECT_URI (server env vars)",
-      "Redirect URI registered in Intuit: https://truck-dispatch-pro.vercel.app/api/integrations/quickbooks/callback",
-      "Database migration 0116_quickbooks_oauth_foundation.sql applied",
+      "A registered QuickBooks (Intuit) Developer app with this app's redirect URI",
+      "Connect the QuickBooks company from the QuickBooks integration page",
     ],
-    // The OAuth foundation (callback route, encrypted token storage design,
-    // connect/disconnect flow) exists in the codebase. `implemented` stays
-    // false until migration 0116 is applied AND the QUICKBOOKS_* env vars
-    // are set -- the /settings/integrations/quickbooks page renders its own
-    // QuickBooks connection card regardless and shows exactly what is still
-    // needed.
-    notImplementedReason: "OAuth foundation is in the codebase but not yet activated for this deployment -- apply migration 0116 and set the QUICKBOOKS_* server environment variables. See the QuickBooks page for the exact steps.",
   },
 
   // ---------------------------------------------------------------------

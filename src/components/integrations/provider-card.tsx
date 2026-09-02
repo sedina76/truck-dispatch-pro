@@ -40,7 +40,11 @@ export function ProviderCard({ provider, row }: { provider: ProviderDefinition; 
 
       {result.detail && <p className="text-[11.5px] text-muted-foreground">{result.detail}</p>}
 
-      {provider.implemented && row?.account_label && <p className="text-[11.5px] text-desktop-text">Account: <span className="font-medium">{row.account_label}</span></p>}
+      {provider.id === "quickbooks" && result.status === "connected" && row?.account_label ? (
+        <p className="text-[11.5px] text-desktop-text">Connected to <span className="font-medium">{row.account_label}</span></p>
+      ) : (
+        provider.implemented && row?.account_label && <p className="text-[11.5px] text-desktop-text">Account: <span className="font-medium">{row.account_label}</span></p>
+      )}
 
       {provider.implemented && (lastTested || lastSync) && (
         <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
@@ -50,7 +54,17 @@ export function ProviderCard({ provider, row }: { provider: ProviderDefinition; 
       )}
 
       <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-desktop-border pt-2.5">
-        {provider.implemented ? (
+        {provider.id === "quickbooks" ? (
+          // QuickBooks is managed only from its own connection card (which
+          // owns OAuth connect + token revoke/teardown). The Integration
+          // Center never offers Enable/Disable/Disconnect for it.
+          <Link
+            href="/settings/integrations/quickbooks"
+            className="inline-flex h-7 items-center rounded-sm border border-desktop-border bg-card px-2.5 text-[12px] font-medium text-desktop-text transition-colors hover:bg-muted"
+          >
+            {result.status === "connected" ? "Manage" : "Set Up"}
+          </Link>
+        ) : provider.implemented ? (
           <>
             <Link
               href={`/settings/integrations/${provider.id}`}

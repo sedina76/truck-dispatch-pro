@@ -150,7 +150,7 @@ export default async function ProviderDetailPage({
         </Card>
       )}
 
-      {provider.implemented && (
+      {provider.implemented && provider.id !== "quickbooks" && (
         <Card>
           <CardHeader>
             <CardTitle>Connection</CardTitle>
