@@ -51,12 +51,34 @@ create table public.quickbooks_payment_imports (
   quickbooks_invoice_id text not null check (btrim(quickbooks_invoice_id) <> ''),
 
   -- Local side.
-  local_invoice_id uuid not null references public.invoices (id) on delete cascade,
+  --
+  -- ON DELETE RESTRICT (not CASCADE): unlike quickbooks_invoice_syncs
+  -- (0117, "we pushed this invoice out"), this row attests that MONEY was
+  -- recorded and tied to an external accounting system. An invoice IS
+  -- physically deletable today (RLS owner/admin/accountant, no BEFORE
+  -- DELETE guard trigger on public.invoices, and /invoices/[id] wires a
+  -- delete action), and 0006's payments.invoice_id ON DELETE CASCADE means
+  -- deleting an invoice already destroys its payments. RESTRICT here makes
+  -- an invoice that has ANY quickbooks_payment_imports row (pending,
+  -- imported, or failed) non-deletable until that provenance is explicitly
+  -- dealt with -- so QuickBooks payment provenance can never vanish
+  -- silently via a cascade. The sanctioned lifecycle voids invoices
+  -- (UPDATE), it never deletes them, so this restricts nothing real.
+  local_invoice_id uuid not null references public.invoices (id) on delete restrict,
   -- Nullable so the row can be inserted as a claim/lock BEFORE the
   -- public.payments row exists (mirrors the pending-row lock in
   -- quickbooks_invoice_syncs, 0117). Once import_state = 'imported' it
   -- must be set -- see quickbooks_payment_imports_imported_shape.
-  local_payment_id uuid references public.payments (id) on delete set null,
+  --
+  -- ON DELETE RESTRICT (not SET NULL): SET NULL would conflict with
+  -- quickbooks_payment_imports_imported_shape -- physically deleting the
+  -- payment would try to NULL local_payment_id and then fail the CHECK,
+  -- i.e. provenance would be "protected" only by an accidental constraint
+  -- violation. RESTRICT makes it explicit: once an imported provenance row
+  -- references a payment, that payment cannot be physically deleted.
+  -- Voiding a payment is an UPDATE (status -> 'voided'), not a DELETE, so
+  -- the normal correction lifecycle is unaffected.
+  local_payment_id uuid references public.payments (id) on delete restrict,
 
   -- The amount QuickBooks applied to THIS invoice (never Payment.TotalAmt).
   applied_amount numeric(10, 2) not null check (applied_amount > 0),

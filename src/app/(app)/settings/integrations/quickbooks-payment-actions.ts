@@ -402,7 +402,7 @@ export async function importQuickbooksPayment(
       code: "LOCAL_PAYMENT_CONFLICT",
       message: `Possible existing Truck Dispatch Pro payment found (${conflict.payment_number}, $${Number(conflict.amount).toFixed(
         2
-      )}). It was not imported. Void that payment first if it is the same money, then import again.`,
+      )}). This QuickBooks payment was not imported. Review/reconcile the existing payment before continuing.`,
     };
   }
 
