@@ -11,6 +11,8 @@ import { computePodStatus } from "@/lib/documents/pod-status";
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { getPodSignedUrl } from "../../loads/pod-actions";
 import { updateInvoice, addInvoiceLineItem } from "../actions";
+import { QuickbooksInvoiceSync } from "@/components/integrations/quickbooks-invoice-sync";
+import { getInvoiceQuickbooksSync, isPartyMappedToQuickbooks, isQuickbooksConnectedForOrg } from "@/lib/integrations/quickbooks/sync-reads";
 import { deductAdvancesIntoInvoice } from "../../advances/actions";
 import { BillingPacketSection } from "@/components/invoices/billing-packet-section";
 import { isPacketOutdated } from "../billing-packet-actions";
@@ -51,6 +53,30 @@ export default async function InvoiceDetailPage({
     : { data: [] as { id: string; full_name: string }[] };
   const recorderNameById = new Map((recorders ?? []).map((p) => [p.id, p.full_name]));
   const effectiveStatus = invoiceEffectiveStatus(invoice.status, invoice.due_date, Number(invoice.balance_due));
+
+  // QuickBooks send MVP (owner/admin only). Reads degrade to null/false if
+  // migration 0117 is not applied yet.
+  const { data: qbRoleData } = await supabase.rpc("current_role");
+  const canManageQuickbooks = ["owner", "admin"].includes((qbRoleData as string | null) ?? "");
+  const qbPartyType: "broker" | "customer" | null = invoice.broker_id ? "broker" : invoice.customer_id ? "customer" : null;
+  const qbPartyId: string | null = invoice.broker_id ?? invoice.customer_id ?? null;
+  const [qbSync, qbCustomerMapped, qbConnected] = canManageQuickbooks
+    ? await Promise.all([
+        getInvoiceQuickbooksSync(id),
+        qbPartyType && qbPartyId ? isPartyMappedToQuickbooks(qbPartyType, qbPartyId) : Promise.resolve(false),
+        isQuickbooksConnectedForOrg(),
+      ])
+    : [null, false, false];
+  const qbEligibleReason = !qbConnected
+    ? "QuickBooks is not connected."
+    : !["sent", "viewed", "partially_paid", "paid"].includes(invoice.status)
+      ? "the invoice must be issued (Sent, Viewed, Partially Paid, or Paid)."
+      : !(Number(invoice.total_amount) > 0)
+        ? "the invoice total is zero."
+        : !qbPartyType
+          ? "the invoice has no customer or broker."
+          : null;
+  const qbPartyHref = qbPartyType === "broker" ? `/brokers/${qbPartyId}` : qbPartyType === "customer" ? `/customers/${qbPartyId}` : null;
   const paymentRows: PaymentHistoryRow[] = (payments ?? []).map((p) => ({
     id: p.id,
     payment_number: p.payment_number,
@@ -365,6 +391,16 @@ export default async function InvoiceDetailPage({
           <FormTextarea label="Notes" name="notes" defaultValue={invoice.notes} />
         </FormGrid>
       </FormCard>
+
+      {canManageQuickbooks && (
+        <QuickbooksInvoiceSync
+          invoiceId={id}
+          sync={qbSync}
+          eligibleReason={qbEligibleReason}
+          customerMapped={qbCustomerMapped}
+          partyHref={qbPartyHref}
+        />
+      )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <SummaryTile label="Subtotal" value={invoice.subtotal_amount} />

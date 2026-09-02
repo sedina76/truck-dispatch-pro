@@ -7,8 +7,10 @@ import { FormField, FormGrid } from "@/components/ui/form-field";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { PartyArSection } from "@/components/finance/party-ar-section";
 import { CustomerProfitabilitySection } from "@/components/customers/customer-profitability-section";
+import { QuickbooksEntityMapper } from "@/components/integrations/quickbooks-entity-mapper";
+import { getEntityQuickbooksMapping } from "@/lib/integrations/quickbooks/sync-reads";
 import { updateCustomer } from "../actions";
-import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Phase 2G.9 (item 3): Customers is Business, open to every role, no
 // layout guard -- payment_terms_days, the AR section, the profitability
@@ -23,9 +25,12 @@ export default async function CustomerDetailPage({
 
   const { data: roleData } = await supabase.rpc("current_role");
   const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+  const canManageQuickbooks = OWNER_ADMIN_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
 
   const { data: customer } = await supabase.from("customers").select("*").eq("id", id).single();
   if (!customer) notFound();
+
+  const quickbooksMapping = canManageQuickbooks ? await getEntityQuickbooksMapping("customer", id) : null;
 
   // Phase 2G.12: payment_terms_days moved to customer_financials (2G.10
   // writer cutover) -- customers' own copy is stale the moment it's
@@ -88,6 +93,10 @@ export default async function CustomerDetailPage({
           </label>
         </FormGrid>
       </FormCard>
+
+      {canManageQuickbooks && (
+        <QuickbooksEntityMapper entityType="customer" entityId={id} entityName={customer.company_name} mapped={quickbooksMapping} />
+      )}
 
       {canSeeFinancials && <PartyArSection customerId={id} />}
 
