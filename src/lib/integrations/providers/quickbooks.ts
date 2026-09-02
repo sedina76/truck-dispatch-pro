@@ -422,6 +422,159 @@ export async function findInvoiceByDocNumber(accessToken: string, realmId: strin
   }
 }
 
+// ---------------------------------------------------------------------------
+// Payment sync (SANDBOX MVP) -- READ-ONLY QuickBooks reads. Discovers the
+// current status of an already-synced QBO invoice and the actual QBO
+// Payment transactions applied to it. Never writes to QuickBooks. Only the
+// Payment entity is inspected -- deposits, credit memos, journal entries
+// and bare "Balance = 0" are deliberately NOT treated as payments.
+// ---------------------------------------------------------------------------
+
+export type QboInvoiceStatus = {
+  id: string;
+  docNumber: string | null;
+  totalAmt: number;
+  balance: number;
+  txnDate: string | null;
+  syncToken: string | null;
+};
+
+export async function getInvoiceStatusById(
+  accessToken: string,
+  realmId: string,
+  qboInvoiceId: string
+): Promise<QboResult<{ invoice: QboInvoiceStatus | null }>> {
+  try {
+    const res = await fetch(`${apiBaseUrl()}/v3/company/${realmId}/invoice/${encodeURIComponent(qboInvoiceId)}`, {
+      method: "GET",
+      headers: qboHeaders(accessToken),
+    });
+    if (res.status === 404) return { ok: true, invoice: null };
+    if (!res.ok) return qboError(res);
+    const j = (await res.json()) as {
+      Invoice?: { Id: string; DocNumber?: string; TotalAmt?: number; Balance?: number; TxnDate?: string; SyncToken?: string };
+    };
+    const inv = j.Invoice;
+    if (!inv?.Id) return { ok: true, invoice: null };
+    return {
+      ok: true,
+      invoice: {
+        id: inv.Id,
+        docNumber: inv.DocNumber ?? null,
+        totalAmt: Number(inv.TotalAmt ?? 0),
+        balance: Number(inv.Balance ?? 0),
+        txnDate: inv.TxnDate ?? null,
+        syncToken: inv.SyncToken ?? null,
+      },
+    };
+  } catch {
+    return { ok: false, code: "NETWORK", message: "Could not reach QuickBooks.", reauthRequired: false };
+  }
+}
+
+export type QboInvoicePayment = {
+  id: string;
+  txnDate: string | null;
+  totalAmt: number; // the whole QBO Payment (may cover several invoices)
+  appliedToInvoice: number; // amount THIS invoice received from this Payment
+  referenceNumber: string | null;
+  paymentMethod: string | null;
+  customerId: string | null;
+  linkedInvoiceIds: string[];
+  voided: boolean;
+};
+
+type QboRawPayment = {
+  Id: string;
+  TxnDate?: string;
+  TotalAmt?: number;
+  PaymentRefNum?: string;
+  PrivateNote?: string;
+  PaymentMethodRef?: { value?: string; name?: string };
+  CustomerRef?: { value?: string };
+  Line?: {
+    Amount?: number;
+    LinkedTxn?: { TxnId?: string; TxnType?: string }[];
+  }[];
+};
+
+function mapInvoicePayment(p: QboRawPayment, qboInvoiceId: string): QboInvoicePayment {
+  let applied = 0;
+  const linked = new Set<string>();
+  for (const line of p.Line ?? []) {
+    const txns = (line.LinkedTxn ?? []).filter((t) => t.TxnType === "Invoice" && t.TxnId);
+    for (const t of txns) linked.add(String(t.TxnId));
+    if (txns.some((t) => String(t.TxnId) === qboInvoiceId)) {
+      applied += Number(line.Amount ?? 0);
+    }
+  }
+  const total = Number(p.TotalAmt ?? 0);
+  // A QBO Payment that was voided keeps its row but zeroes TotalAmt and its
+  // line amounts, and PrivateNote is set to "Voided.". Detect both.
+  const voided = /voided/i.test(p.PrivateNote ?? "") || (total === 0 && (p.Line ?? []).length > 0);
+  return {
+    id: p.Id,
+    txnDate: p.TxnDate ?? null,
+    totalAmt: total,
+    appliedToInvoice: Number(applied.toFixed(2)),
+    referenceNumber: p.PaymentRefNum ?? null,
+    paymentMethod: p.PaymentMethodRef?.name ?? p.PaymentMethodRef?.value ?? null,
+    customerId: p.CustomerRef?.value ?? null,
+    linkedInvoiceIds: [...linked],
+    voided,
+  };
+}
+
+// All QBO Payments that apply to one QBO invoice. QBO SQL cannot filter
+// Payment by LinkedTxn, so we query the customer's Payments and filter
+// client-side by the invoice link. One page (maxresults 100) -- more than
+// enough for a single freight invoice; documented as an MVP limit.
+export async function getPaymentsForInvoice(
+  accessToken: string,
+  realmId: string,
+  qboCustomerId: string,
+  qboInvoiceId: string
+): Promise<QboResult<{ payments: QboInvoicePayment[] }>> {
+  try {
+    const q = `select Id, TxnDate, TotalAmt, PaymentRefNum, PrivateNote, PaymentMethodRef, CustomerRef, Line from Payment where CustomerRef = '${escQuery(
+      qboCustomerId
+    )}' orderby TxnDate desc startposition 1 maxresults 100`;
+    const res = await fetch(`${apiBaseUrl()}/v3/company/${realmId}/query?query=${encodeURIComponent(q)}`, {
+      method: "GET",
+      headers: qboHeaders(accessToken),
+    });
+    if (!res.ok) return qboError(res);
+    const j = (await res.json()) as { QueryResponse?: { Payment?: QboRawPayment[] } };
+    const all = (j.QueryResponse?.Payment ?? []).map((p) => mapInvoicePayment(p, qboInvoiceId));
+    return { ok: true, payments: all.filter((p) => p.linkedInvoiceIds.includes(qboInvoiceId)) };
+  } catch {
+    return { ok: false, code: "NETWORK", message: "Could not reach QuickBooks.", reauthRequired: false };
+  }
+}
+
+// Re-fetch ONE QBO Payment by id and recompute what it applies to this
+// invoice. Used to revalidate immediately before an explicit import.
+export async function getInvoicePaymentById(
+  accessToken: string,
+  realmId: string,
+  qboPaymentId: string,
+  qboInvoiceId: string
+): Promise<QboResult<{ payment: QboInvoicePayment | null }>> {
+  try {
+    const res = await fetch(`${apiBaseUrl()}/v3/company/${realmId}/payment/${encodeURIComponent(qboPaymentId)}`, {
+      method: "GET",
+      headers: qboHeaders(accessToken),
+    });
+    if (res.status === 404) return { ok: true, payment: null };
+    if (!res.ok) return qboError(res);
+    const j = (await res.json()) as { Payment?: QboRawPayment };
+    if (!j.Payment?.Id) return { ok: true, payment: null };
+    return { ok: true, payment: mapInvoicePayment(j.Payment, qboInvoiceId) };
+  } catch {
+    return { ok: false, code: "NETWORK", message: "Could not reach QuickBooks.", reauthRequired: false };
+  }
+}
+
 export type QboInvoiceInput = {
   customerId: string;
   itemId: string;

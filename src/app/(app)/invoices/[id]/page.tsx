@@ -12,7 +12,9 @@ import { getLatestDocument } from "@/lib/documents/latest-document";
 import { getPodSignedUrl } from "../../loads/pod-actions";
 import { updateInvoice, addInvoiceLineItem } from "../actions";
 import { QuickbooksInvoiceSync } from "@/components/integrations/quickbooks-invoice-sync";
+import { QuickbooksInvoicePayments } from "@/components/integrations/quickbooks-invoice-payments";
 import { getInvoiceQuickbooksSync, isPartyMappedToQuickbooks, isQuickbooksConnectedForOrg } from "@/lib/integrations/quickbooks/sync-reads";
+import { getInvoicePaymentImports } from "@/lib/integrations/quickbooks/payment-reads";
 import { deductAdvancesIntoInvoice } from "../../advances/actions";
 import { BillingPacketSection } from "@/components/invoices/billing-packet-section";
 import { isPacketOutdated } from "../billing-packet-actions";
@@ -77,6 +79,10 @@ export default async function InvoiceDetailPage({
           ? "the invoice has no customer or broker."
           : null;
   const qbPartyHref = qbPartyType === "broker" ? `/brokers/${qbPartyId}` : qbPartyType === "customer" ? `/customers/${qbPartyId}` : null;
+  // Payment sync (owner/admin, and only once the invoice is synced). Reads
+  // degrade to [] if migration 0118 is not applied yet.
+  const qbPaymentImports =
+    canManageQuickbooks && qbSync?.status === "synced" ? await getInvoicePaymentImports(id) : [];
   const paymentRows: PaymentHistoryRow[] = (payments ?? []).map((p) => ({
     id: p.id,
     payment_number: p.payment_number,
@@ -400,6 +406,10 @@ export default async function InvoiceDetailPage({
           customerMapped={qbCustomerMapped}
           partyHref={qbPartyHref}
         />
+      )}
+
+      {canManageQuickbooks && qbSync?.status === "synced" && (
+        <QuickbooksInvoicePayments invoiceId={id} initialImports={qbPaymentImports} />
       )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
