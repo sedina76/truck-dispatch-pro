@@ -36,6 +36,17 @@ const PUBLIC_PATHS = [
   // webhook-auth architecture in this app yet, so this stays as narrow as
   // what actually exists.
   "/api/webhooks/resend",
+  // Phase D.2.2: same rationale as /api/webhooks/resend. Stripe's signed
+  // webhook POST (src/app/api/webhooks/stripe/route.ts) carries no Supabase
+  // session cookie -- it authenticates via Stripe-Signature +
+  // STRIPE_WEBHOOK_SECRET + stripe.webhooks.constructEvent, verified by the
+  // route BEFORE any DB work. "Public" here means only "the request may
+  // reach the route" -- NOT "trusted". matchesPath() matches this exact
+  // pathname and, by its trailing-slash prefix rule, any /api/webhooks/
+  // stripe/<child> (none exist: that directory holds only route.ts).
+  // Deliberately NOT "/api/webhooks" -- /api/webhooks/resend keeps its own
+  // entry and every other /api/webhooks/* stays authenticated.
+  "/api/webhooks/stripe",
 ];
 
 // Paths that must stay reachable even for a blocked (past_due/paused/

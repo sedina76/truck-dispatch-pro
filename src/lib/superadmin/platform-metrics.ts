@@ -26,7 +26,17 @@ import { createClient } from "@/lib/supabase/server";
 // Open Invoices           get_platform_operational_snapshot() RPC   count(status not in paid/void)                         current (needs 0045)
 // Recent Platform Activity organizations/subscriptions/billing_records/activity_logs timestamps  merged, sorted desc        REAL (not fabricated)
 
-export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "incomplete" | "paused";
+// Mirrors the public.subscription_status Postgres enum: the 0001 values
+// plus incomplete_expired + unpaid added in 0119_stripe_subscription_foundation.sql.
+export type SubscriptionStatus =
+  | "trialing"
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "incomplete"
+  | "paused"
+  | "incomplete_expired"
+  | "unpaid";
 
 export type CompanyRow = {
   id: string;
