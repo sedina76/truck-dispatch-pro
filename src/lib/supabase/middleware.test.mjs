@@ -151,6 +151,65 @@ test("D.2.2 #8: route verifies the signature BEFORE constructing the service-rol
 });
 
 // ===========================================================================
+// 9. webhook-secret whitespace hardening (route source assertions)
+// ===========================================================================
+test("D.2/hardening: route normalizes STRIPE_WEBHOOK_SECRET exactly once with (?? \"\").trim()", () => {
+  const norm = ROUTE_CODE.replace(/\s+/g, " ");
+  assert.ok(
+    norm.includes('const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET ?? "").trim();'),
+    "route computes a single trimmed webhookSecret const",
+  );
+  // exactly ONE read of the env var in executable code
+  const reads = [...ROUTE_CODE.matchAll(/process\.env\.STRIPE_WEBHOOK_SECRET/g)];
+  assert.equal(reads.length, 1, "STRIPE_WEBHOOK_SECRET is read exactly once");
+  // no un-normalized alias like `const webhookSecret: string = secret as string`
+  assert.equal(/=\s*secret\s+as\s+string/.test(ROUTE_CODE), false, "no untrimmed secret alias remains");
+  assert.equal(ROUTE_CODE.includes("process.env.STRIPE_WEBHOOK_SECRET;"), false, "no raw verbatim assignment");
+});
+
+test("D.2/hardening: the SAME webhookSecret const feeds preflight AND constructEvent", () => {
+  assert.ok(
+    /preflightWebhookRequest\(\{\s*secret:\s*webhookSecret\s*,/.test(ROUTE_CODE.replace(/\s+/g, " ")),
+    "preflightWebhookRequest receives the normalized webhookSecret",
+  );
+  assert.ok(
+    /constructEvent\(\s*rawBody\s*,\s*stripeSignature\s*,\s*webhookSecret\s*\)/.test(ROUTE_CODE.replace(/\s+/g, " ")),
+    "constructEvent receives the same webhookSecret (3rd arg), plus the raw body + signature header",
+  );
+});
+
+test("D.2/hardening: normalization happens BEFORE preflight and BEFORE constructEvent; raw body still via req.text()", () => {
+  const iNormalize = ROUTE_CODE.indexOf('(process.env.STRIPE_WEBHOOK_SECRET ?? "").trim()');
+  const iPreflight = ROUTE_CODE.indexOf("preflightWebhookRequest(");
+  const iRawBody = ROUTE_CODE.indexOf("req.text()");
+  const iConstruct = ROUTE_CODE.indexOf("constructEvent(");
+  assert.ok(iNormalize > 0 && iPreflight > 0 && iRawBody > 0 && iConstruct > 0);
+  assert.ok(iNormalize < iPreflight, "normalize before preflight");
+  assert.ok(iPreflight < iRawBody, "preflight (secret + signature-header) before the body is read");
+  assert.ok(iRawBody < iConstruct, "raw body read before constructEvent");
+  // body reaches constructEvent unchanged: same identifier, no parse/stringify between
+  const between = ROUTE_CODE.slice(iRawBody, iConstruct);
+  assert.equal(/JSON\.(parse|stringify)\(/.test(between), false, "no JSON parse/stringify before verification");
+  assert.equal(between.includes("req.json("), false, "no req.json() before verification");
+  assert.ok(/const rawBody = await req\.text\(\);/.test(ROUTE_CODE), "rawBody is the awaited req.text() string");
+  assert.ok(/constructEvent\(\s*rawBody\s*,/.test(ROUTE_CODE.replace(/\s+/g, " ")), "the SAME rawBody string is passed to constructEvent");
+});
+
+test("D.2/hardening: missing-signature behavior unchanged (still preflight 400, before body/DB)", () => {
+  // pure-function proof lives in subscription-state.test.mjs; here just prove
+  // the route still routes a null header through preflight before req.text().
+  const iSigRead = ROUTE_CODE.indexOf('req.headers.get("stripe-signature")');
+  const iPreflight = ROUTE_CODE.indexOf("preflightWebhookRequest(");
+  const iRawBody = ROUTE_CODE.indexOf("req.text()");
+  assert.ok(iSigRead > 0 && iSigRead < iPreflight && iPreflight < iRawBody);
+  assert.equal(
+    preflightWebhookRequest({ secret: "whsec_x", signature: null }).status,
+    400,
+    "null Stripe-Signature -> 400 missing_signature",
+  );
+});
+
+// ===========================================================================
 // GET behavior
 // ===========================================================================
 test("D.2.2: route defines a GET handler that returns 405; POST is the delivery method", () => {

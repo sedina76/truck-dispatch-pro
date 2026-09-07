@@ -34,18 +34,26 @@ import {
 export const runtime = "nodejs"; // Stripe signature verification needs Node crypto.
 
 export async function POST(req: Request): Promise<Response> {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  // Normalize the signing secret exactly ONCE, up front. A leading/trailing
+  // space or newline (a common artifact of pasting the whsec_... value into
+  // the Vercel env-var UI) would otherwise become part of the HMAC key and
+  // every real Stripe-signed delivery would fail with "No signatures found
+  // matching the expected signature for payload". This single normalized
+  // value is what both preflightWebhookRequest AND
+  // stripe.webhooks.constructEvent see -- there is no second, un-normalized
+  // read. Never logged, printed, hashed, compared, or sent client-side.
+  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET ?? "").trim();
   const signature = req.headers.get("stripe-signature");
 
-  const pre = preflightWebhookRequest({ secret, signature });
+  const pre = preflightWebhookRequest({ secret: webhookSecret, signature });
   if (!pre.ok) {
     if (pre.error === "webhook_not_configured") {
       console.error("[stripe-webhook] STRIPE_WEBHOOK_SECRET is not configured -- rejecting webhook.");
     }
     return NextResponse.json({ error: pre.error }, { status: pre.status });
   }
-  // preflightWebhookRequest guarantees both are non-empty strings here.
-  const webhookSecret: string = secret as string;
+  // preflightWebhookRequest guarantees `signature` is a non-empty string
+  // here, and `webhookSecret` a non-empty, whitespace-trimmed string.
   const stripeSignature: string = signature as string;
 
   // Raw body -- read AFTER the config/signature-header preflight, still

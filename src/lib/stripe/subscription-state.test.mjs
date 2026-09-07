@@ -203,6 +203,56 @@ test("R1: missing signature header -> 400 (constructEvent-throw -> 400 is handle
 });
 
 // ===========================================================================
+// R2b -- whitespace-safe webhook-secret normalization (route.ts hardening).
+//
+// route.ts computes  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET
+// ?? "").trim();  ONCE and feeds that SAME value to both preflightWebhook-
+// Request AND stripe.webhooks.constructEvent. route.ts can't be imported
+// under `node --test`, so replicate that one expression here and prove the
+// contract it must satisfy.
+// ===========================================================================
+const normalizeWebhookSecret = (raw) => (raw ?? "").trim();
+
+test("R2b: surrounding whitespace in STRIPE_WEBHOOK_SECRET is stripped before use", () => {
+  // leading space, trailing newline, tab+CR -- all common paste artifacts
+  for (const raw of [" whsec_abc123", "whsec_abc123\n", "\twhsec_abc123\r\n", "  whsec_abc123  "]) {
+    assert.equal(normalizeWebhookSecret(raw), "whsec_abc123", `normalized: ${JSON.stringify(raw)}`);
+  }
+  // the normalized value is a non-empty string -> preflight passes it through
+  assert.deepEqual(
+    preflightWebhookRequest({ secret: normalizeWebhookSecret("  whsec_abc123\n"), signature: "t=1,v1=x" }),
+    { ok: true },
+  );
+});
+
+test("R2b: the SAME normalized secret is what constructEvent would receive (no second untrimmed read)", () => {
+  const raw = "\n  whsec_padded_secret  \n";
+  const normalized = normalizeWebhookSecret(raw);
+  assert.equal(normalized, "whsec_padded_secret");
+  // route.ts: preflightWebhookRequest({ secret: webhookSecret, ... }) and
+  // constructEvent(rawBody, stripeSignature, webhookSecret) -- one const.
+  assert.deepEqual(preflightWebhookRequest({ secret: normalized, signature: "t=1,v1=x" }), { ok: true });
+  // there is NO trailing/leading whitespace left to corrupt the HMAC key
+  assert.equal(normalized, normalized.trim());
+  assert.ok(!/^\s|\s$/.test(normalized));
+});
+
+test("R2b: blank / whitespace-only / undefined / null secret still -> webhook_not_configured", () => {
+  for (const raw of [undefined, null, "", "   ", "\n", "\t\r\n "]) {
+    assert.deepEqual(
+      preflightWebhookRequest({ secret: normalizeWebhookSecret(raw), signature: "t=1,v1=x" }),
+      { ok: false, status: 503, error: "webhook_not_configured" },
+      `blank secret: ${JSON.stringify(raw)}`,
+    );
+  }
+});
+
+test("R2b: normalization does NOT touch interior characters of the secret", () => {
+  // Stripe secrets have no interior whitespace, but prove .trim() is edge-only.
+  assert.equal(normalizeWebhookSecret("  whsec_aa_bb-cc.dd  "), "whsec_aa_bb-cc.dd");
+});
+
+// ===========================================================================
 // R3 -- unsupported signed event -> no-op success, ZERO DB work
 // ===========================================================================
 test("R3: unsupported signed event -> 200 ignored, no DB calls at all", async () => {
