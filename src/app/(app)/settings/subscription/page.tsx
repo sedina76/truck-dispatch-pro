@@ -3,6 +3,7 @@ import { getCurrentOrgId } from "@/lib/actions/records";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { CheckoutCta } from "./checkout-cta";
+import { ManageSubscriptionButton } from "./manage-subscription-button";
 import {
   checkoutReturnNotice,
   evaluateCheckoutGate,
@@ -56,6 +57,8 @@ export default async function SubscriptionSettingsPage({
         status: string;
         grandfathered_at: string | null;
         past_due_since: string | null;
+        trial_end: string | null;
+        stripe_customer_id: string | null;
         subscription_plans: { id: string; name: string; tier: string } | null;
       })
     | null;
@@ -119,10 +122,26 @@ export default async function SubscriptionSettingsPage({
           <div>
             <p className="text-sm font-medium">Current plan</p>
             <p className="mt-1 text-2xl font-semibold">{currentPlan?.name ?? "No active plan"}</p>
+            {status === "trialing" && sub?.trial_end && (
+              <p className="mt-1 text-sm text-[var(--color-text-muted)]">
+                Free trial ends{" "}
+                <span className="font-medium text-[var(--color-text)]">
+                  {new Intl.DateTimeFormat("en-US", {
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                    timeZone: "UTC",
+                  }).format(new Date(sub.trial_end))}
+                </span>
+              </p>
+            )}
             {grandfatheredAt !== null && (
               <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                 Legacy billing access &mdash; this organization is not billed through Stripe.
               </p>
+            )}
+            {isOwnerOrAdmin && sub?.stripe_customer_id && grandfatheredAt === null && (
+              <ManageSubscriptionButton />
             )}
           </div>
           {sub && <StatusBadge status={sub.status} />}
@@ -172,7 +191,7 @@ function gateNote(
       return "This organization does not require a Stripe subscription.";
     case "existing_subscription":
       return isOwnerOrAdmin
-        ? "Your subscription is managed through Stripe. Contact support to change plans."
+        ? "Your subscription is managed securely through Stripe."
         : null;
     default:
       return null;

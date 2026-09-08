@@ -69,6 +69,84 @@ export async function startSubscriptionCheckout(
   });
 }
 
+
+export type CustomerPortalResult =
+  | { ok: true; url: string }
+  | { ok: false; message: string };
+
+export async function createStripeCustomerPortalSession(): Promise<CustomerPortalResult> {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, message: "Please sign in to manage billing." };
+
+  const { data: allowed } = await supabase.rpc("has_role", { p_roles: ["owner", "admin"] });
+  if (!allowed) {
+    return { ok: false, message: "Only an owner or admin can manage billing." };
+  }
+
+  let organizationId: string;
+  try {
+    organizationId = await getCurrentOrgId();
+  } catch {
+    return { ok: false, message: "No organization is associated with your account." };
+  }
+
+  const service = createServiceRoleClient();
+  const { data: subscription, error } = await service
+    .from("organization_subscriptions")
+    .select("stripe_customer_id, grandfathered_at")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[stripe-portal] subscription read failed:", error.message);
+    return { ok: false, message: "Could not open billing management. Please try again." };
+  }
+
+  const row = subscription as {
+    stripe_customer_id: string | null;
+    grandfathered_at: string | null;
+  } | null;
+
+  if (!row?.stripe_customer_id || row.grandfathered_at !== null) {
+    return { ok: false, message: "This organization is not connected to Stripe billing." };
+  }
+
+  const rawSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? "").trim();
+  let returnUrl: string;
+  try {
+    const parsed = new URL(rawSiteUrl || "http://localhost:3000");
+    if (
+      process.env.NODE_ENV === "production" &&
+      (parsed.protocol !== "https:" ||
+        parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1")
+    ) {
+      throw new Error("invalid production URL");
+    }
+    returnUrl = new URL("/settings/subscription", parsed).toString();
+  } catch {
+    console.error("[stripe-portal] NEXT_PUBLIC_SITE_URL is invalid");
+    return { ok: false, message: "Billing management is temporarily unavailable." };
+  }
+
+  try {
+    const session = await getStripe().billingPortal.sessions.create({
+      customer: row.stripe_customer_id,
+      return_url: returnUrl,
+    });
+    return { ok: true, url: session.url };
+  } catch (error) {
+    console.error("[stripe-portal] session creation failed", {
+      name: error instanceof Error ? error.name : "unknown",
+    });
+    return { ok: false, message: "Could not open billing management. Please try again." };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PHASE D.2 -- explicit, owner/admin-triggered reconciliation for the
 // caller's OWN organization. Uses the SAME canonical normalization pipeline
