@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
 import { insertRecord, updateRecord } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
@@ -31,12 +32,14 @@ export async function updateAdvance(id: string, formData: FormData) {
 }
 
 export async function markAdvanceReimbursed(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   await supabase.from("dispatch_advances").update({ status: "reimbursed" }).eq("id", id);
   revalidatePath("/advances");
 }
 
 export async function markAdvanceWaived(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   await supabase.from("dispatch_advances").update({ status: "waived" }).eq("id", id);
   revalidatePath("/advances");
@@ -47,6 +50,7 @@ export async function markAdvanceWaived(id: string) {
 // void | Promise<void>. Nothing currently reads the count; revalidatePath
 // is what actually surfaces the result (the new deduction line items).
 export async function deductAdvancesIntoSettlement(settlementId: string): Promise<void> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("deduct_pending_advances_into_settlement", {
     p_settlement_id: settlementId,
@@ -57,6 +61,7 @@ export async function deductAdvancesIntoSettlement(settlementId: string): Promis
 }
 
 export async function deductAdvancesIntoInvoice(invoiceId: string): Promise<void> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("deduct_pending_advances_into_invoice", {
     p_invoice_id: invoiceId,

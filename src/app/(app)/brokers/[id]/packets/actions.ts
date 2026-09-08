@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess, checkOperationalAccess } from "@/lib/billing/operational-access";
 import { redirect } from "next/navigation";
 import { createHash } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
@@ -28,6 +29,7 @@ import { sendTenantEmail } from "@/lib/email/send-pipeline";
 type ActionResult<T = undefined> = T extends undefined ? { ok: true } | { ok: false; error: string } : { ok: true; data: T } | { ok: false; error: string };
 
 export async function createBrokerPacketDraft(brokerId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const carrierId = emptyToNull(formData.get("carrier_id"));
@@ -38,6 +40,7 @@ export async function createBrokerPacketDraft(brokerId: string, formData: FormDa
 }
 
 export async function addBrokerPacketItem(brokerId: string, packetId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const documentId = String(formData.get("document_id") || "");
   if (!documentId) throw new Error("Select a document to add.");
@@ -48,6 +51,7 @@ export async function addBrokerPacketItem(brokerId: string, packetId: string, fo
 }
 
 export async function removeBrokerPacketItem(brokerId: string, packetId: string, itemId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const { error } = await supabase.rpc("remove_broker_packet_item", { p_packet_id: packetId, p_item_id: itemId });
@@ -56,6 +60,7 @@ export async function removeBrokerPacketItem(brokerId: string, packetId: string,
 }
 
 export async function moveBrokerPacketItem(brokerId: string, packetId: string, itemIds: string[], itemId: string, direction: -1 | 1) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const index = itemIds.indexOf(itemId);
   const swapWith = index + direction;
@@ -94,6 +99,9 @@ export async function setBrokerPacketRequirements(
   const supabase = await createClient();
   const { data: role } = await supabase.rpc("current_role");
   if (!["owner", "admin", "dispatcher"].includes(String(role))) return { ok: false, error: "You do not have permission to edit broker packet requirements." };
+
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
 
   const { data: broker } = await supabase.from("brokers").select("organization_id").eq("id", brokerId).maybeSingle();
   if (!broker) return { ok: false, error: "Broker not found." };
@@ -203,6 +211,7 @@ async function uploadGeneratedPacket(params: {
 // just-uploaded (never-finalized) object -- an already-finalized/historical
 // object is never touched by this function.
 export async function generateBrokerPacket(brokerId: string, packetId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -287,6 +296,7 @@ export async function generateBrokerPacket(brokerId: string, packetId: string) {
 }
 
 export async function deleteBrokerPacketDraft(brokerId: string, packetId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const { error } = await supabase.rpc("delete_broker_packet_draft", { p_packet_id: packetId });
@@ -296,6 +306,7 @@ export async function deleteBrokerPacketDraft(brokerId: string, packetId: string
 }
 
 export async function voidBrokerPacket(brokerId: string, packetId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin"]);
   const supabase = await createClient();
   const reason = String(formData.get("reason") || "");
@@ -334,6 +345,8 @@ export async function sendBrokerPacket(
     if (!user) return { ok: false, error: "Not authenticated." };
     const { data: role } = await supabase.rpc("current_role");
     if (!["owner", "admin", "dispatcher"].includes(String(role))) return { ok: false, error: "You do not have permission to send broker packets." };
+    const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+    if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
     const organizationId = await getCurrentOrgId();
 
     // Independently re-load the packet server-side -- every value used

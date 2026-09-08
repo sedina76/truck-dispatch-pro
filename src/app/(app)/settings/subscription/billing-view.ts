@@ -5,7 +5,7 @@
 // neither re-derives these rules.
 //
 // PHASE D.2.8 -- production self-service Checkout entry point. This module
-// decides ONLY whether to SHOW a "Start 14-Day Trial" CTA. The authoritative
+// decides ONLY whether to SHOW a "Start 30-Day Free Trial" CTA. The authoritative
 // eligibility + concurrency + idempotency checks live server-side in
 // src/lib/stripe/checkout.ts (createSubscriptionCheckout); the constants
 // below intentionally MIRROR that module and must be kept in sync with it.

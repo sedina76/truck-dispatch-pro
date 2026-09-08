@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
 // Phase 2G.10 writer cutover: rate is written to load_financials, not
@@ -75,6 +76,7 @@ async function writeLoadFinancials(supabase: Awaited<ReturnType<typeof createCli
 // -- this action never creates the invoice itself, only detects that the
 // trigger's condition was just met so it can route somewhere useful.
 export async function updateLoad(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { data: before } = await supabase.from("loads").select("status").eq("id", id).single();

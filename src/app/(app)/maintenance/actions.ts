@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
@@ -74,6 +75,7 @@ function maintenanceValues(formData: FormData) {
 }
 
 export async function createMaintenanceRecord(formData: FormData): Promise<{ id: string }> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!String(formData.get("service_type") || "").trim()) throw new Error("Service type is required.");
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -92,6 +94,7 @@ export async function createMaintenanceRecord(formData: FormData): Promise<{ id:
 }
 
 export async function updateMaintenanceRecord(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
@@ -141,6 +144,7 @@ export async function updateMaintenanceRecord(id: string, formData: FormData) {
 // can never create a second expense (spec IDEMPOTENCY / TEST G).
 // ---------------------------------------------------------------------------
 export async function createMaintenanceExpense(id: string): Promise<{ expenseId: string }> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
@@ -199,6 +203,7 @@ export async function createMaintenanceExpense(id: string): Promise<{ expenseId:
 }
 
 export async function setMaintenanceStatus(id: string, status: "open" | "completed" | "cancelled") {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { error } = await supabase.from("maintenance_records").update({ status }).eq("id", id);
@@ -215,6 +220,7 @@ export async function setMaintenanceStatus(id: string, status: "open" | "complet
 // the same unit (spec OUT OF SERVICE / DISPATCH).
 // ---------------------------------------------------------------------------
 export async function setEquipmentStatusFromMaintenance(truckId: string | null, trailerId: string | null, targetStatus: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
 
   if (targetStatus === "active") {
@@ -248,6 +254,7 @@ const ALLOWED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"
 const MAX_BYTES = 15 * 1024 * 1024;
 
 export async function uploadMaintenanceDocument(maintenanceId: string, documentType: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!MAINTENANCE_DOCUMENT_TYPES.has(documentType)) throw new Error(`Unsupported document type: ${documentType}`);
   const file = formData.get("file");
   if (!(file instanceof File)) throw new Error("No file provided.");

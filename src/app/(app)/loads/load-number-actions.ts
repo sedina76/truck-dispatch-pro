@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Controlled Owner/Admin load-number override (0114 revision 2). The
@@ -33,6 +34,12 @@ export async function changeLoadNumber(loadId: string, newNumber: string, reason
   const role = roleData as OrgRole | null;
   if (!role || !OWNER_ADMIN_ROLES.includes(role)) {
     return { ok: false, error: "Only owners or admins may change a load number." };
+  }
+
+  // D.2.11 SaaS paywall -- before the change_load_number RPC write.
+  const access = await checkOperationalAccess();
+  if (!access.ok) {
+    return { ok: false, error: "Your organization's subscription does not permit this action." };
   }
 
   // ---- Re-fetch the load scoped to the CALLER's own organization -------

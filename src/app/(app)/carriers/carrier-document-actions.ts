@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull } from "@/lib/utils/form";
@@ -37,6 +38,7 @@ export async function uploadCarrierDocument(
   documentType: string,
   formData: FormData
 ): Promise<CarrierDocumentUploadResult> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!ALLOWED_TYPES.has(documentType)) {
     return { ok: false, error: "That document type cannot be uploaded here." };
   }
@@ -158,6 +160,7 @@ export async function getCarrierDocumentSignedUrl(documentId: string, download: 
 // guard is explicit. Removes the storage object after the row so nothing
 // is orphaned.
 export async function deleteCarrierDocument(documentId: string, carrierId: string): Promise<void> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { getQuickbooksAccessToken } from "./quickbooks-actions";
 import {
   getInvoiceStatusById,
@@ -62,6 +63,11 @@ async function requireOwnerAdminOrg(): Promise<
   const supabase = await createClient();
   const { data: allowed } = await supabase.rpc("has_role", { p_roles: ["owner", "admin"] });
   if (!allowed) return { error: { ok: false, code: "FORBIDDEN", message: "Only an owner or admin can import QuickBooks payments." } };
+  // D.2.11 SaaS paywall -- shared gate for every QuickBooks payment-import action.
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) {
+    return { error: { ok: false, code: "BILLING_ACCESS_REQUIRED", message: "Your organization's subscription does not permit this action." } };
+  }
   let orgId: string;
   try {
     orgId = await getCurrentOrgId();

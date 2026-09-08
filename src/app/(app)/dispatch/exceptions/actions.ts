@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { syncExceptionsForOrganization, operationalExceptionsTableExists } from "@/lib/exceptions/sync";
 import type { ExceptionListRow, ExceptionSeverity, ExceptionStatus, ExceptionType } from "@/lib/exceptions/types";
 
@@ -280,6 +281,12 @@ async function requireExceptionOwnership(exceptionId: string) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false as const, error: "Not authenticated." };
+
+  // D.2.11 SaaS paywall -- shared gate for every exception mutation below.
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) {
+    return { ok: false as const, error: "Your organization's subscription does not permit this action." };
+  }
 
   let organizationId: string;
   try {

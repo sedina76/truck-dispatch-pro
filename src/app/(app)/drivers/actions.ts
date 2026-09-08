@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId, updateRecord } from "@/lib/actions/records";
@@ -102,6 +103,7 @@ async function writeDriverCompensation(supabase: Awaited<ReturnType<typeof creat
 // stored in a plain column -- only ssn_last4 (harmless on its own) and the
 // pgp_sym_encrypt() ciphertext are persisted.
 export async function createDriver(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const ssn = String(formData.get("ssn") || "").trim();
   const confirmSsn = String(formData.get("confirm_ssn") || "").trim();
 
@@ -152,6 +154,7 @@ export async function updateDriver(id: string, formData: FormData) {
 }
 
 export async function setDriverPii(driverId: string, field: "ssn" | "direct_deposit_account" | "direct_deposit_routing", value: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("set_driver_pii", {
     p_driver_id: driverId,
@@ -178,6 +181,7 @@ export async function revealDriverPii(
 }
 
 export async function setDriverPortalPin(driverId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const phone = String(formData.get("portal_phone") || "");
   const pin = String(formData.get("portal_pin") || "");
@@ -191,6 +195,7 @@ export async function setDriverPortalPin(driverId: string, formData: FormData) {
 }
 
 export async function revokeDriverPortalAccess(driverId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("revoke_driver_portal_access", { p_driver_id: driverId });
   if (error) throw new Error(error.message);

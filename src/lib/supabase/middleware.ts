@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { resolveBillingAccess } from "@/lib/billing/access-policy";
 
 const PUBLIC_PATHS = [
   "/login",
@@ -49,10 +50,26 @@ const PUBLIC_PATHS = [
   "/api/webhooks/stripe",
 ];
 
-// Paths that must stay reachable even for a blocked (past_due/paused/
-// canceled/incomplete) tenant -- otherwise there'd be no way to see why
-// they're blocked, or for a platform admin (no organization_id) to reach
-// their own console.
+// Paths a tenant whose billing has lapsed may still reach, so they can
+// actually recover (see why they're blocked, re-subscribe, sign out) instead
+// of hitting a redirect loop. Deliberately NARROW -- no operational area
+// (/loads, /dispatch, /invoices, /payments, /settlements, /compliance,
+// /quickbooks, ...) is here.
+//   /settings/subscription -- the billing/recovery page itself, and the
+//     Stripe Checkout success/cancel return target (?checkout=complete|
+//     canceled). Its own server action re-checks owner/admin.
+//   /onboarding -- setup-only surface; a new self-service org may still be
+//     finishing setup while its billing row is pending. Not operational.
+//   /admin -- the platform console (src/app/(superadmin)/**). It has its
+//     OWN hard guard: (superadmin)/layout.tsx redirects anyone who is not
+//     is_platform_admin to /dashboard. Platform admins carry
+//     organization_id = null, so the billing gate below never evaluates for
+//     them anyway; this entry only keeps a dual-role admin (platform admin
+//     who also belongs to a billing-lapsed org) able to reach the console.
+//     An ordinary org user who lands here is still bounced by that layout.
+//   ...PUBLIC_PATHS -- /login, /auth/callback, the signed webhook endpoints,
+//     etc. Session-cookie refresh happens at the top of updateSession,
+//     before any gate, so sign-out/session maintenance always works.
 const SUBSCRIPTION_GATE_EXEMPT_PATHS = [
   "/settings/subscription",
   "/onboarding",
@@ -60,16 +77,15 @@ const SUBSCRIPTION_GATE_EXEMPT_PATHS = [
   ...PUBLIC_PATHS,
 ];
 
-const BLOCKED_SUBSCRIPTION_STATUSES = ["past_due", "paused", "canceled", "incomplete"];
-
 function matchesPath(pathname: string, path: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
 // Refreshes the Supabase auth session on every request, redirects
-// unauthenticated users away from the (app) route group, and blocks a
-// tenant whose subscription has lapsed from everything except the page
-// that explains why. Called from the root middleware.ts.
+// unauthenticated users away from the (app) route group, and -- via the
+// authoritative resolver in src/lib/billing/access-policy.ts -- redirects a
+// tenant without full billing access to /settings/subscription, leaving only
+// the narrow recovery paths reachable. Called from the root middleware.ts.
 export async function updateSession(request: NextRequest) {
   // /service-unavailable itself must never depend on Supabase being reachable --
   // it's the one page that has to render when the backend is down.
@@ -140,13 +156,47 @@ export async function updateSession(request: NextRequest) {
     }
 
     if (profile?.organization_id) {
-      const { data: subscription } = await supabase
-        .from("organization_subscriptions")
-        .select("status")
-        .eq("organization_id", profile.organization_id)
-        .maybeSingle();
+      // Minimum facts for the authoritative resolver. Both reads are on the
+      // RLS-scoped anon client (never service-role) and keyed on the
+      // authenticated profile's org id -- never a browser-supplied id.
+      const [orgResult, subscriptionResult] = await Promise.all([
+        supabase
+          .from("organizations")
+          .select("billing_required")
+          .eq("id", profile.organization_id)
+          .maybeSingle(),
+        supabase
+          .from("organization_subscriptions")
+          .select("status, grandfathered_at, past_due_since")
+          .eq("organization_id", profile.organization_id)
+          .maybeSingle(),
+      ]);
 
-      if (subscription && BLOCKED_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
+      if (orgResult.error || subscriptionResult.error) {
+        // Same convention as the profile read above: a real query error is
+        // "backend unreachable", not "no access".
+        const maintenanceUrl = request.nextUrl.clone();
+        maintenanceUrl.pathname = "/service-unavailable";
+        return NextResponse.redirect(maintenanceUrl);
+      }
+
+      const org = orgResult.data as { billing_required: boolean } | null;
+      const subscription = subscriptionResult.data as {
+        status: string | null;
+        grandfathered_at: string | null;
+        past_due_since: string | null;
+      } | null;
+
+      const decision = resolveBillingAccess({
+        billingRequired: org?.billing_required === true,
+        subscriptionExists: subscription !== null,
+        grandfatheredAt: subscription?.grandfathered_at ?? null,
+        status: subscription?.status ?? null,
+        pastDueSince: subscription?.past_due_since ?? null,
+        now: new Date(),
+      });
+
+      if (decision.access === "billing_only") {
         const blockedUrl = request.nextUrl.clone();
         blockedUrl.pathname = "/settings/subscription";
         return NextResponse.redirect(blockedUrl);

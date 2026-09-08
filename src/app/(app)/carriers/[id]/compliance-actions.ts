@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
 
 type ActionResult<T = undefined> = T extends undefined ? { ok: true } | { ok: false; error: string } : { ok: true; data: T } | { ok: false; error: string };
@@ -13,6 +14,7 @@ type ActionResult<T = undefined> = T extends undefined ? { ok: true } | { ok: fa
 // SECURITY DEFINER functions; nothing here is a substitute for that.
 
 export async function suspendCarrierAction(carrierId: string, reason: string): Promise<ActionResult> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("suspend_carrier", { p_carrier_id: carrierId, p_reason: reason });
   if (error) return { ok: false, error: error.message };
@@ -21,6 +23,7 @@ export async function suspendCarrierAction(carrierId: string, reason: string): P
 }
 
 export async function liftCarrierSuspensionAction(carrierId: string, reason: string): Promise<ActionResult> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("lift_carrier_suspension", { p_carrier_id: carrierId, p_reason: reason || null });
   if (error) return { ok: false, error: error.message };
@@ -57,6 +60,7 @@ export async function createCarrierComplianceOverrideAction(
   reason: string,
   expiresAt: string | null
 ): Promise<ActionResult> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const resolved = await resolveRequirementDefinitionId(supabase, requirementKey);
   if ("error" in resolved) return { ok: false, error: resolved.error };
@@ -78,6 +82,7 @@ export async function revokeCarrierComplianceOverrideAction(
   requirementKey: string,
   reason: string
 ): Promise<ActionResult> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const resolved = await resolveRequirementDefinitionId(supabase, requirementKey);
   if ("error" in resolved) return { ok: false, error: resolved.error };

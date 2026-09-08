@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
@@ -38,6 +39,7 @@ function expenseValues(formData: FormData) {
 }
 
 export async function createExpense(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -62,6 +64,7 @@ export async function createExpense(formData: FormData) {
 }
 
 export async function updateExpense(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("expenses").update(expenseValues(formData)).eq("id", id);
   if (error) throw new Error(error.message);
@@ -70,6 +73,7 @@ export async function updateExpense(id: string, formData: FormData) {
 }
 
 export async function submitExpense(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("expenses").update({ status: "submitted" }).eq("id", id);
   if (error) throw new Error(error.message);
@@ -77,6 +81,7 @@ export async function submitExpense(id: string) {
 }
 
 export async function approveExpense(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("expenses").update({ status: "approved" }).eq("id", id);
   if (error) throw new Error(error.message);
@@ -85,6 +90,7 @@ export async function approveExpense(id: string) {
 }
 
 export async function markExpensePaid(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase
     .from("expenses")
@@ -100,6 +106,7 @@ export async function markExpensePaid(id: string, formData: FormData) {
 }
 
 export async function voidExpense(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("void_reason") || "").trim();
   if (!reason) throw new Error("A reason is required to void an expense.");
   const supabase = await createClient();
@@ -128,6 +135,7 @@ const RECEIPT_DOCUMENT_TYPES = new Set([
 ]);
 
 export async function uploadExpenseReceipt(expenseId: string, documentType: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!RECEIPT_DOCUMENT_TYPES.has(documentType)) throw new Error(`Unsupported document type: ${documentType}`);
   const file = formData.get("file");
   if (!(file instanceof File)) throw new Error("No file provided.");

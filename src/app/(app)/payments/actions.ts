@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
 // Record Payment. Collectible-status/overpayment/void-invoice/amount<=0
@@ -40,6 +41,7 @@ export async function recordPayment(formData: FormData) {
     redirect(`/payments/new?invoice_id=${invoiceId}&error=${encodeURIComponent("Enter an amount greater than zero.")}`);
   }
 
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
@@ -106,6 +108,7 @@ export async function voidPayment(paymentId: string, invoiceId: string, formData
     redirect(`/payments/${paymentId}?error=${encodeURIComponent("A reason is required to void a payment.")}`);
   }
 
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const {
     data: { user },
@@ -138,6 +141,7 @@ export async function voidPayment(paymentId: string, invoiceId: string, formData
 // re-record is the correction path for those, per spec) so there is no
 // generic updatePayment() anymore.
 export async function updatePaymentNotes(paymentId: string, invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase
     .from("payments")

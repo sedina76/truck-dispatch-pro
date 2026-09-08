@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { forceRefreshRouteIntelligence } from "@/lib/routing/evaluate-route";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
@@ -173,6 +174,9 @@ export async function refreshDispatchEta(dispatchId: string): Promise<{ ok: true
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
 
   let organizationId: string;
   try {

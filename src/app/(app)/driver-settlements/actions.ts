@@ -4,12 +4,14 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
 // ---------------------------------------------------------------------------
 // Driver Pay Rates
 // ---------------------------------------------------------------------------
 export async function addDriverPayRate(driverId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -42,6 +44,7 @@ export async function addDriverPayRate(driverId: string, formData: FormData) {
 // Settlement creation / draft editing
 // ---------------------------------------------------------------------------
 export async function createDriverSettlement(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const driverId = String(formData.get("driver_id") || "");
   const periodStart = String(formData.get("period_start") || "");
   const periodEnd = String(formData.get("period_end") || "");
@@ -102,6 +105,7 @@ export async function createDriverSettlement(formData: FormData) {
 }
 
 export async function addSettlementLoad(settlementId: string, driverId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const loadId = String(formData.get("load_id") || "");
   if (!loadId) throw new Error("Select a load.");
 
@@ -146,6 +150,7 @@ export async function addSettlementLoad(settlementId: string, driverId: string, 
 }
 
 export async function removeSettlementLoad(settlementId: string, itemId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("driver_settlement_items").delete().eq("id", itemId);
   if (error) throw new Error(error.message);
@@ -153,6 +158,7 @@ export async function removeSettlementLoad(settlementId: string, itemId: string)
 }
 
 export async function addSettlementAdjustment(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -187,6 +193,7 @@ export async function addSettlementAdjustment(settlementId: string, formData: Fo
 // or if it would exceed the remaining recoverable balance -- the same
 // server-side backstop the carrier-side link uses.
 export async function linkMaintenanceRecovery(settlementId: string, driverId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const maintenanceId = String(formData.get("maintenance_id") || "");
   if (!maintenanceId) throw new Error("Select a maintenance record.");
   const amount = toNumber(formData.get("amount"));
@@ -237,6 +244,7 @@ export async function linkMaintenanceRecovery(settlementId: string, driverId: st
 // if it would exceed the remaining recoverable balance -- the same
 // server-side backstop the carrier-side link uses.
 export async function linkFuelRecovery(settlementId: string, driverId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const fuelLogId = String(formData.get("fuel_log_id") || "");
   if (!fuelLogId) throw new Error("Select a fuel purchase.");
   const amount = toNumber(formData.get("amount"));
@@ -279,6 +287,7 @@ export async function linkFuelRecovery(settlementId: string, driverId: string, f
 }
 
 export async function removeSettlementAdjustment(settlementId: string, adjustmentId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("driver_settlement_adjustments").delete().eq("id", adjustmentId);
   if (error) throw new Error(error.message);
@@ -289,6 +298,7 @@ export async function removeSettlementAdjustment(settlementId: string, adjustmen
 // Approval / Void
 // ---------------------------------------------------------------------------
 export async function approveDriverSettlement(settlementId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.rpc("approve_driver_settlement", { p_settlement_id: settlementId });
   if (error) throw new Error(error.message);
@@ -297,6 +307,7 @@ export async function approveDriverSettlement(settlementId: string) {
 }
 
 export async function voidDriverSettlement(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("void_reason") || "").trim();
   const supabase = await createClient();
   const { error } = await supabase.rpc("void_driver_settlement", { p_settlement_id: settlementId, p_reason: reason });
@@ -313,6 +324,7 @@ export async function voidDriverSettlement(settlementId: string, formData: FormD
 // recordPayment() (src/app/(app)/payments/actions.ts).
 // ---------------------------------------------------------------------------
 export async function recordDriverSettlementPayment(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const amount = toNumber(formData.get("amount"));
   if (!amount || amount <= 0) throw new Error("Enter an amount greater than zero.");
 
@@ -341,6 +353,7 @@ export async function recordDriverSettlementPayment(settlementId: string, formDa
 }
 
 export async function voidDriverSettlementPayment(settlementId: string, paymentId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("void_reason") || "").trim();
   if (!reason) throw new Error("A reason is required to void a payment.");
 

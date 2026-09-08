@@ -1,6 +1,7 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
@@ -22,6 +23,7 @@ const UNIQUE_VIOLATION = "23505";
 // is applied anyway so a failed PDF build/upload never leaves an orphan
 // "generated" row with no file behind it.
 export async function generateStatement(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const partyType = String(formData.get("party_type")) as StatementPartyType;
   const partyId = String(formData.get("party_id") || "");
   const statementType = String(formData.get("statement_type")) as StatementKind;
@@ -112,6 +114,7 @@ export async function getStatementSignedUrl(storagePath: string, download: boole
 // sent_at/sent_by/status='sent' on failure.
 // ---------------------------------------------------------------------------
 export async function sendStatement(statementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { data: statement } = await supabase.from("statements").select("id, recipient_email").eq("id", statementId).single();
   if (!statement) throw new Error("Statement not found.");

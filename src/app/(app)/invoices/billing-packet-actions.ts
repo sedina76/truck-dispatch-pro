@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { generateBillingPacket as buildPacket, checkPacketReadiness } from "@/lib/billing-packet/generate";
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { resolveOrgName } from "@/lib/email/resolve-entity";
@@ -29,6 +30,8 @@ export type GeneratePacketResult = { ok: true; skippedDocuments: { label: string
 // applied here for the same reason, not a new pattern. The caller
 // (billing-packet-section.tsx's client-side button) reads this directly.
 export async function generatePacket(invoiceId: string): Promise<GeneratePacketResult> {
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -185,6 +188,8 @@ export type SendBillingPacketResult = { ok: true } | { ok: false; error: string;
 // value and renders it inline instead. No business validation is
 // loosened -- only how a failure is reported changed.
 export async function sendBillingPacket(invoiceId: string, packetId: string, formData: FormData): Promise<SendBillingPacketResult> {
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
   const supabase = await createClient();
   const {
     data: { user },

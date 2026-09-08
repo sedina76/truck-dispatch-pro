@@ -9,6 +9,7 @@ import {
   formatUsd,
   toSellablePlanCards,
 } from "./billing-view";
+import { resolveBillingAccess } from "@/lib/billing/access-policy";
 
 // PHASE D.2.8 -- production self-service billing entry point.
 //
@@ -20,8 +21,6 @@ import {
 // grandfathered org). Stripe + signed webhooks + the 0127 RPC remain the
 // sole authority for status / stripe_subscription_id / period / trial
 // fields.
-
-const BLOCKED_STATUSES = new Set(["past_due", "paused", "canceled", "incomplete"]);
 
 export default async function SubscriptionSettingsPage({
   searchParams,
@@ -55,6 +54,7 @@ export default async function SubscriptionSettingsPage({
     | (Record<string, unknown> & {
         status: string;
         grandfathered_at: string | null;
+        past_due_since: string | null;
         subscription_plans: { id: string; name: string; tier: string } | null;
       })
     | null;
@@ -72,7 +72,17 @@ export default async function SubscriptionSettingsPage({
   const planCards = toSellablePlanCards(plans ?? []);
   const returnNotice = checkoutReturnNotice(checkout, status);
 
-  const isBlocked = status !== null && BLOCKED_STATUSES.has(status) && grandfatheredAt === null;
+  // Same authoritative resolver the middleware uses -- the "access is paused"
+  // banner must never disagree with the redirect that landed the user here.
+  const billingAccess = resolveBillingAccess({
+    billingRequired,
+    subscriptionExists: sub !== null,
+    grandfatheredAt,
+    status,
+    pastDueSince: sub?.past_due_since ?? null,
+    now: new Date(),
+  });
+  const isBlocked = billingAccess.access === "billing_only";
   const noticeToneClass: Record<string, string> = {
     positive: "border-success/30 bg-success/10 text-success",
     info: "border-[var(--color-brand)]/30 bg-[var(--color-brand)]/10 text-[var(--color-text)]",
@@ -95,7 +105,7 @@ export default async function SubscriptionSettingsPage({
           <p className="font-medium">Access to the rest of the app is paused.</p>
           <p className="mt-1 text-danger/90">
             Your subscription status is{" "}
-            <span className="font-medium">{status?.replace(/_/g, " ")}</span>.{" "}
+            <span className="font-medium">{status ? status.replace(/_/g, " ") : "not started"}</span>.{" "}
             {gate.canCheckout
               ? "Start your subscription below to restore access."
               : "Contact your account owner or support to restore access."}

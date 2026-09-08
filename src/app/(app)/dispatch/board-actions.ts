@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { getLatestDocument, type DocumentRow } from "@/lib/documents/latest-document";
 import { calculateDetention, type DetentionResult } from "@/lib/dispatch/detention";
 import { zonedDateTimeToUtc, validateWindowOrder } from "@/lib/timezone/convert";
@@ -51,6 +52,9 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
 
   let organizationId: string;
   try {
@@ -1117,6 +1121,9 @@ export async function addDispatchQuickNote(dispatchId: string, note: string): Pr
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
 
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
+
   let organizationId: string;
   try {
     organizationId = await getCurrentOrgId();
@@ -1170,6 +1177,12 @@ async function requireDispatchOpsAccess(dispatchId: string): Promise<
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  // D.2.11 SaaS paywall -- before any dispatch/comms write.
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) {
+    return { ok: false, error: "Your organization's subscription does not permit this action." };
+  }
 
   let organizationId: string;
   try {
@@ -1366,6 +1379,9 @@ export async function setStopCoordinates(dispatchId: string, stopId: string, lat
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
 
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
+
   let organizationId: string;
   try {
     organizationId = await getCurrentOrgId();
@@ -1420,6 +1436,12 @@ async function requireStopOwnership(dispatchId: string, stopId: string) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false as const, error: "Not authenticated." };
+
+  // D.2.11 SaaS paywall -- before any stop write.
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) {
+    return { ok: false as const, error: "Your organization's subscription does not permit this action." };
+  }
 
   let organizationId: string;
   try {
@@ -1537,6 +1559,9 @@ export async function dismissRouteDeviation(dispatchId: string, targetStopId: st
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
 
   let organizationId: string;
   try {

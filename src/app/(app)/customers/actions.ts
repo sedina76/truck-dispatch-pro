@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { redirect } from "next/navigation";
 import { updateRecord, getCurrentOrgId } from "@/lib/actions/records";
 import { createClient } from "@/lib/supabase/server";
@@ -36,6 +37,7 @@ async function writeCustomerFinancials(customerId: string, organizationId: strin
 // createCarrier for why (redirect() inside the helper would abort before
 // a second write could run).
 export async function createCustomer(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { data, error } = await supabase.from("customers").insert({ ...customerValues(formData), organization_id: organizationId }).select("id").single();

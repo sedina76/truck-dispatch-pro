@@ -23,7 +23,9 @@ import {
 // The CTA renders only when the org has no live subscription yet (the page's
 // evaluateCheckoutGate allows checkout solely from incomplete /
 // incomplete_expired / canceled / no-row), so every button is a first
-// "Start 14-Day Trial" -- there is no "current plan" to contrast against.
+// "Start 30-Day Free Trial" -- there is no "current plan" to contrast
+// against. D.2.9: the trial is 30 days and needs no card to start; the
+// trial length lives server-side in src/lib/stripe/checkout.ts.
 export function CheckoutCta({ plans }: { plans: PlanCardModel[] }) {
   const router = useRouter();
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
@@ -99,6 +101,10 @@ export function CheckoutCta({ plans }: { plans: PlanCardModel[] }) {
         </div>
       )}
 
+      <p className="text-sm text-[var(--color-text-muted)]">
+        Start your 30-day free trial. No credit card required.
+      </p>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {plans.map((plan) => {
           const priceCents = cycle === "annual" ? plan.annualCents : plan.monthlyCents;
@@ -139,7 +145,7 @@ export function CheckoutCta({ plans }: { plans: PlanCardModel[] }) {
                   aria-busy={thisPending}
                   onClick={() => startCheckout(plan.tier)}
                 >
-                  {thisPending ? "Opening secure checkout…" : "Start 14-Day Trial"}
+                  {thisPending ? "Opening secure checkout…" : "Start 30-Day Free Trial"}
                 </Button>
               </div>
             </div>
@@ -148,9 +154,10 @@ export function CheckoutCta({ plans }: { plans: PlanCardModel[] }) {
       </div>
 
       <p className="text-xs text-[var(--color-text-muted)]">
-        You&apos;ll enter payment details on Stripe&apos;s secure checkout page. Your card is not
-        charged during the 14-day trial. Your subscription is confirmed here once Stripe notifies us
-        &mdash; the redirect back to this page does not activate it on its own.
+        No credit card is required to start. You&apos;ll finish on Stripe&apos;s secure checkout page,
+        and your trial is confirmed here once Stripe notifies us &mdash; the redirect back to this
+        page does not activate it on its own. Add a payment method before day 30 to keep access after
+        the trial.
       </p>
     </div>
   );

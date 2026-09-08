@@ -210,6 +210,67 @@ test("D.2/hardening: missing-signature behavior unchanged (still preflight 400, 
 });
 
 // ===========================================================================
+// D.2.10 -- the billing access gate is wired to the authoritative resolver,
+// and the old crude deny-list is gone.
+// ===========================================================================
+const MW_CODE = MW.replace(/^[ \t]*\/\/.*$/gm, "");
+
+test("D.2.10: middleware imports and CALLS resolveBillingAccess (resolver is actually used)", () => {
+  assert.match(MW_CODE, /import \{ resolveBillingAccess \} from "@\/lib\/billing\/access-policy"/);
+  assert.match(MW_CODE, /const decision = resolveBillingAccess\(\{/);
+  // the redirect to the billing page is driven by the resolver's verdict
+  assert.match(
+    MW_CODE.replace(/\s+/g, " "),
+    /if \(decision\.access === "billing_only"\) \{ .*blockedUrl\.pathname = "\/settings\/subscription"; return NextResponse\.redirect\(blockedUrl\); \}/
+  );
+});
+
+test("D.2.10: the old BLOCKED_SUBSCRIPTION_STATUSES deny-list is removed entirely", () => {
+  assert.equal(MW.includes("BLOCKED_SUBSCRIPTION_STATUSES"), false, "no crude status deny-list remains");
+  // and no ad-hoc status list is used to decide access
+  assert.doesNotMatch(MW_CODE, /\.includes\(subscription\.status\)/);
+});
+
+test("D.2.10: middleware passes the minimum facts, keyed on the authenticated profile org id", () => {
+  // reads billing_required + the three subscription fields the resolver needs
+  assert.match(MW_CODE, /\.from\("organizations"\)\s*\.select\("billing_required"\)/s);
+  assert.match(MW_CODE, /\.select\("status, grandfathered_at, past_due_since"\)/);
+  // both keyed on profile.organization_id, never a request-supplied id
+  assert.match(MW_CODE, /\.eq\("id", profile\.organization_id\)/);
+  assert.match(MW_CODE, /\.eq\("organization_id", profile\.organization_id\)/);
+  // no service-role client in middleware
+  assert.equal(MW.includes("service_role"), false);
+  assert.equal(MW.includes("SERVICE_ROLE"), false);
+  assert.match(MW_CODE, /process\.env\.NEXT_PUBLIC_SUPABASE_ANON_KEY/);
+});
+
+test("D.2.10: a real org/subscription query error is treated as backend-unreachable, not access", () => {
+  assert.match(
+    MW_CODE.replace(/\s+/g, " "),
+    /if \(orgResult\.error \|\| subscriptionResult\.error\) \{ .*pathname = "\/service-unavailable"/
+  );
+});
+
+test("D.2.10: subscription-gate exemptions are exactly the narrow recovery set (no operational areas)", () => {
+  const exempt = extractArray(MW, "SUBSCRIPTION_GATE_EXEMPT_PATHS");
+  // string entries declared inline (PUBLIC_PATHS is spread in separately)
+  assert.deepEqual(exempt, ["/settings/subscription", "/onboarding", "/admin"]);
+  assert.match(MW_CODE, /\.\.\.PUBLIC_PATHS/, "PUBLIC_PATHS still spread into the exempt set");
+  // no operational area smuggled in
+  for (const op of ["/loads", "/dispatch", "/invoices", "/payments", "/settlements", "/compliance", "/quickbooks", "/carriers", "/drivers"]) {
+    assert.equal(exempt.includes(op), false, `${op} must NOT be gate-exempt`);
+  }
+});
+
+test("D.2.10: page.tsx uses the SAME resolver for its 'access paused' banner (one policy)", () => {
+  const PAGE = readFileSync(new URL("../../app/(app)/settings/subscription/page.tsx", import.meta.url), "utf8");
+  assert.match(PAGE, /import \{ resolveBillingAccess \} from "@\/lib\/billing\/access-policy"/);
+  assert.match(PAGE, /resolveBillingAccess\(\{/);
+  assert.match(PAGE, /billingAccess\.access === "billing_only"/);
+  assert.equal(PAGE.includes("BLOCKED_STATUSES"), false, "page no longer keeps its own status list");
+});
+
+// ===========================================================================
 // GET behavior
 // ===========================================================================
 test("D.2.2: route defines a GET handler that returns 405; POST is the delivery method", () => {

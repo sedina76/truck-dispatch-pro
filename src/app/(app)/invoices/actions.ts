@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { INVOICEABLE_LOAD_STATUSES } from "@/lib/billing/party";
 
@@ -55,6 +56,7 @@ function invoiceValues(formData: FormData) {
 // exactly: broker_id/customer_id are DERIVED from the load, never read
 // from the submitted form at all, once a load is selected.
 export async function createInvoice(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const values = invoiceValues(formData);
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -170,6 +172,7 @@ export async function createInvoice(formData: FormData) {
 // post-creation at the application layer (migration 0112, unapplied,
 // adds the same rule as the database-level backstop).
 export async function updateInvoice(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
@@ -230,6 +233,7 @@ export async function updateInvoice(id: string, formData: FormData) {
 }
 
 export async function addInvoiceLineItem(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   await supabase.from("invoice_line_items").insert({

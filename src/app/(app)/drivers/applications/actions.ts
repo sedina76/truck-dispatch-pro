@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { issueDriverOnboardingInvitation } from "@/lib/driver-onboarding/invitation";
 import { resolveEmailAuthorizationContext } from "@/lib/email/authorization";
 import { sendTenantEmail } from "@/lib/email/send-pipeline";
@@ -167,6 +168,7 @@ async function provisionDriverPortalAccess(supabase: Awaited<ReturnType<typeof c
 // this form field carries, so a stray/tampered client value can never
 // redirect a carrier-bound application to a different carrier (Section G).
 export async function convertApplicationToDriver(applicationId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const carrierIdField = String(formData.get("carrier_id") || "") || null;
 
   const supabase = await createClient();

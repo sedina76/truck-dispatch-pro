@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { uploadLoadDocument } from "./pod-actions";
 import { zonedDateTimeToUtc, validateWindowOrder } from "@/lib/timezone/convert";
@@ -96,6 +97,7 @@ function parseExtraStops(formData: FormData): Record<string, string>[] {
 }
 
 export async function createLoadWithStops(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
 
   // ---- Validation (spec section 15) --------------------------------------

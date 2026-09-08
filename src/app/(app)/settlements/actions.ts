@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 
 // ---------------------------------------------------------------------------
@@ -12,6 +13,7 @@ import { emptyToNull, toNumber } from "@/lib/utils/form";
 // tables (0006, extended by 0033) -- not a competing table.
 // ---------------------------------------------------------------------------
 export async function createCarrierSettlement(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const carrierId = String(formData.get("carrier_id") || "");
   const periodStart = String(formData.get("period_start") || "");
   const periodEnd = String(formData.get("period_end") || "");
@@ -68,6 +70,7 @@ export async function createCarrierSettlement(formData: FormData) {
 }
 
 export async function addSettlementLoad(settlementId: string, carrierId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const loadId = String(formData.get("load_id") || "");
   if (!loadId) throw new Error("Select a load.");
 
@@ -118,6 +121,7 @@ export async function addSettlementLoad(settlementId: string, carrierId: string,
 }
 
 export async function removeSettlementLineItem(settlementId: string, itemId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { data: removed, error } = await supabase.from("settlement_line_items").delete().eq("id", itemId).select("item_type, description, amount").maybeSingle();
@@ -129,6 +133,7 @@ export async function removeSettlementLineItem(settlementId: string, itemId: str
 }
 
 export async function addSettlementAdjustment(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
@@ -155,6 +160,7 @@ export async function addSettlementAdjustment(settlementId: string, formData: Fo
 // spec section 12: reuse, never duplicate. Also adds the matching line
 // item so it appears in the settlement's own ledger.
 export async function linkCarrierAdvance(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const advanceId = String(formData.get("advance_id") || "");
   if (!advanceId) throw new Error("Select an advance.");
 
@@ -195,6 +201,7 @@ export async function linkCarrierAdvance(settlementId: string, formData: FormDat
 // recoverable balance -- so double-recovery/double-counting can't happen
 // even via a retried/duplicated request.
 export async function linkMaintenanceRecovery(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const maintenanceId = String(formData.get("maintenance_id") || "");
   if (!maintenanceId) throw new Error("Select a maintenance record.");
   const amount = toNumber(formData.get("amount"));
@@ -238,6 +245,7 @@ export async function linkMaintenanceRecovery(settlementId: string, formData: Fo
 // recoverable balance -- so double-recovery/double-counting can't happen
 // even via a retried/duplicated request.
 export async function linkFuelRecovery(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const fuelLogId = String(formData.get("fuel_log_id") || "");
   if (!fuelLogId) throw new Error("Select a fuel purchase.");
   const amount = toNumber(formData.get("amount"));
@@ -273,6 +281,7 @@ export async function linkFuelRecovery(settlementId: string, formData: FormData)
 
 // Quick Pay (spec section 14): explicit opt-in only, never automatic.
 export async function setQuickPay(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const enabled = formData.get("quick_pay_enabled") === "on";
   const rate = toNumber(formData.get("quick_pay_rate_percent"));
 
@@ -291,6 +300,7 @@ export async function setQuickPay(settlementId: string, formData: FormData) {
 }
 
 export async function setSettlementPayee(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const payeeType = String(formData.get("payee_type") || "carrier");
   const supabase = await createClient();
   const { error } = await supabase.from("settlements").update({ payee_type: payeeType }).eq("id", settlementId);
@@ -302,6 +312,7 @@ export async function setSettlementPayee(settlementId: string, formData: FormDat
 // Approval / Void
 // ---------------------------------------------------------------------------
 export async function approveCarrierSettlement(settlementId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { error } = await supabase.rpc("approve_carrier_settlement", { p_settlement_id: settlementId });
@@ -314,6 +325,7 @@ export async function approveCarrierSettlement(settlementId: string) {
 }
 
 export async function voidCarrierSettlement(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("void_reason") || "").trim();
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -331,6 +343,7 @@ export async function voidCarrierSettlement(settlementId: string, formData: Form
 // for why not public.payments or public.driver_settlement_payments).
 // ---------------------------------------------------------------------------
 export async function recordCarrierSettlementPayment(settlementId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const amount = toNumber(formData.get("amount"));
   if (!amount || amount <= 0) throw new Error("Enter an amount greater than zero.");
 
@@ -365,6 +378,7 @@ export async function recordCarrierSettlementPayment(settlementId: string, formD
 }
 
 export async function voidCarrierSettlementPayment(settlementId: string, paymentId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("void_reason") || "").trim();
   if (!reason) throw new Error("A reason is required to void a payment.");
 

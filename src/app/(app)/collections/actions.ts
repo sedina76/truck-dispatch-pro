@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
@@ -18,6 +19,7 @@ function revalidateInvoiceViews(invoiceId: string) {
 // (0027_collections.sql) which grant insert/select only.
 // ---------------------------------------------------------------------------
 export async function logContact(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const note = String(formData.get("note") || "").trim();
   if (!note) redirect(`/invoices/${invoiceId}?error=${encodeURIComponent("A note is required to log contact.")}`);
 
@@ -56,6 +58,7 @@ export async function logContact(invoiceId: string, formData: FormData) {
 // only mutation, matching "avoid silently overwriting collection history".
 // ---------------------------------------------------------------------------
 export async function createPromise(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const promisedAmount = toNumber(formData.get("promised_amount"));
   const expectedDate = String(formData.get("expected_payment_date") || "");
   if (!promisedAmount || promisedAmount <= 0) {
@@ -89,6 +92,7 @@ export async function createPromise(invoiceId: string, formData: FormData) {
 }
 
 export async function cancelPromise(promiseId: string, invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = String(formData.get("cancelled_reason") || "").trim();
   if (!reason) redirect(`/invoices/${invoiceId}?error=${encodeURIComponent("A reason is required to cancel a promise.")}`);
 
@@ -113,6 +117,7 @@ export async function cancelPromise(promiseId: string, invoiceId: string, formDa
 // /resolution) rather than deleting it -- the dispute's full history stays.
 // ---------------------------------------------------------------------------
 export async function openDispute(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const disputedAmount = toNumber(formData.get("disputed_amount"));
   if (!disputedAmount || disputedAmount <= 0) {
     redirect(`/invoices/${invoiceId}?error=${encodeURIComponent("Enter a disputed amount greater than zero.")}`);
@@ -142,6 +147,7 @@ export async function openDispute(invoiceId: string, formData: FormData) {
 }
 
 export async function resolveDispute(disputeId: string, invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const outcome = String(formData.get("outcome") || "resolved"); // 'resolved' | 'rejected'
   const resolution = String(formData.get("resolution") || "").trim();
   if (!resolution) redirect(`/invoices/${invoiceId}?error=${encodeURIComponent("A resolution note is required.")}`);
@@ -167,6 +173,7 @@ export async function resolveDispute(disputeId: string, invoiceId: string, formD
 }
 
 export async function markDisputeUnderReview(disputeId: string, invoiceId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   await supabase.from("invoice_disputes").update({ status: "under_review" }).eq("id", disputeId).eq("status", "open");
   revalidateInvoiceViews(invoiceId);
@@ -179,6 +186,7 @@ export async function markDisputeUnderReview(disputeId: string, invoiceId: strin
 // cross-org id submitted directly would still be rejected by the trigger.
 // ---------------------------------------------------------------------------
 export async function assignCollector(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const collectorId = emptyToNull(formData.get("assigned_collector_id"));
   const supabase = await createClient();
   const { error } = await supabase.from("invoices").update({ assigned_collector_id: collectorId }).eq("id", invoiceId);
@@ -194,6 +202,7 @@ export async function assignCollector(invoiceId: string, formData: FormData) {
 // one case where the DB, not a collector, has the final say.
 // ---------------------------------------------------------------------------
 export async function updateCollectionStatus(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const status = String(formData.get("collection_status") || "");
   const supabase = await createClient();
   const { error } = await supabase.from("invoices").update({ collection_status: status }).eq("id", invoiceId);
@@ -210,6 +219,7 @@ export async function updateCollectionStatus(invoiceId: string, formData: FormDa
 // without a provider actually succeeding.
 // ---------------------------------------------------------------------------
 export async function queueReminder(invoiceId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const stage = String(formData.get("stage") || "");
   const recipientEmail = emptyToNull(formData.get("recipient_email"));
   const force = formData.get("force") === "1";

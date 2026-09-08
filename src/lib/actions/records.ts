@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 
 // Allow-list guards against an arbitrary table name ever reaching a raw
 // Supabase query from these generic helpers. RLS is still the real
@@ -78,6 +79,7 @@ export async function getCurrentOrgId(): Promise<string> {
 
 export async function deleteRecord(table: string, id: string, redirectPath: string) {
   assertManaged(table);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   await supabase.from(table).delete().eq("id", id);
   await logActivity(table, id, "deleted");
@@ -90,6 +92,7 @@ export async function insertRecord(
   redirectPath: string
 ) {
   assertManaged(table);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const { data, error } = await supabase
@@ -110,6 +113,7 @@ export async function updateRecord(
   redirectPath: string
 ) {
   assertManaged(table);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from(table).update(values).eq("id", id);
   if (error) throw new Error(error.message);
@@ -128,6 +132,7 @@ export async function updateRecordInPlace(
   revalidatePathTarget: string
 ) {
   assertManaged(table);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from(table).update(values).eq("id", id);
   if (error) throw new Error(error.message);

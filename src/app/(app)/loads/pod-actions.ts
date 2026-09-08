@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess, checkOperationalAccess } from "@/lib/billing/operational-access";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { validateUploadedFile } from "@/lib/documents/validate-upload";
 import { MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_MIME_TYPES } from "@/lib/documents/upload-limits";
@@ -67,6 +68,13 @@ export async function uploadLoadDocument(loadId: string, documentType: string, f
   const validation = await validateUploadedFile(file);
   if (!validation.ok) return { ok: false, error: validation.error };
 
+  // D.2.11 SaaS paywall -- before any write. Structured result to match this
+  // action's contract; the stable code lives on the helper's result.
+  const access = await checkOperationalAccess();
+  if (!access.ok) {
+    return { ok: false, error: "Your organization's subscription does not permit this action." };
+  }
+
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -111,6 +119,7 @@ export async function uploadPod(loadId: string, formData: FormData): Promise<Upl
 }
 
 export async function verifyPod(documentId: string, loadId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {
@@ -135,6 +144,7 @@ export async function rejectPod(documentId: string, loadId: string, formData: Fo
   const reason = String(formData.get("reason") || "").trim();
   if (!reason) throw new Error("A rejection reason is required.");
 
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   const {

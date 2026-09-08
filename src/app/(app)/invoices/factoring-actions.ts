@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { checkOperationalAccess } from "@/lib/billing/operational-access";
 
 export type SubmitInvoiceToFactorResult =
   | { ok: true; data: { factoredInvoiceId: string; status: string } }
@@ -20,6 +21,12 @@ async function requireFactoringReviewAccess(): Promise<{ ok: true } | { ok: fals
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  // D.2.11 SaaS paywall -- shared gate for every factoring mutation below.
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) {
+    return { ok: false, error: "Your organization's subscription does not permit this action." };
+  }
 
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
   if (!profile || !FINANCIAL_ROLES.includes(profile.role)) {
@@ -84,6 +91,9 @@ export async function submitInvoiceToFactor(invoiceId: string, relationshipId: s
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not authenticated." };
+
+  const billingAccess = await checkOperationalAccess(); // D.2.11 SaaS paywall.
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
 
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
   if (!profile || !FINANCIAL_ROLES.includes(profile.role)) {

@@ -52,7 +52,11 @@ import { resolveStripeCustomerForOrg } from "@/lib/stripe/customer";
 // The Checkout success redirect grants NOTHING. Stripe-derived lifecycle
 // state is established later by signed webhook processing (a future phase).
 
-const TRIAL_PERIOD_DAYS = 14;
+// PHASE D.2.9 -- FINAL product policy: a 30-day free trial that needs NO
+// card to start. This is the single authoritative trial-length constant;
+// the browser never sends or overrides it. It flows to
+// subscription_data.trial_period_days on the Checkout Session below.
+const TRIAL_PERIOD_DAYS = 30;
 
 // --- Time windows -----------------------------------------------------------
 
@@ -721,9 +725,27 @@ async function createForClaim(args: {
         mode: "subscription",
         customer: customerId,
         line_items: [{ price: frozenPriceId, quantity: 1 }],
-        payment_method_collection: "always",
+        // D.2.9 -- CARDLESS 30-day trial. `if_required` (Stripe SDK 22.6.1:
+        // Checkout SessionCreateParams.PaymentMethodCollection, valid only
+        // in subscription mode) tells Stripe NOT to collect a payment
+        // method up front when the subscription starts in a trial with a
+        // $0 amount due now -- the hosted Checkout page shows no card
+        // fields. A card only becomes necessary to keep access past the
+        // trial. Contrast with the old `always`, which forced a card at
+        // signup.
+        payment_method_collection: "if_required",
         subscription_data: {
+          // 30 days, server-fixed (TRIAL_PERIOD_DAYS). The browser cannot
+          // set or override this.
           trial_period_days: TRIAL_PERIOD_DAYS,
+          // FAIL CLOSED at day 30: if the customer still has no usable
+          // payment method when the trial ends, Stripe cancels the
+          // subscription (SDK: EndBehavior.MissingPaymentMethod =
+          // 'cancel' | 'create_invoice' | 'pause'). Stripe REQUIRES
+          // trial_settings when payment_method_collection is `if_required`
+          // with a trial. TDP never synthesizes this cancellation -- it
+          // arrives as a signed customer.subscription.updated/deleted and
+          // is applied by the 0127 RPC through the existing webhook.
           trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
           metadata: reconciliationMetadata,
         },

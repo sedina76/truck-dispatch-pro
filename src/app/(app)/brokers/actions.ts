@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { redirect } from "next/navigation";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { createClient } from "@/lib/supabase/server";
@@ -57,6 +58,7 @@ async function writeBrokerFinancials(brokerId: string, organizationId: string, f
 
 // Bespoke rather than insertRecord() -- see carriers/actions.ts.
 export async function createBroker(formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const role = await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -80,6 +82,7 @@ export async function createBroker(formData: FormData) {
 
 export async function updateBroker(id: string, formData: FormData) {
   const role = await requireRole(["owner", "admin", "dispatcher", "accountant"]);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
   // Compute (and validate) the brokers-table payload before ANY mutation
@@ -107,6 +110,7 @@ export async function updateBroker(id: string, formData: FormData) {
 }
 
 export async function saveBrokerContact(brokerId: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const { error } = await supabase.rpc("save_broker_contact", {
@@ -122,6 +126,7 @@ export async function saveBrokerContact(brokerId: string, formData: FormData) {
 }
 
 export async function deleteBrokerContact(brokerId: string, contactId: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin", "dispatcher"]);
   const supabase = await createClient();
   const { error } = await supabase.rpc("delete_broker_contact", { p_broker_id: brokerId, p_contact_id: contactId });
@@ -130,17 +135,21 @@ export async function deleteBrokerContact(brokerId: string, contactId: string) {
 }
 
 export async function archiveBroker(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin"]); const supabase=await createClient();
   const { error }=await supabase.rpc("archive_broker",{p_broker_id:id}); if(error) throw new Error(error.message);
   revalidatePath("/brokers"); revalidatePath(`/brokers/${id}`);
 }
 export async function restoreBroker(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   await requireRole(["owner", "admin"]); const supabase=await createClient();
   const { error }=await supabase.rpc("restore_broker",{p_broker_id:id}); if(error) throw new Error(error.message);
   revalidatePath("/brokers"); revalidatePath(`/brokers/${id}`);
 }
 export async function deleteBroker(id: string): Promise<{ok:true}|{ok:false;error:string}> {
-  await requireRole(["owner", "admin"]); const supabase=await createClient();
+  await requireRole(["owner", "admin"]);
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+  const supabase=await createClient();
   const {data,error}=await supabase.rpc("delete_broker_safely",{p_broker_id:id});
   if(error) return {ok:false,error:error.message.includes("not found")?"Broker not found.":error.message};
   const result=data as {deletion_status:string;message?:string};

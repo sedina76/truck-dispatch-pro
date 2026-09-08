@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { updateRecordInPlace, getCurrentOrgId } from "@/lib/actions/records";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { DispatchConflictError, translateDispatchError, type DispatchActionState } from "@/lib/dispatch/errors";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
@@ -258,6 +259,7 @@ function statusValue(formData: FormData): string {
 // so its internal Next.js control-flow signal is never mistaken for an
 // error to translate.
 export async function createDispatch(_prevState: DispatchActionState, formData: FormData): Promise<DispatchActionState> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const loadId = String(formData.get("load_id") || "").trim();
   const supabase = await createClient();
 
@@ -312,6 +314,7 @@ export async function createDispatch(_prevState: DispatchActionState, formData: 
 // edit exactly like on create. Same useActionState/expected-error
 // convention as createDispatch.
 export async function updateDispatch(id: string, _prevState: DispatchActionState, formData: FormData): Promise<DispatchActionState> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
 
   try {
@@ -401,6 +404,7 @@ export async function updateDispatch(id: string, _prevState: DispatchActionState
 // never regresses a load a delivery/invoice/close has already moved past).
 // ---------------------------------------------------------------------------
 export async function cancelDispatch(id: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const reason = emptyToNull(formData.get("reason"));
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();

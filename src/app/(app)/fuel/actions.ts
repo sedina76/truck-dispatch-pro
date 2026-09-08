@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
@@ -104,6 +105,7 @@ async function assertDriverEligibleForTruckCarrier(
 }
 
 export async function createFuelLog(formData: FormData): Promise<{ id: string }> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!String(formData.get("gallons") || "").trim()) throw new Error("Gallons is required.");
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
@@ -130,6 +132,7 @@ export async function createFuelLog(formData: FormData): Promise<{ id: string }>
 // locking logic below is unchanged -- only how a rejection gets back to
 // the caller changed.
 export async function updateFuelLog(id: string, _prevState: FuelActionState, formData: FormData): Promise<FuelActionState> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   try {
     const supabase = await createClient();
     const organizationId = await getCurrentOrgId();
@@ -197,6 +200,7 @@ export async function updateFuelLog(id: string, _prevState: FuelActionState, for
 }
 
 export async function deleteFuelLog(id: string) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const { error } = await supabase.from("fuel_logs").delete().eq("id", id);
   if (error) throw new Error(translateFuelError(error));
@@ -220,6 +224,7 @@ export async function deleteFuelLog(id: string) {
 // .is("expense_id", null) update + rollback) is unchanged.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- required positionally by useActionState's (prevState, formData) signature; this action takes no form fields of its own.
 export async function createFuelExpense(id: string, _prevState: FuelActionState, _formData: FormData): Promise<FuelActionState> {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   try {
     const supabase = await createClient();
     const organizationId = await getCurrentOrgId();
@@ -285,6 +290,7 @@ const ALLOWED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"
 const MAX_BYTES = 15 * 1024 * 1024;
 
 export async function uploadFuelDocument(fuelLogId: string, documentType: string, formData: FormData) {
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   if (!FUEL_DOCUMENT_TYPES.has(documentType)) throw new Error(`Unsupported document type: ${documentType}`);
   const file = formData.get("file");
   if (!(file instanceof File)) throw new Error("No file provided.");
