@@ -8,6 +8,7 @@ import {
   evaluateCheckoutGate,
   formatUsd,
   toSellablePlanCards,
+  type PlanCardModel,
 } from "./billing-view";
 import { resolveBillingAccess } from "@/lib/billing/access-policy";
 
@@ -40,7 +41,7 @@ export default async function SubscriptionSettingsPage({
         .eq("organization_id", orgId)
         .maybeSingle(),
       supabase.from("organizations").select("billing_required").eq("id", orgId).maybeSingle(),
-      supabase.from("subscription_plans").select("*").eq("is_active", true).order("monthly_price_cents"),
+      supabase.from("subscription_plans").select("*").eq("is_active", true).eq("is_public", true).order("monthly_price_cents"),
       supabase.from("profiles").select("id", { count: "exact", head: true }),
       supabase.from("trucks").select("id", { count: "exact", head: true }),
       supabase
@@ -149,8 +150,8 @@ export default async function SubscriptionSettingsPage({
         </div>
       ) : (
         <PlanList
-          plans={plans ?? []}
-          currentPlanId={currentPlan?.id ?? null}
+          plans={planCards}
+          currentTier={currentPlan?.tier ?? null}
           note={gateNote(gate.reason, isOwnerOrAdmin)}
         />
       )}
@@ -183,11 +184,11 @@ function gateNote(
 // non-admin, or billing not required). No plan-change action is wired here.
 function PlanList({
   plans,
-  currentPlanId,
+  currentTier,
   note,
 }: {
-  plans: Array<Record<string, unknown>>;
-  currentPlanId: string | null;
+  plans: PlanCardModel[];
+  currentTier: string | null;
   note: string | null;
 }) {
   return (
@@ -195,18 +196,11 @@ function PlanList({
       <p className="mb-3 text-sm font-medium">Available plans</p>
       {note && <p className="mb-3 text-sm text-[var(--color-text-muted)]">{note}</p>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {plans.map((raw) => {
-          const plan = raw as {
-            id: string;
-            name: string;
-            description: string | null;
-            monthly_price_cents: number;
-            features: unknown;
-          };
-          const isCurrent = plan.id === currentPlanId;
+        {plans.map((plan) => {
+          const isCurrent = plan.tier === currentTier;
           return (
             <div
-              key={plan.id}
+              key={plan.tier}
               className={
                 "rounded-lg border p-4 " +
                 (isCurrent ? "border-[var(--color-brand)]" : "border-[var(--color-border)]")
@@ -214,15 +208,18 @@ function PlanList({
             >
               <p className="font-medium">{plan.name}</p>
               <p className="mt-1 text-2xl font-semibold">
-                {formatUsd(plan.monthly_price_cents)}
+                {formatUsd(plan.monthlyCents)}
                 <span className="text-sm font-normal text-[var(--color-text-muted)]">/mo</span>
+              </p>
+              <p className="mt-1 text-sm text-[var(--color-text-muted)]">
+                or {formatUsd(plan.annualCents)}/year
               </p>
               {plan.description && (
                 <p className="mt-2 text-sm text-[var(--color-text-muted)]">{plan.description}</p>
               )}
-              {Array.isArray(plan.features) && (
+              {plan.features.length > 0 && (
                 <ul className="mt-3 space-y-1 text-sm">
-                  {(plan.features as unknown[]).map((f) => (
+                  {plan.features.map((f) => (
                     <li key={String(f)}>&bull; {String(f)}</li>
                   ))}
                 </ul>
