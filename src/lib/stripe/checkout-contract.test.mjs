@@ -80,11 +80,23 @@ test("D.2.14 #6/#7/#8: evaluateStoredSession checks the contract version BEFORE 
 // with checkout.ts by the source assertion above).
 // ==========================================================================
 const NOW = 1_800_000_000_000; // fixed "now" in ms
+const idOf = (v) => (v == null ? null : typeof v === "string" ? v : v.id);
 function verdict(session, { customerId = "cus_UL", intentMatchesFrozen = true } = {}) {
   // resource_missing on retrieve
   if (session === "resource_missing") return { kind: "replace" };
   if (session === "transient_error") return { kind: "ambiguous" };
-  if (session.status === "complete") return { kind: "completed" };
+  if (session.status === "complete") {
+    // D.2.14A: a completed non-subscription-mode session is positive dead
+    // evidence -> replace. A completed subscription-mode session is only
+    // "completed" when its minimum identity is coherent (our Customer + a
+    // non-null subscription reference); anything uncertain -> ambiguous
+    // (never replace a completed subscription-mode session).
+    if (session.mode !== "subscription") return { kind: "replace" };
+    const customerOk = idOf(session.customer) === customerId;
+    const subscriptionRef = idOf(session.subscription ?? null);
+    if (!customerOk || subscriptionRef === null) return { kind: "ambiguous" };
+    return { kind: "completed" };
+  }
   if (session.status === "expired") return { kind: "replace" };
   if (session.status === "open") {
     if (session.expires_at * 1000 <= NOW) return { kind: "replace" };
@@ -134,16 +146,93 @@ test("D.2.14 #19: expired Session -> replace (unchanged), even with current cont
   assert.equal(verdict({ ...openBase, expires_at: (NOW - 1000) / 1000, metadata: { checkout_contract_version: CONTRACT } }).kind, "replace");
 });
 
-test("D.2.14 #20: completed Session -> completed (never replaced/reused into a duplicate)", () => {
-  const s = { ...openBase, status: "complete", metadata: { checkout_contract_version: CONTRACT } };
+test("D.2.14 #20 / D.2.14A: completed SUBSCRIPTION-mode Session with coherent identity -> completed (no duplicate-sub replace)", () => {
+  const s = { status: "complete", mode: "subscription", customer: "cus_UL", subscription: "sub_123", metadata: { checkout_contract_version: CONTRACT } };
   assert.deepEqual(verdict(s), { kind: "completed" });
-  // a completed legacy Session is STILL 'completed', not 'replace'
-  assert.deepEqual(verdict({ status: "complete", metadata: {} }), { kind: "completed" });
+  // stale-contract / metadata-less completed SUBSCRIPTION-mode session is
+  // STILL 'completed' (never 'replace') as long as identity is coherent --
+  // D.2.14A requirement #2.
+  assert.deepEqual(verdict({ status: "complete", mode: "subscription", customer: "cus_UL", subscription: "sub_123", metadata: {} }), { kind: "completed" });
 });
 
 test("D.2.14: retrieve resource_missing -> replace; transient -> ambiguous (unchanged)", () => {
   assert.deepEqual(verdict("resource_missing"), { kind: "replace" });
   assert.deepEqual(verdict("transient_error"), { kind: "ambiguous" });
+});
+
+// ==========================================================================
+// D.2.14A -- completed non-subscription Checkout Session trap.
+// A completed one-time `payment` (or `setup`) Session stored as the org's
+// checkout pointer used to short-circuit to { kind: "completed" } ->
+// already_completed -> router.refresh(), trapping the org with no way to
+// start a real trial.
+// ==========================================================================
+test("D.2.14A: source -- the complete branch checks mode + identity BEFORE returning 'completed'", () => {
+  const fn = CODE.slice(CODE.indexOf("async function evaluateStoredSession("), CODE.indexOf("async function terminateAttempt("));
+  const iComplete = fn.indexOf('session.status === "complete"');
+  const iModeGuard = fn.indexOf('session.mode !== "subscription"');
+  const iCustomerOk = fn.indexOf("stripeIdOf(session.customer) === customerId");
+  const iSubRef = fn.indexOf("session.subscription");
+  const iCompletedReturn = fn.indexOf('return { kind: "completed" };');
+  assert.ok(iComplete > 0 && iModeGuard > iComplete, "mode guard is inside the complete branch");
+  assert.ok(iModeGuard < iCompletedReturn, "mode guard precedes the 'completed' return");
+  assert.ok(iCustomerOk > iComplete && iCustomerOk < iCompletedReturn, "customer coherence checked before 'completed'");
+  assert.ok(iSubRef > iComplete && iSubRef < iCompletedReturn, "subscription reference checked before 'completed'");
+  assert.match(fn, /if \(session\.mode !== "subscription"\) return \{ kind: "replace" \};/);
+  assert.match(fn, /if \(!customerOk \|\| subscriptionRef === null\) return \{ kind: "ambiguous" \};/);
+});
+
+test("D.2.14A #5.1: completed PAYMENT-mode Session -> replace (the MedFusion / old $30 checkout)", () => {
+  const s = { status: "complete", mode: "payment", customer: "cus_UL", subscription: null, metadata: {} };
+  assert.deepEqual(verdict(s), { kind: "replace" });
+  // even if the customer matches and there is nonsense in metadata
+  assert.deepEqual(verdict({ status: "complete", mode: "payment", customer: "cus_UL", metadata: { checkout_contract_version: CONTRACT } }), { kind: "replace" });
+});
+
+test("D.2.14A #5.2: completed SETUP-mode Session -> replace", () => {
+  assert.deepEqual(verdict({ status: "complete", mode: "setup", customer: "cus_UL", subscription: null, metadata: {} }), { kind: "replace" });
+});
+
+test("D.2.14A #5.3: completed subscription-mode + correct customer + subscription ref -> completed", () => {
+  assert.deepEqual(
+    verdict({ status: "complete", mode: "subscription", customer: "cus_UL", subscription: "sub_abc", metadata: {} }),
+    { kind: "completed" }
+  );
+  // expanded subscription object form also works
+  assert.deepEqual(
+    verdict({ status: "complete", mode: "subscription", customer: "cus_UL", subscription: { id: "sub_abc" }, metadata: {} }),
+    { kind: "completed" }
+  );
+});
+
+test("D.2.14A #5.4: completed subscription-mode with MISSING subscription -> ambiguous (fail closed, NOT replace)", () => {
+  const v = verdict({ status: "complete", mode: "subscription", customer: "cus_UL", subscription: null, metadata: {} });
+  assert.deepEqual(v, { kind: "ambiguous" });
+  assert.notEqual(v.kind, "replace", "must never replace a completed subscription-mode session");
+});
+
+test("D.2.14A #5.5: completed subscription-mode with WRONG customer -> ambiguous (fail closed, NOT replace)", () => {
+  const v = verdict({ status: "complete", mode: "subscription", customer: "cus_OTHER", subscription: "sub_abc", metadata: {} });
+  assert.deepEqual(v, { kind: "ambiguous" });
+  assert.notEqual(v.kind, "replace");
+});
+
+test("D.2.14A #5.6/#5.7: a completed non-subscription pointer maps to the replace path -> one fresh Session, no already_completed loop", () => {
+  // 8a maps verdict.kind:
+  //   "completed" -> { ok:true, kind:"already_completed" }   (=> checkout-cta router.refresh)
+  //   "replace"   -> terminateAttempt (CAS on that session id) + continue -> 8c randomUUID -> ONE create()
+  const flat = CODE.replace(/\s+/g, " ");
+  assert.match(flat, /if \(verdict\.kind === "completed"\) return \{ ok: true, kind: "already_completed" \};/);
+  assert.match(flat, /if \(attempt === 0\) \{ await terminateAttempt\(service, cur\.id, cur\.stripe_checkout_session_id\); continue;/);
+  assert.equal([...CODE.matchAll(/stripe\.checkout\.sessions\.create\(/g)].length, 1, "still exactly one Session creator");
+  // a completed payment-mode session no longer reaches the already_completed
+  // path: verdict() proves it now returns 'replace'.
+  assert.equal(verdict({ status: "complete", mode: "payment", customer: "cus_UL", metadata: {} }).kind, "replace");
+});
+
+test("D.2.14A: contract-version open-Session replacement behavior is unchanged", () => {
+  assert.equal(verdict({ ...openBase, metadata: {} }).kind, "replace"); // missing marker
+  assert.equal(verdict({ ...openBase, metadata: { checkout_contract_version: CONTRACT } }).kind, "reuse"); // current marker
 });
 
 // ==========================================================================

@@ -402,7 +402,36 @@ async function evaluateStoredSession(
     return isStripeResourceMissing(err) ? { kind: "replace" } : { kind: "ambiguous" };
   }
 
-  if (session.status === "complete") return { kind: "completed" };
+  if (session.status === "complete") {
+    // D.2.14A -- a completed Checkout Session is usable SaaS evidence ONLY
+    // when it was a subscription-mode session with a coherent minimum
+    // identity. Otherwise:
+    //
+    //  * mode !== "subscription" (an old one-time `payment` checkout, or a
+    //    `setup` session) can NEVER have created a SaaS subscription --
+    //    returning "completed" here traps the org in an
+    //    already_completed -> router.refresh() loop with no way to start a
+    //    real trial. Route that exact stale pointer through the
+    //    CAS-guarded replacement flow so a fresh subscription-mode Session
+    //    can be created. This is POSITIVE dead evidence -- safe to
+    //    terminate that one Session id.
+    //
+    //  * subscription mode, but the wrong Customer or no `subscription`
+    //    reference at all -> we cannot tell whether a subscription exists,
+    //    so FAIL CLOSED as "ambiguous" (keep every pointer, create
+    //    nothing). NEVER "replace" a completed subscription-mode Session --
+    //    that could mint a duplicate subscription.
+    //
+    // "completed" never grants entitlement -- the signed webhook + 0127 are
+    // the sole authority for local trialing/active state.
+    if (session.mode !== "subscription") return { kind: "replace" };
+    const customerOk = stripeIdOf(session.customer) === customerId;
+    const subscriptionRef = stripeIdOf(
+      session.subscription as string | { id: string } | null
+    );
+    if (!customerOk || subscriptionRef === null) return { kind: "ambiguous" };
+    return { kind: "completed" };
+  }
   if (session.status === "expired") return { kind: "replace" };
 
   if (session.status === "open") {
