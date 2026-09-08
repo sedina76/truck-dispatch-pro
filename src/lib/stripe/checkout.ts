@@ -58,6 +58,24 @@ import { resolveStripeCustomerForOrg } from "@/lib/stripe/customer";
 // subscription_data.trial_period_days on the Checkout Session below.
 const TRIAL_PERIOD_DAYS = 30;
 
+// PHASE D.2.14 -- the server-owned CHECKOUT CONTRACT VERSION.
+//
+// It identifies the MATERIAL Checkout semantics a Session was created
+// under: trial duration, payment_method_collection policy, the
+// missing-payment-method end behavior, Checkout mode, and any other
+// subscription-creation semantics that would make an already-open Session
+// wrong to reuse. It is stamped into every new Session's metadata (below)
+// and re-checked by evaluateStoredSession() before any {kind:"reuse"}.
+//
+// It is deliberately a SEMANTIC label, NOT the deployment SHA and NOT a
+// per-request timestamp: a routine deploy that does not change Checkout
+// semantics must not invalidate every open Session. Bump this string ONLY
+// when the create() call's material subscription semantics change (e.g.
+// trial length, cardless policy, end behavior). Plan tier / billing cycle
+// / Price stay separate frozen-intent fields -- this does not replace
+// those checks, it is additional. Never derived from browser input.
+const CHECKOUT_CONTRACT_VERSION = "2026-09-cardless-30d-v1";
+
 // --- Time windows -----------------------------------------------------------
 
 // LEASE staleness. The window between "this worker claimed the lease" and
@@ -359,8 +377,16 @@ type StoredSessionVerdict =
   | { kind: "reuse"; url: string }
   | { kind: "completed" }
   | { kind: "in_progress" } // open, but for a DIFFERENT frozen intent -- never touch it
-  | { kind: "replace" } // POSITIVE dead evidence -- safe to definitively terminate
+  | { kind: "replace" } // POSITIVE dead evidence (or a STALE contract) -- safe to terminate
   | { kind: "ambiguous" }; // could not determine -- keep every pointer, do not create
+
+// A stored Session is on the CURRENT Checkout contract only if its metadata
+// carries exactly this server's CHECKOUT_CONTRACT_VERSION. Missing, null,
+// empty, or any other value => stale => must be replaced, never reused
+// (D.2.14). Fail closed for reuse.
+function sessionIsCurrentContract(session: Stripe.Checkout.Session): boolean {
+  return session.metadata?.checkout_contract_version === CHECKOUT_CONTRACT_VERSION;
+}
 
 async function evaluateStoredSession(
   stripe: Stripe,
@@ -384,6 +410,15 @@ async function evaluateStoredSession(
     const urlOk = typeof session.url === "string" && session.url.length > 0;
     const customerOk = stripeIdOf(session.customer) === customerId;
     if (!urlOk || !customerOk) return { kind: "ambiguous" }; // weird, but not proof of death
+    // D.2.14: an open Session created under an OLDER Checkout contract can
+    // never produce the correct subscription (wrong trial length / card
+    // policy / end behavior), so it is stale even when Customer + plan +
+    // cycle + Price all still match. Route it into the existing safe
+    // replacement path (terminateAttempt is CAS-guarded on this exact
+    // Session id; a NEW attempt id + idempotency key follow in pass 2).
+    // This is checked BEFORE the intent branch so a stale Session for a
+    // different plan is not preserved as "in_progress" either.
+    if (!sessionIsCurrentContract(session)) return { kind: "replace" };
     return intentMatchesFrozen ? { kind: "reuse", url: session.url as string } : { kind: "in_progress" };
   }
 
@@ -716,6 +751,13 @@ async function createForClaim(args: {
     billing_cycle: frozenCycle,
     price_id: frozenPriceId,
     checkout_attempt_id: attemptId,
+    // D.2.14 -- server-owned, never browser-controlled. Stamped on both the
+    // Session (top-level metadata) and subscription_data.metadata for
+    // forensic visibility. evaluateStoredSession() reuses an open Session
+    // only when this equals the running server's CHECKOUT_CONTRACT_VERSION.
+    // NOT a tenant-identity field -- org resolution stays on durable
+    // stored mappings (subscription id / checkout session id / customer id).
+    checkout_contract_version: CHECKOUT_CONTRACT_VERSION,
   };
 
   let session: Stripe.Checkout.Session;
