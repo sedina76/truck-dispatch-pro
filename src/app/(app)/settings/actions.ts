@@ -253,12 +253,42 @@ export async function toggleUserActive(profileId: string, currentlyActive: boole
 // "disconnected" (spec: "Do not make an Enable button imply a live
 // integration when it only toggles a boolean").
 
-export async function changePlan(planId: string) {
+// LEGACY, grandfathered-only. This is a bare local plan_id switch with NO
+// Stripe involvement -- it must never be the purchase mechanism for a
+// billing-required organization (that path is startSubscriptionCheckout()
+// -> audited Stripe Checkout in src/lib/stripe/checkout.ts). Phase D.2.8
+// removed its only caller from the billing page and fenced it to
+// owner/admin + a grandfathered org, so it can neither fake a paid plan nor
+// run for a non-admin. RLS on organization_subscriptions (service-role
+// writes only) is the unconditional backstop underneath.
+export async function changePlan(
+  planId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const supabase = await createClient();
+
+  const { data: allowed } = await supabase.rpc("has_role", { p_roles: ["owner", "admin"] });
+  if (!allowed) return { ok: false, error: "Only an owner or admin can change the plan." };
+
   const orgId = await getCurrentOrgId();
-  await supabase
+  const { data: row } = await supabase
+    .from("organization_subscriptions")
+    .select("grandfathered_at")
+    .eq("organization_id", orgId)
+    .maybeSingle();
+
+  if (!row || (row as { grandfathered_at: string | null }).grandfathered_at === null) {
+    return {
+      ok: false,
+      error: "This organization changes plans through Stripe checkout, not here.",
+    };
+  }
+
+  const { error } = await supabase
     .from("organization_subscriptions")
     .update({ plan_id: planId })
     .eq("organization_id", orgId);
+  if (error) return { ok: false, error: "Could not change the plan. Please try again." };
+
   revalidatePath("/settings/subscription");
+  return { ok: true };
 }
