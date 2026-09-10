@@ -1,7 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
+
+// Inner component so useFormStatus() can read the enclosing <form>'s
+// pending state -- prevents a double-submit of the cancel action.
+function CancelSubmitButton() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" variant="danger" size="sm" disabled={pending} aria-busy={pending}>
+      {pending ? "Cancelling…" : "Cancel Dispatch"}
+    </Button>
+  );
+}
 
 // Replaces the old hard "Delete" button (spec section 13). Same lightweight
 // confirm() gate ConfirmDeleteForm already uses elsewhere in this app, plus
@@ -30,9 +42,7 @@ export function CancelDispatchForm({ action }: { action: (formData: FormData) =>
         placeholder="Reason (optional)"
         className="h-8 w-48 rounded-sm border border-desktop-border bg-card px-2.5 text-[12.5px] outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
       />
-      <Button type="submit" variant="danger" size="sm">
-        Cancel Dispatch
-      </Button>
+      <CancelSubmitButton />
     </form>
   );
 }

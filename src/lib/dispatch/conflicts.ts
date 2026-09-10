@@ -143,6 +143,12 @@ export const CONFLICT_CODE: Record<ConflictResource, string> = {
 
 export const LOAD_ALREADY_DISPATCHED_CODE = "LOAD_ALREADY_DISPATCHED";
 
+// 0129 fail-closed kill switch: when DISPATCH_WRITES_DISABLED=1, create /
+// cancel return/throw this instead of touching the RPC.
+export const DISPATCH_MAINTENANCE_CODE = "DISPATCH_MAINTENANCE";
+export const DISPATCH_MAINTENANCE_MESSAGE =
+  "Creating and cancelling dispatches is paused for maintenance. The Dispatch Board, load records, edits, and tracking are unaffected -- please try again shortly.";
+
 /** User-facing message. Dispatches carry no scheduled end time in this
  *  schema, so a resource conflict names the resource + the load it is on,
  *  not an "until <time>". */
@@ -152,4 +158,56 @@ export function conflictMessage(c: AssignmentConflict): string {
   }
   const loadRef = c.loadNumber ? `load ${c.loadNumber}` : "another active dispatch";
   return `${c.resourceLabel} is already assigned to active ${loadRef}.`;
+}
+
+// ---------------------------------------------------------------------------
+// 0129 atomic RPC error translation.
+//
+// public.create_dispatch / public.cancel_dispatch RAISE with a 5-char
+// SQLSTATE (TDxxx), a user-safe MESSAGE (the exact copy to show), and --
+// for the resource/load conflicts -- DETAIL = the conflicting dispatch id.
+// supabase-js surfaces this as { code, message, details, hint }. This maps
+// it back onto the SAME DispatchConflictError shape the UX pre-flight uses,
+// so the RPC (authoritative) and the pre-flight never show two different
+// messages for the same situation.
+// ---------------------------------------------------------------------------
+export type RpcLikeError =
+  | { code?: string | null; message?: string | null; details?: string | null }
+  | null
+  | undefined;
+
+const RPC_CODE_MAP: Record<string, { appCode: string; field: ConflictResource | null }> = {
+  TDDUP: { appCode: LOAD_ALREADY_DISPATCHED_CODE, field: null }, // load already has an active dispatch (or an unresolved 0054 race)
+  TDDRV: { appCode: CONFLICT_CODE.driver, field: "driver" },
+  TDTRK: { appCode: CONFLICT_CODE.truck, field: "truck" },
+  TDTRL: { appCode: CONFLICT_CODE.trailer, field: "trailer" },
+  TDLND: { appCode: "LOAD_NOT_DISPATCHABLE", field: null },
+  TDLNF: { appCode: "LOAD_NOT_FOUND", field: null },
+  TDCNF: { appCode: "DISPATCH_NOT_FOUND", field: null },
+  TDTRM: { appCode: "DISPATCH_TERMINAL", field: null },
+  TDROL: { appCode: "forbidden", field: null },
+  TDAUT: { appCode: "not_authenticated", field: null },
+};
+
+export type RpcDispatchConflict = {
+  message: string;
+  code: string;
+  field: ConflictResource | null;
+  conflictDispatchId: string | null;
+};
+
+/** Returns a translated conflict, or null when `err` is not a recognised
+ *  0129 RPC error (caller then falls back to its generic handling). */
+export function rpcDispatchConflict(err: RpcLikeError): RpcDispatchConflict | null {
+  const code = err?.code ?? undefined;
+  if (!code || !RPC_CODE_MAP[code]) return null;
+  const mapped = RPC_CODE_MAP[code];
+  const detail = (err?.details ?? "").trim();
+  const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(detail);
+  return {
+    message: (err?.message ?? "").trim() || "Could not save this dispatch. Please try again.",
+    code: mapped.appCode,
+    field: mapped.field,
+    conflictDispatchId: isUuid ? detail : null,
+  };
 }

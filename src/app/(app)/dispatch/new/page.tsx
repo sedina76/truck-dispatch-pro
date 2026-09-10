@@ -10,6 +10,7 @@ import { AssignmentFields } from "@/components/dispatch/assignment-fields";
 import { InternalFinancialsPanel } from "@/components/dispatch/internal-financials-panel";
 import { RateConfirmationIndicator } from "@/components/dispatch/rate-confirmation-indicator";
 import { DispatchForm } from "@/components/dispatch/dispatch-form";
+import { DispatchSubmitButton } from "@/components/dispatch/dispatch-submit-button";
 import { DispatchConflictAlert } from "@/components/dispatch/dispatch-conflict-alert";
 import { getLoadSummary, getAssignmentOptions, getRateConfirmation } from "../dispatch-data";
 import { createDispatch } from "../actions";
@@ -162,7 +163,7 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
           <Link href="/dispatch/board" className="inline-flex h-8 items-center rounded-sm px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-muted">
             Cancel
           </Link>
-          <Button type="submit">Create Dispatch</Button>
+          <DispatchSubmitButton pendingText="Creating dispatch…">Create Dispatch</DispatchSubmitButton>
         </div>
       </DispatchForm>
     </div>

@@ -13,7 +13,10 @@ import {
   classifyAssignmentConflict,
   conflictMessage,
   CONFLICT_CODE,
+  DISPATCH_MAINTENANCE_CODE,
+  DISPATCH_MAINTENANCE_MESSAGE,
   LOAD_ALREADY_DISPATCHED_CODE,
+  rpcDispatchConflict,
   type AssignmentConflict,
   type ClassifyParams,
   type ConflictResource,
@@ -292,48 +295,55 @@ function statusValue(formData: FormData): string {
 // error to translate.
 export async function createDispatch(_prevState: DispatchActionState, formData: FormData): Promise<DispatchActionState> {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+  // Fail-closed kill switch (0129 rollback plan): set DISPATCH_WRITES_DISABLED=1
+  // in the environment to pause dispatch creation/cancellation ONLY. The
+  // board, load records, edits, tracking and every other operation stay up.
+  // Default unset/off. No redirect happens on this path, so the Create
+  // button never looks successful.
+  if (process.env.DISPATCH_WRITES_DISABLED === "1") {
+    return { error: DISPATCH_MAINTENANCE_MESSAGE, code: DISPATCH_MAINTENANCE_CODE };
+  }
   const loadId = String(formData.get("load_id") || "").trim();
   const supabase = await createClient();
 
   let newDispatchId: string;
   try {
     if (!loadId) throw new Error("Select a load first.");
-    const organizationId = await getCurrentOrgId();
     const values = dispatchValues(formData);
 
+    // Pre-flight -- fast, specific UX feedback BEFORE the RPC round trip.
+    // Not authoritative: create_dispatch (0129) re-checks everything inside
+    // one transaction and is the real guarantee.
     await checkEquipmentAvailable(supabase, { truckId: values.truck_id, trailerId: values.trailer_id });
-    // loadId here -> also rejects a duplicate dispatch for a load that
-    // already has an active one (this incident: LD-100024 was already on
-    // active dispatch), with a clear load-level message.
     await checkAssignmentConflicts(supabase, { loadId, driverId: values.driver_id, truckId: values.truck_id, trailerId: values.trailer_id });
 
-    const { data, error } = await supabase
-      .from("dispatches")
-      .insert({ organization_id: organizationId, load_id: loadId, status: "assigned", ...values })
-      .select("id")
-      .single();
+    // 0129: one atomic transaction -- dispatch + financials + notes +
+    // loads.status='dispatched' + financial_dispatch_id + activity log, all
+    // or nothing. organization_id is derived DB-side from the load; never
+    // sent from here.
+    const { data, error } = await supabase.rpc("create_dispatch", {
+      p_load_id: loadId,
+      p_carrier_id: values.carrier_id,
+      p_truck_id: values.truck_id,
+      p_driver_id: values.driver_id,
+      p_trailer_id: values.trailer_id,
+      p_dispatch_fee_percentage: toNumber(formData.get("dispatch_fee_percentage")) ?? null,
+      p_notes: emptyToNull(formData.get("notes")),
+    });
     if (error) {
-      // guard_dispatch_org() (0048) raises a clear, specific message for any
-      // cross-org or cross-carrier mismatch -- translated, not swallowed.
-      // A 0054 unique_violation means a concurrent request won the race
-      // between this action's own pre-check and this insert.
-      const indexName = matchedUniqueIndex(error.message);
-      if (error.code === "23505" && indexName) {
-        throw await raceLoserConflict(supabase, indexName, values);
+      const c = rpcDispatchConflict(error);
+      if (c) {
+        throw new DispatchConflictError(c.message, {
+          code: c.code,
+          field: c.field,
+          conflictDispatchId: c.conflictDispatchId,
+        });
       }
+      // guard_dispatch_org() (0055) cross-org / cross-carrier RAISE, or any
+      // other DB error -- translated, never a raw string to the user.
       throw error;
     }
-    newDispatchId = data.id;
-
-    // Phase 2G.10: dispatch_fee_percentage/notes written here, after the
-    // dispatches row exists (their FK target) -- dispatch_financials_sync
-    // (0068) computes load_rate/dispatch_fee_amount/carrier_net_amount
-    // from dispatch_fee_percentage automatically on this insert.
-    await writeDispatchFinancials(supabase, newDispatchId, organizationId, formData);
-    await writeDispatchNotes(supabase, newDispatchId, organizationId, formData);
-
-    await supabase.from("loads").update({ status: "dispatched" }).eq("id", loadId);
-    await supabase.rpc("log_activity", { p_entity_type: "dispatch", p_entity_id: newDispatchId, p_action: "created", p_changes: null, p_organization_id: organizationId });
+    newDispatchId = data as string;
   } catch (err) {
     return translateDispatchError(err);
   }
@@ -440,40 +450,32 @@ export async function updateDispatch(id: string, _prevState: DispatchActionState
 // ---------------------------------------------------------------------------
 export async function cancelDispatch(id: string, formData: FormData) {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+  // Same fail-closed kill switch as createDispatch. Thrown (this action is
+  // not useActionState-wrapped) but as the structured DispatchConflictError
+  // shape, with the DISPATCH_MAINTENANCE code -- no redirect, so Cancel
+  // never looks successful.
+  if (process.env.DISPATCH_WRITES_DISABLED === "1") {
+    throw new DispatchConflictError(DISPATCH_MAINTENANCE_MESSAGE, { code: DISPATCH_MAINTENANCE_CODE });
+  }
   const reason = emptyToNull(formData.get("reason"));
   const supabase = await createClient();
-  const organizationId = await getCurrentOrgId();
 
-  const { data: dispatch } = await supabase.from("dispatches").select("load_id, status, notes").eq("id", id).single();
-  if (!dispatch) throw new Error("Dispatch not found.");
-  if (dispatch.status === "cancelled") {
-    redirect(`/dispatch/${id}`);
+  // load_id only for revalidation of the load page afterward (read-only).
+  const { data: dispatch } = await supabase.from("dispatches").select("load_id").eq("id", id).maybeSingle();
+
+  // 0129: one atomic transaction -- idempotent when already cancelled,
+  // refuses delivered/completed, sets status + reason note + cancelled_at,
+  // returns the load to booked only when no OTHER active dispatch holds it
+  // and it hasn't moved past delivery, and logs. Financial history
+  // (financial_dispatch_id / dispatch_financials / notes) is left intact.
+  const { error } = await supabase.rpc("cancel_dispatch", { p_dispatch_id: id, p_reason: reason });
+  if (error) {
+    const c = rpcDispatchConflict(error);
+    throw new Error(c?.message ?? error.message ?? "Could not cancel this dispatch.");
   }
-
-  // Append, never overwrite -- the existing internal dispatch notes are
-  // not replaced just because this dispatch is being cancelled.
-  const cancelNote = `[Cancelled${reason ? `: ${reason}` : ""}]`;
-  const newNotes = dispatch.notes ? `${dispatch.notes}\n${cancelNote}` : cancelNote;
-
-  const { error } = await supabase.from("dispatches").update({ status: "cancelled", notes: newNotes }).eq("id", id);
-  if (error) throw new Error(error.message);
-
-  await supabase
-    .from("loads")
-    .update({ status: "booked" })
-    .eq("id", dispatch.load_id)
-    .not("status", "in", "(delivered,pod_received,invoiced,closed,cancelled)");
-
-  await supabase.rpc("log_activity", {
-    p_entity_type: "dispatch",
-    p_entity_id: id,
-    p_action: "cancelled",
-    p_changes: reason ? { reason } : null,
-    p_organization_id: organizationId,
-  });
 
   revalidatePath("/dispatch/board");
   revalidatePath(`/dispatch/${id}`);
-  revalidatePath(`/loads/${dispatch.load_id}`);
+  if (dispatch?.load_id) revalidatePath(`/loads/${dispatch.load_id}`);
   redirect(`/dispatch/${id}`);
 }
