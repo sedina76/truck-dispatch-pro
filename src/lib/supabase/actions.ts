@@ -172,13 +172,12 @@ export async function verifySignupOtp(_prev: VerifyOtpState, formData: FormData)
   const email = String(formData.get("email") || "");
   const token = String(formData.get("token") || "");
 
-  // Auth OTP length mismatch repair: this project's live Supabase Dashboard
-  // OTP-length setting issues an 8-digit signup code (confirmed against a
-  // real "Confirm signup" email using {{ .Token }}), not Supabase's
-  // 6-digit default this check was originally written against. Shorter or
-  // longer input is rejected here, before ever calling Supabase, with a
-  // clear message naming the actual required length -- never silently
-  // truncated or padded.
+  // The signup confirmation code is exactly SIGNUP_OTP_LENGTH digits (6 --
+  // Supabase Auth's default, matching this project's "Email OTP Length"
+  // Dashboard setting). Shorter or longer input is rejected here, before
+  // ever calling Supabase, with a clear message naming the required length
+  // -- never silently truncated or padded. The application constant and the
+  // Dashboard setting must stay in agreement (see src/lib/auth/otp.ts).
   if (!new RegExp(`^\\d{${SIGNUP_OTP_LENGTH}}$`).test(token)) {
     return { error: `Enter the ${SIGNUP_OTP_LENGTH}-digit code.` };
   }
