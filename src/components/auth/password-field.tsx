@@ -15,6 +15,7 @@ export function PasswordField({
   value,
   onChange,
   strength = false,
+  dark = false,
 }: {
   id: string;
   name: string;
@@ -25,12 +26,13 @@ export function PasswordField({
   value: string;
   onChange: (value: string) => void;
   strength?: boolean;
+  dark?: boolean;
 }) {
   const [show, setShow] = useState(false);
 
   return (
     <div className="space-y-1.5">
-      <label htmlFor={id} className="text-sm font-medium text-[#3a3a34]">
+      <label htmlFor={id} className={dark ? "text-sm font-medium text-white/90" : "text-sm font-medium text-[#3a3a34]"}>
         {label}
       </label>
       <div className="relative">
@@ -45,11 +47,12 @@ export function PasswordField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="pr-9"
+          dark={dark}
         />
         <button
           type="button"
           onClick={() => setShow((v) => !v)}
-          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-[#b0b0a8] hover:text-[#6b6b64]"
+          className={dark ? "absolute inset-y-0 right-1 flex w-10 items-center justify-center text-white/45 hover:text-white/80" : "absolute inset-y-0 right-0 flex w-9 items-center justify-center text-[#b0b0a8] hover:text-[#6b6b64]"}
           aria-label={show ? "Hide password" : "Show password"}
           tabIndex={-1}
         >

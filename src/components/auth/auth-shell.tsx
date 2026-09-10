@@ -21,14 +21,14 @@ export function AuthShell({
   centered?: boolean;
 }) {
   return (
-    <div className="relative flex min-h-screen flex-col bg-[#05070d]" style={{ backgroundImage: "linear-gradient(160deg, #05070d 0%, #0a0f1c 60%, #070a12 100%)" }}>
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#05070d]" style={{ backgroundImage: "linear-gradient(160deg, #05070d 0%, #0a0f1c 60%, #070a12 100%)" }}>
       <AuthEnvironment rich={richEnvironment} />
 
-      <header className="relative z-10 px-6 py-6 sm:px-10 sm:py-8">
+      <header className="relative z-10 px-6 py-6 sm:px-10 sm:py-8 xl:px-16">
         <Logo dark subtitle size="lg" />
       </header>
 
-      <main className={cn("relative z-10 flex flex-1 flex-col px-4 pb-16 sm:px-6", centered && "items-center justify-center")}>{children}</main>
+      <main className={cn("relative z-10 flex flex-1 flex-col px-4 pb-10 sm:px-8 xl:px-14", centered && "items-center justify-center")}>{children}</main>
     </div>
   );
 }

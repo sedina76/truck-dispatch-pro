@@ -13,11 +13,15 @@ import { cn } from "@/lib/utils";
 // standalone, committed look for the auth entry point, not a themed app
 // surface, and a dark-mode visitor's flipped tokens would otherwise
 // erase all contrast against the dark canvas.
-export function AuthCard({ children, className }: { children: React.ReactNode; className?: string }) {
+export function AuthCard({ children, className, dark = false }: { children: React.ReactNode; className?: string; dark?: boolean }) {
   return (
     <div className="relative">
-      <div className="absolute -inset-6 -z-10 rounded-[28px] bg-[#3a63d8]/10 blur-2xl" />
-      <div className={cn("w-full max-w-[27rem] rounded-lg border border-[#e4e4e0] bg-[#faf9f7] shadow-[0_1px_2px_rgba(0,0,0,0.06),0_24px_48px_-16px_rgba(0,0,0,0.5)]", className)}>
+      <div className={cn("absolute -inset-6 -z-10 rounded-[28px] blur-2xl", dark ? "bg-[#1976ff]/20" : "bg-[#3a63d8]/10")} />
+      <div className={cn(
+        "w-full max-w-[29rem] rounded-2xl border shadow-[0_1px_2px_rgba(0,0,0,0.08),0_30px_70px_-22px_rgba(0,0,0,0.8)]",
+        dark ? "border-[#2680ff]/65 bg-[#081426]/92 backdrop-blur-xl" : "border-[#e4e4e0] bg-[#faf9f7]",
+        className
+      )}>
         <div className="p-8 sm:p-10">{children}</div>
       </div>
     </div>

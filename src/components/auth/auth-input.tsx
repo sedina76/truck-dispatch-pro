@@ -10,11 +10,14 @@ import { cn } from "@/lib/utils";
 // scale, not the app's cool "slate" tokens) -- premium input states:
 // crisp white fill against the card's slightly warmer off-white, a
 // refined focus ring, without forking <Input> itself.
-export function AuthInput({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function AuthInput({ className, dark = false, ...props }: InputHTMLAttributes<HTMLInputElement> & { dark?: boolean }) {
   return (
     <Input
       className={cn(
-        "h-10 border-[#d8d8d2] bg-white text-[#1a1a18] placeholder:text-[#b0b0a8] focus-visible:border-[#1c54b8] focus-visible:ring-[#1c54b8]/15",
+        "h-12 rounded-lg focus-visible:border-[#2680ff] focus-visible:ring-[#2680ff]/20",
+        dark
+          ? "border-white/20 bg-white/[0.045] text-white placeholder:text-[#8291aa]"
+          : "border-[#d8d8d2] bg-white text-[#1a1a18] placeholder:text-[#b0b0a8]",
         className
       )}
       {...props}

@@ -1,21 +1,29 @@
-import { TruckSilhouette } from "@/components/auth/truck-silhouette";
+import Image from "next/image";
 
-// The auth canvas's actual visual centerpiece -- a night-interstate scene
-// (perspective road converging to a glowing horizon, a rim-lit truck
-// silhouette, ground haze) built from layered gradients/SVG.
+// The login canvas uses the commissioned night-interstate artwork. Secondary
+// auth screens keep the lighter-weight CSS/SVG atmosphere below so they do
+// not download the hero asset unnecessarily.
 //
-// `rich`: the login screen gets the full scene (truck + one operational
-// status chip riding the road's own route line). Every other auth screen
-// gets `rich=false` -- just the road/horizon/haze, no truck or chip.
-//
-// Iterated twice on screenshot review: v1 had the chip colliding with the
-// hero paragraph; v2 fixed that but clipped the truck against the left
-// and bottom edges and had FOUR near-parallel diagonal lines (2 road
-// edges + a separate "route" line duplicating the road's own center
-// line) reading as visual clutter. This version: the road's own dashed
-// center line IS the route (no duplicate), and the truck is fully
-// inset -- nothing touches the canvas edge.
+// `rich`: full truck + route artwork for login. `false`: ambient road scene.
 export function AuthEnvironment({ rich = false }: { rich?: boolean }) {
+  if (rich) {
+    return (
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <Image
+          src="/images/auth-truck-route-bg.png"
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+          className="object-cover object-center"
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(3,8,18,.18)_0%,rgba(3,8,18,.08)_48%,rgba(3,8,18,.42)_100%)]" />
+        <div className="absolute inset-x-0 top-0 h-56 bg-gradient-to-b from-[#030812]/75 to-transparent" />
+        <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-[#030812]/60 to-transparent" />
+      </div>
+    );
+  }
+
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
       {/* Horizon glow -- doubles as ambient backlighting for the login card. */}
@@ -48,42 +56,6 @@ export function AuthEnvironment({ rich = false }: { rich?: boolean }) {
 
       <div className="absolute bottom-0 left-0 h-[240px] w-[70%] opacity-70 blur-[55px]" style={{ background: "linear-gradient(0deg, #05070d 0%, transparent 100%)" }} />
 
-      {rich && (
-        <>
-          {/* lg+ only -- found live: below lg the login card stacks to a
-              single centered column and sits directly on top of both the
-              truck and the chip (the chip's own text was rendering
-              half-hidden behind the card's edge). Spec: "remove
-              unnecessary operational decorations" on mobile anyway -- the
-              road perspective + horizon glow above are NOT conditional on
-              `rich`, so mobile still keeps a small amount of atmosphere
-              without either element fighting the card for space. */}
-          <TruckSilhouette className="absolute bottom-[9%] left-[4%] hidden w-[46%] max-w-[560px] lg:block" />
-
-          {/* One operational status chip. Pinned with `top` (not
-              `bottom`) at a fixed 70% down the viewport -- found live
-              across two prior passes that ANY position sharing the same
-              vertical band as the hero paragraph collides with it, since
-              that text's height varies with wrapping/viewport width.
-              70% down is safely below where that text can reasonably
-              reach, and sits directly beside the truck's cab. */}
-          <div className="absolute left-[7%] top-[70%] hidden w-56 rounded-md border border-white/10 bg-[#070a12]/85 px-3.5 py-3 shadow-lg backdrop-blur-sm lg:block">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-white/90">
-              <span className="size-1.5 rounded-full bg-emerald-400" />
-              LOAD #10482 &middot; IN TRANSIT
-            </div>
-            <div className="mt-2 flex items-center justify-between text-[11px] text-white/55">
-              <span className="tabular-nums">Dallas, TX</span>
-              <span>&rarr;</span>
-              <span className="tabular-nums">Columbus, OH</span>
-            </div>
-            <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-2 text-[11px]">
-              <span className="tabular-nums text-white/70">ETA 4:35 PM</span>
-              <span className="font-medium text-emerald-400">ON SCHEDULE</span>
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 }

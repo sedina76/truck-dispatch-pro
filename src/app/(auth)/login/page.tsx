@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BarChart3, FileCheck2, MapPin } from "lucide-react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { AuthCard } from "@/components/auth/auth-card";
 import { LoginForm } from "./login-form";
@@ -21,25 +22,33 @@ export default async function LoginPage({
           below lg, and the hero copy is dropped entirely there (see the
           hidden lg:block below) so the phone view goes straight to
           authentication. */}
-      <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center gap-10 lg:flex-row lg:items-center lg:justify-between lg:gap-8">
-        <div className="hidden max-w-xl lg:block">
-          <h1 className="text-4xl font-bold leading-[1.15] text-white xl:text-[44px]">
+      <div className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col items-center justify-center gap-10 lg:flex-row lg:items-center lg:justify-between lg:gap-12 xl:px-4">
+        <div className="hidden max-w-[680px] lg:block lg:flex-1">
+          <h1 className="max-w-[650px] text-[42px] font-bold leading-[1.13] tracking-[-0.025em] text-white xl:text-[52px]">
             Run your trucking operation from <span className="text-primary">one place.</span>
           </h1>
-          <p className="mt-5 max-w-sm text-[15px] leading-relaxed text-white/50">
+          <p className="mt-6 max-w-[600px] text-[16px] leading-7 text-white/58">
             Dispatch, drivers, GPS tracking, billing, compliance, and customer communication -- built for real freight operations.
           </p>
+
+          <div className="mt-9 flex items-center gap-7 text-sm text-white/85 xl:gap-10">
+            <div className="flex items-center gap-3"><span className="flex size-11 items-center justify-center rounded-xl border border-[#2680ff]/35 bg-[#2680ff]/10 text-[#39a0ff]"><BarChart3 className="size-5" /></span><span>Live dispatch<br />visibility</span></div>
+            <div className="h-10 w-px bg-white/15" />
+            <div className="flex items-center gap-3"><span className="flex size-11 items-center justify-center rounded-xl border border-[#2680ff]/35 bg-[#2680ff]/10 text-[#39a0ff]"><MapPin className="size-5" /></span><span>Driver GPS<br />tracking</span></div>
+            <div className="h-10 w-px bg-white/15" />
+            <div className="flex items-center gap-3"><span className="flex size-11 items-center justify-center rounded-xl border border-[#2680ff]/35 bg-[#2680ff]/10 text-[#39a0ff]"><FileCheck2 className="size-5" /></span><span>Billing &amp;<br />compliance</span></div>
+          </div>
         </div>
 
-        <AuthCard>
-          <div className="space-y-5">
+        <AuthCard dark className="lg:w-[460px]">
+          <div className="space-y-6">
             <div>
-              <h2 className="text-2xl font-bold tracking-tight text-[#1a1a18]">Welcome back</h2>
-              <p className="mt-1 text-sm text-[#6b6b64]">Sign in to Truck Dispatch Pro</p>
+              <h2 className="text-[32px] font-bold tracking-tight text-white">Welcome back</h2>
+              <p className="mt-1.5 text-[15px] text-white/55">Sign in to Truck Dispatch Pro</p>
             </div>
 
             {confirmEmail && (
-              <p className="rounded-md border border-[#e4e4e0] bg-white p-3 text-sm text-[#4a4a44]">
+              <p className="rounded-md border border-white/15 bg-white/5 p-3 text-sm text-white/80">
                 Check your email to confirm your account before signing in.
               </p>
             )}
@@ -51,17 +60,17 @@ export default async function LoginPage({
 
             <LoginForm />
 
-            <p className="text-center text-sm text-[#6b6b64]">
+            <p className="text-center text-sm text-white/60">
               No account?{" "}
-              <Link href="/signup" className="font-medium text-[#1c54b8] hover:underline">
+              <Link href="/signup" className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline">
                 Create one
               </Link>
             </p>
 
-            <div className="border-t border-[#e4e4e0] pt-4 text-center text-sm text-[#6b6b64]">
+            <div className="border-t border-white/15 pt-5 text-center text-sm text-white/60">
               <p>
                 Driver?{" "}
-                <Link href="/driver-portal/login" className="font-medium text-[#1c54b8] hover:underline">
+                <Link href="/driver-portal/login" className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline">
                   Driver Sign In
                 </Link>
               </p>
