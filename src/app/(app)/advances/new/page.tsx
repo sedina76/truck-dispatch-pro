@@ -18,7 +18,7 @@ export default async function NewAdvancePage({
       supabase.from("drivers").select("id, first_name, last_name").order("last_name"),
       supabase.from("trucks").select("id, unit_number").order("unit_number"),
       supabase.from("loads").select("id, load_number").order("load_number"),
-      supabase.from("dispatches").select("id, loads(load_number)").order("dispatched_at", { ascending: false }),
+      supabase.from("dispatches").select("id, loads:loads!dispatches_load_id_fkey(load_number)").order("dispatched_at", { ascending: false }),
     ]);
 
   return (

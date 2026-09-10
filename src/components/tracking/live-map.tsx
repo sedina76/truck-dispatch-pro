@@ -380,7 +380,7 @@ export function LiveMap({
             if (row.dispatch_id) {
               const { data: dispatch } = await supabase
                 .from("dispatches")
-                .select("status, load_id, loads(load_number), trucks(unit_number)")
+                .select("status, load_id, loads:loads!dispatches_load_id_fkey(load_number), trucks(unit_number)")
                 .eq("id", row.dispatch_id)
                 .maybeSingle();
               const d = dispatch as unknown as {

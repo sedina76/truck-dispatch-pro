@@ -2,7 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
-import { KanbanBoard, type DispatchCard } from "./kanban-board";
+import { KanbanBoard, type DispatchCard, type BookedLoadCard } from "./kanban-board";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
@@ -96,13 +96,18 @@ export default async function DispatchBoardPage({
   // no separate wiring.
   let dispatchesQuery = supabase
     .from("dispatches")
+    // `loads` is disambiguated to the operational FK: since migration 0125
+    // added loads.financial_dispatch_id -> dispatches.id there are TWO
+    // dispatches<->loads relationships, and a bare `loads(...)` embed
+    // returns PGRST201 -- which previously made `data` null and hid EVERY
+    // dispatch (empty board). This is the load the dispatch is FOR.
     .select(
-      "id, status, load_id, delivered_at, loads(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
+      "id, status, load_id, delivered_at, loads:loads!dispatches_load_id_fkey(load_number), carriers(legal_name), trucks(unit_number), drivers(first_name, last_name)"
     )
     .order("dispatched_at", { ascending: false });
   if (!showCompleted) dispatchesQuery = dispatchesQuery.or(boardRetentionOrFilter());
 
-  const [{ data }, { data: org }, { count: hiddenCount }] = await Promise.all([
+  const [{ data, error: dispatchesError }, { data: org }, { count: hiddenCount }] = await Promise.all([
     dispatchesQuery,
     supabase.from("organizations").select("pickup_detention_free_minutes, delivery_detention_free_minutes").single(),
     // Requirement: "preserve a separate historical/completed count" --
@@ -114,9 +119,28 @@ export default async function DispatchBoardPage({
       : supabase.from("dispatches").select("id", { count: "exact", head: true }).or(boardHiddenByRetentionFilter()),
   ]);
 
+  if (dispatchesError) console.error("[dispatch board] dispatches query failed:", dispatchesError);
   const dispatches = (data ?? []) as unknown as DispatchRow[];
   const loadIds = dispatches.map((d) => d.load_id);
   const dispatchIds = dispatches.map((d) => d.id);
+
+  // Booked / Unassigned: loads that are booked but have NO active dispatch
+  // yet. Rendered as their own read-only leftmost column so a dispatcher
+  // can see pending work; a load that already has an active dispatch (e.g.
+  // LD-100024 -> dispatch ff50462b) is EXCLUDED here and shows only as its
+  // dispatch card -- never twice.
+  const activeDispatchLoadIds = new Set(
+    dispatches.filter((d) => !["delivered", "completed", "cancelled"].includes(d.status)).map((d) => d.load_id)
+  );
+  const { data: bookedLoadsRaw, error: bookedError } = await supabase
+    .from("loads")
+    .select("id, load_number")
+    .eq("status", "booked")
+    .order("load_number");
+  if (bookedError) console.error("[dispatch board] booked loads query failed:", bookedError);
+  const bookedCards: BookedLoadCard[] = ((bookedLoadsRaw ?? []) as { id: string; load_number: string }[])
+    .filter((l) => !activeDispatchLoadIds.has(l.id))
+    .map((l) => ({ load_id: l.id, load_number: l.load_number }));
 
   const netAmountByDispatch = new Map<string, number>();
   if (canSeeFinancials && dispatchIds.length > 0) {
@@ -368,7 +392,8 @@ export default async function DispatchBoardPage({
 
       <DesktopKpiStrip>
         <DesktopKpiBox label="Total Dispatches" value={dispatches.length} />
-        <DesktopKpiBox label="Active" value={activeCount} />
+        <DesktopKpiBox label="Booked / Unassigned" value={bookedCards.length} />
+        <DesktopKpiBox label="Active" value={activeCount + bookedCards.length} />
         <DesktopKpiBox label="Delivered" value={completedCount} tone="success" />
         <DesktopKpiBox label="Cancelled" value={cancelledCount} />
         {canSeeFinancials && <DesktopKpiBox label="Carrier Net Value" value={`$${totalNet.toLocaleString()}`} />}
@@ -417,14 +442,14 @@ export default async function DispatchBoardPage({
           change here, toggling "Show completed" would re-render this
           Server Component with a fresh `cards` array but the already-
           mounted client component would keep displaying its stale state. */}
-      {dispatches.length === 0 ? (
+      {dispatches.length === 0 && bookedCards.length === 0 ? (
         <EmptyState
           title="No dispatches yet"
           description="Assign a load to a carrier, truck, and driver to create your first dispatch."
           action={{ label: "New Dispatch", href: "/dispatch/new" }}
         />
       ) : (
-        <KanbanBoard key={showCompleted ? "all" : "active"} initialCards={cards} />
+        <KanbanBoard key={showCompleted ? "all" : "active"} initialCards={cards} bookedLoads={bookedCards} />
       )}
     </div>
   );

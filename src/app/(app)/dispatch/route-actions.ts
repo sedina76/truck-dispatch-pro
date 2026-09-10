@@ -76,7 +76,7 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
 
   const { data: dispatch } = await supabase
     .from("dispatches")
-    .select("status, loads(load_number), trucks(unit_number), drivers(first_name, last_name)")
+    .select("status, loads:loads!dispatches_load_id_fkey(load_number), trucks(unit_number), drivers(first_name, last_name)")
     .eq("id", dispatchId)
     .eq("organization_id", organizationId)
     .maybeSingle();

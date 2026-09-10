@@ -72,7 +72,7 @@ export type DashboardCounters = {
 };
 
 const DISPATCH_SELECT =
-  "id, status, dispatched_at, completed_at, trucks(unit_number), trailers(unit_number), loads(id, load_number, commodity, total_miles)";
+  "id, status, dispatched_at, completed_at, trucks(unit_number), trailers(unit_number), loads:loads!dispatches_load_id_fkey(id, load_number, commodity, total_miles)";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapDispatch(row: any): DispatchInfo {

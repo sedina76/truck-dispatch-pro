@@ -64,6 +64,11 @@ export type DispatchCard = {
   unread_driver_message_count: number;
 };
 
+// A booked load that has NO active dispatch yet -- shown in the read-only
+// "Booked / Unassigned" column (never draggable: there is no dispatch row
+// to update). Clicking one starts a New Dispatch prefilled with that load.
+export type BookedLoadCard = { load_id: string; load_number: string };
+
 // Exact mapping approved for this pass -- dispatch_status itself is
 // unchanged; these are only which existing enum values a column visually
 // buckets, and which single value a drop into that column writes.
@@ -308,7 +313,34 @@ function RiskSummaryBar({ cards, filters, onChange }: { cards: DispatchCard[]; f
   );
 }
 
-export function KanbanBoard({ initialCards }: { initialCards: DispatchCard[] }) {
+// Read-only leftmost column: booked loads with no active dispatch. No
+// droppable, no draggable cards -- assignment happens on the New Dispatch
+// page, so each card is a link there.
+function BookedColumn({ loads }: { loads: BookedLoadCard[] }) {
+  return (
+    <div className="w-72 shrink-0">
+      <div className="sticky top-0 z-10 mb-2 flex items-center justify-between bg-background px-1 py-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Booked / Unassigned</p>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{loads.length}</span>
+      </div>
+      <div className="flex min-h-[120px] flex-col gap-2 rounded-lg bg-muted/40 p-2">
+        {loads.map((l) => (
+          <Link
+            key={l.load_id}
+            href={`/dispatch/new?load_id=${l.load_id}`}
+            className="rounded-lg border border-dashed border-border bg-card p-3 text-sm font-semibold shadow-elevation-1 transition-shadow hover:shadow-elevation-2"
+          >
+            {l.load_number}
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">Booked · not yet assigned</span>
+          </Link>
+        ))}
+        {loads.length === 0 && <p className="px-1 py-2 text-[11px] text-muted-foreground">No unassigned booked loads.</p>}
+      </div>
+    </div>
+  );
+}
+
+export function KanbanBoard({ initialCards, bookedLoads = [] }: { initialCards: DispatchCard[]; bookedLoads?: BookedLoadCard[] }) {
   const [cards, setCards] = useState(initialCards);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openDispatchId, setOpenDispatchId] = useState<string | null>(null);
@@ -427,6 +459,7 @@ export function KanbanBoard({ initialCards }: { initialCards: DispatchCard[] }) 
           escape hatch -- not a manual aria-describedby override. */}
       <DndContext id="dispatch-board-dnd" sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <div className="flex gap-4 overflow-x-auto pb-2">
+          <BookedColumn loads={bookedLoads} />
           {COLUMNS.map((column) => (
             <KanbanColumn key={column.key} column={column} cards={filteredCards.filter((c) => column.statuses.includes(c.status))} onOpen={handleOpen} />
           ))}

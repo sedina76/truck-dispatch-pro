@@ -118,7 +118,7 @@ export async function getExceptionCenterData(filters: ExceptionFilters): Promise
   // lost by fetching every column.
   let query = supabase
     .from(table)
-    .select("*, dispatches(loads(load_number), trucks(unit_number), drivers(first_name, last_name))", { count: "exact" })
+    .select("*, dispatches(loads:loads!dispatches_load_id_fkey(load_number), trucks(unit_number), drivers(first_name, last_name))", { count: "exact" })
     .eq("organization_id", organizationId);
 
   if (filters.severity && filters.severity !== "all") query = query.eq(severityCol, filters.severity);
@@ -570,7 +570,7 @@ export async function getExceptionDetail(exceptionId: string) {
   const { data: row } = await supabase
     .from("operational_exceptions")
     .select(
-      `*, dispatches(id, status, loads(id, load_number, load_stops(id, stop_type, stop_sequence, facility_name, city, state, scheduled_at, scheduled_window_end, timezone, arrived_at, departed_at)), trucks(unit_number), drivers(id, first_name, last_name))`
+      `*, dispatches(id, status, loads:loads!dispatches_load_id_fkey(id, load_number, load_stops(id, stop_type, stop_sequence, facility_name, city, state, scheduled_at, scheduled_window_end, timezone, arrived_at, departed_at)), trucks(unit_number), drivers(id, first_name, last_name))`
     )
     .eq("id", exceptionId)
     .eq("organization_id", organizationId)

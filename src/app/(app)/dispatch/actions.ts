@@ -8,107 +8,126 @@ import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { DispatchConflictError, translateDispatchError, type DispatchActionState } from "@/lib/dispatch/errors";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
+import {
+  ACTIVE_DISPATCH_STATUSES,
+  classifyAssignmentConflict,
+  conflictMessage,
+  CONFLICT_CODE,
+  LOAD_ALREADY_DISPATCHED_CODE,
+  type AssignmentConflict,
+  type ClassifyParams,
+  type ConflictResource,
+  type DispatchLite,
+} from "@/lib/dispatch/conflicts";
 
-// Same "in progress" set the Driver Portal uses for its own current-trip
-// resolver (src/lib/driver-portal/dashboard-data.ts, ACTIVE_DISPATCH_
-// STATUSES) -- duplicated here rather than imported so this staff-side
-// module never reaches into driver-portal internals. Used for the
-// dashboard/board, the conflict checks below, AND the partial unique
-// indexes in 0054_dispatch_conflict_guards.sql -- if this list ever
-// changes, that migration's WHERE clauses must change with it.
-const ACTIVE_DISPATCH_STATUSES = [
-  "assigned",
-  "accepted",
-  "en_route_to_pickup",
-  "at_pickup",
-  "loaded",
-  "en_route_to_delivery",
-  "at_delivery",
-] as const;
-
-// One index name -> field mapping, shared between the pre-check's own
-// lookups and the concurrency-backstop re-derivation after a 0054 unique-
-// violation.
-const CONFLICT_CODE: Record<"driver" | "truck" | "trailer", string> = {
-  driver: "DRIVER_ACTIVE_DISPATCH",
-  truck: "TRUCK_ACTIVE_DISPATCH",
-  trailer: "TRAILER_ACTIVE_DISPATCH",
-};
-const CONFLICT_LABEL: Record<"driver" | "truck" | "trailer", string> = {
-  driver: "This driver",
-  truck: "This truck",
-  trailer: "This trailer",
-};
-const UNIQUE_INDEX_FIELD: Record<string, "driver" | "truck" | "trailer"> = {
+const UNIQUE_INDEX_FIELD: Record<string, ConflictResource> = {
   dispatches_active_driver_unique: "driver",
   dispatches_active_truck_unique: "truck",
   dispatches_active_trailer_unique: "trailer",
 };
 
+// Fetch every ACTIVE dispatch that touches this load / driver / truck /
+// trailer, in ONE query, then let src/lib/dispatch/conflicts.ts decide.
+// The `loads` embed is disambiguated (`loads!dispatches_load_id_fkey`) --
+// since migration 0125 added loads.financial_dispatch_id -> dispatches.id
+// there are TWO dispatches<->loads relationships and a bare `loads(...)`
+// embed returns PGRST201, which the previous code silently read as "no
+// conflict". `error` is now surfaced, never swallowed.
+async function fetchConflictCandidates(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  params: ClassifyParams
+): Promise<DispatchLite[]> {
+  const ors: string[] = [
+    `driver_id.eq.${params.driverId}`,
+    `truck_id.eq.${params.truckId}`,
+  ];
+  if (params.loadId) ors.push(`load_id.eq.${params.loadId}`);
+  if (params.trailerId) ors.push(`trailer_id.eq.${params.trailerId}`);
+
+  const { data, error } = await supabase
+    .from("dispatches")
+    .select(
+      "id, status, load_id, driver_id, truck_id, trailer_id, loads:loads!dispatches_load_id_fkey(load_number), drivers(first_name, last_name), trucks(unit_number), trailers(unit_number)"
+    )
+    .in("status", ACTIVE_DISPATCH_STATUSES)
+    .or(ors.join(","));
+
+  if (error) {
+    // A failed availability lookup must NEVER read as "available". Surface
+    // it as an unexpected error (the outer catch logs full detail + shows
+    // the generic "couldn't save" message); the 0054 unique indexes still
+    // hard-block a real clash on INSERT regardless.
+    throw new Error(`dispatch conflict lookup failed: ${error.message}`);
+  }
+
+  return ((data ?? []) as unknown as Array<{
+    id: string;
+    status: string;
+    load_id: string;
+    driver_id: string | null;
+    truck_id: string | null;
+    trailer_id: string | null;
+    loads: { load_number: string } | null;
+    drivers: { first_name: string; last_name: string } | null;
+    trucks: { unit_number: string } | null;
+    trailers: { unit_number: string } | null;
+  }>).map((r) => ({
+    id: r.id,
+    status: r.status,
+    load_id: r.load_id,
+    load_number: r.loads?.load_number ?? null,
+    driver_id: r.driver_id,
+    truck_id: r.truck_id,
+    trailer_id: r.trailer_id,
+    driver_name: r.drivers ? `${r.drivers.first_name} ${r.drivers.last_name}` : null,
+    truck_unit: r.trucks?.unit_number ?? null,
+    trailer_unit: r.trailers?.unit_number ?? null,
+  }));
+}
+
+function toDispatchConflictError(c: AssignmentConflict): DispatchConflictError {
+  if (c.kind === "load_already_dispatched") {
+    return new DispatchConflictError(conflictMessage(c), {
+      code: LOAD_ALREADY_DISPATCHED_CODE,
+      field: null,
+      conflictDispatchId: c.dispatchId,
+    });
+  }
+  return new DispatchConflictError(conflictMessage(c), {
+    code: CONFLICT_CODE[c.resource],
+    field: c.resource,
+    conflictDispatchId: c.dispatchId,
+    conflictLoadNumber: c.loadNumber,
+  });
+}
+
 export async function updateDispatchStatus(id: string, status: string) {
   await updateRecordInPlace("dispatches", id, { status }, "/dispatch/board");
 }
 
-// Looks up whichever OTHER dispatch currently holds this driver/truck/
-// trailer active, if any. Shared by the pre-check (checkAssignment
-// Conflicts) and the concurrency-backstop re-derivation (after a 0054
-// unique_violation) so both paths produce the exact same message shape.
-async function findActiveConflict(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  field: "driver" | "truck" | "trailer",
-  value: string,
-  excludeDispatchId?: string
-): Promise<{ dispatchId: string; loadNumber: string | null } | null> {
-  const column = field === "driver" ? "driver_id" : field === "truck" ? "truck_id" : "trailer_id";
-  let query = supabase.from("dispatches").select("id, loads(load_number)").eq(column, value).in("status", ACTIVE_DISPATCH_STATUSES);
-  if (excludeDispatchId) query = query.neq("id", excludeDispatchId);
-  const { data } = await query.limit(1).maybeSingle();
-  const row = data as unknown as { id: string; loads: { load_number: string } | null } | null;
-  if (!row) return null;
-  return { dispatchId: row.id, loadNumber: row.loads?.load_number ?? null };
-}
-
-function conflictError(field: "driver" | "truck" | "trailer", hit: { dispatchId: string; loadNumber: string | null }): DispatchConflictError {
-  const loadRef = hit.loadNumber ? `load ${hit.loadNumber}` : "another active dispatch";
-  return new DispatchConflictError(`${CONFLICT_LABEL[field]} is already assigned to active ${loadRef}.`, {
-    code: CONFLICT_CODE[field],
-    field,
-    conflictDispatchId: hit.dispatchId,
-    conflictLoadNumber: hit.loadNumber,
-  });
-}
-
 // ---------------------------------------------------------------------------
-// Conflict detection (spec section 11): a driver/truck/trailer already tied
-// to another ACTIVE dispatch is a hard block, not a soft warning -- none of
-// the three can physically be in two places at once. Reads only
-// dispatches.status, real scheduling data this schema already has; no
-// fabricated availability engine. excludeDispatchId lets editing a dispatch
-// without changing its driver/truck/trailer skip self-conflict.
+// Conflict detection (spec section 11): a load that already has an active
+// dispatch, or a driver/truck/trailer already tied to another ACTIVE
+// dispatch, is a hard block -- none of them can be in two places at once.
+// Reads only dispatches.status; no fabricated availability engine. The
+// canonical rule lives in src/lib/dispatch/conflicts.ts and is shared,
+// verbatim, by the fast pre-check here AND by raceLoserConflict()'s
+// re-derivation after a 0054 partial-unique-index rejection -- so the
+// frontend never sees two different verdicts. excludeDispatchId lets an
+// edit skip self-conflict.
 //
 // This is the fast pre-check, not the sole guarantee -- it's a plain
-// SELECT-then-INSERT and can race with a concurrent request. The 0054
-// partial unique indexes are the actual authoritative backstop; see
-// createDispatch/updateDispatch's error handling for how a race that slips
-// past this check still comes back as the same kind of message, never a
-// raw DB error.
+// SELECT-then-INSERT and can race. The 0054 partial unique indexes are the
+// authoritative backstop; createDispatch/updateDispatch translate a race
+// that slips past into the same message shape, never a raw DB error.
 // ---------------------------------------------------------------------------
 async function checkAssignmentConflicts(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  params: { driverId: string; truckId: string; trailerId: string | null; excludeDispatchId?: string }
+  params: { loadId?: string; driverId: string; truckId: string; trailerId: string | null; excludeDispatchId?: string }
 ) {
-  const { driverId, truckId, trailerId, excludeDispatchId } = params;
-
-  const driverConflict = await findActiveConflict(supabase, "driver", driverId, excludeDispatchId);
-  if (driverConflict) throw conflictError("driver", driverConflict);
-
-  const truckConflict = await findActiveConflict(supabase, "truck", truckId, excludeDispatchId);
-  if (truckConflict) throw conflictError("truck", truckConflict);
-
-  if (trailerId) {
-    const trailerConflict = await findActiveConflict(supabase, "trailer", trailerId, excludeDispatchId);
-    if (trailerConflict) throw conflictError("trailer", trailerConflict);
-  }
+  const candidates = await fetchConflictCandidates(supabase, params);
+  const conflict = classifyAssignmentConflict(candidates, params);
+  if (conflict) throw toDispatchConflictError(conflict);
 }
 
 // Out-of-service equipment (spec section 6). getAssignmentOptions() already
@@ -175,9 +194,22 @@ async function raceLoserConflict(
   excludeDispatchId?: string
 ): Promise<DispatchConflictError> {
   const field = UNIQUE_INDEX_FIELD[indexName];
-  const value = field === "driver" ? values.driver_id : field === "truck" ? values.truck_id : values.trailer_id;
-  const hit = value ? await findActiveConflict(supabase, field, value, excludeDispatchId) : null;
-  if (hit) return conflictError(field, hit);
+  const candidates = await fetchConflictCandidates(supabase, {
+    driverId: values.driver_id,
+    truckId: values.truck_id,
+    trailerId: values.trailer_id,
+    excludeDispatchId,
+  });
+  const conflict = classifyAssignmentConflict(candidates, {
+    driverId: values.driver_id,
+    truckId: values.truck_id,
+    trailerId: values.trailer_id,
+    excludeDispatchId,
+  });
+  if (conflict) return toDispatchConflictError(conflict);
+  // The winner's own dispatch was cancelled/edited in the instant between
+  // the failed insert and this re-lookup -- still an expected "someone else
+  // just took this" conflict, never the raw DB error.
   return new DispatchConflictError("This assignment was just taken by another dispatch. Please review and choose different equipment/driver.", {
     code: "CONCURRENT_UPDATE",
     field,
@@ -270,7 +302,10 @@ export async function createDispatch(_prevState: DispatchActionState, formData: 
     const values = dispatchValues(formData);
 
     await checkEquipmentAvailable(supabase, { truckId: values.truck_id, trailerId: values.trailer_id });
-    await checkAssignmentConflicts(supabase, { driverId: values.driver_id, truckId: values.truck_id, trailerId: values.trailer_id });
+    // loadId here -> also rejects a duplicate dispatch for a load that
+    // already has an active one (this incident: LD-100024 was already on
+    // active dispatch), with a clear load-level message.
+    await checkAssignmentConflicts(supabase, { loadId, driverId: values.driver_id, truckId: values.truck_id, trailerId: values.trailer_id });
 
     const { data, error } = await supabase
       .from("dispatches")

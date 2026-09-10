@@ -146,7 +146,8 @@ async function fetchDispatchUniverse(supabase: ServiceRoleClient, organizationId
   }
 
   if (idSet.size === 0) return [];
-  const { data } = await supabase.from("dispatches").select("id, organization_id, load_id, status, dispatched_at, loads(load_number)").in("id", [...idSet]);
+  const { data, error } = await supabase.from("dispatches").select("id, organization_id, load_id, status, dispatched_at, loads:loads!dispatches_load_id_fkey(load_number)").in("id", [...idSet]);
+  if (error) console.error("[exceptions sync] dispatch load lookup failed:", error);
   return ((data ?? []) as unknown as Array<{ id: string; organization_id: string; load_id: string; status: string; loads: { load_number: string } | null }>).map((d) => ({
     id: d.id,
     organizationId: d.organization_id,

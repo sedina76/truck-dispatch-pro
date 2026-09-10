@@ -34,8 +34,29 @@ export const INVOICED_LOAD_STATUSES = ["invoiced", "closed"] as const;
 
 export const CANCELLED_LOAD_STATUS = "cancelled";
 
+// Every load that is still open work for an operator -- booked-but-unassigned
+// PLUS dispatched-and-moving -- but not yet delivered/invoiced/cancelled.
+// This is the set the /loads list's "Active" KPI counts, so a freshly booked
+// load is visibly in flight there the moment it exists (it was previously
+// invisible: counted as neither Active nor Delivered).
+//
+// Deliberately SEPARATE from ACTIVE_LOAD_STATUSES: the dashboard keeps
+// "Active Loads" (ACTIVE_LOAD_STATUSES, via isActiveLoadStatus) and "Loads
+// Pending Dispatch" (booked) as two distinct KPIs and must not double-count,
+// so nothing that already uses ACTIVE_LOAD_STATUSES / isActiveLoadStatus
+// changes -- only callers that explicitly want "open work including booked"
+// use this.
+export const OPEN_LOAD_STATUSES = [
+  ...PENDING_DISPATCH_LOAD_STATUSES,
+  ...ACTIVE_LOAD_STATUSES,
+] as const;
+
 export function isActiveLoadStatus(status: string): boolean {
   return (ACTIVE_LOAD_STATUSES as readonly string[]).includes(status);
+}
+
+export function isOpenLoadStatus(status: string): boolean {
+  return (OPEN_LOAD_STATUSES as readonly string[]).includes(status);
 }
 
 export function isCompletedLoadStatus(status: string): boolean {

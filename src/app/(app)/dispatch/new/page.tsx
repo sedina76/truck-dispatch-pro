@@ -13,6 +13,7 @@ import { DispatchForm } from "@/components/dispatch/dispatch-form";
 import { DispatchConflictAlert } from "@/components/dispatch/dispatch-conflict-alert";
 import { getLoadSummary, getAssignmentOptions, getRateConfirmation } from "../dispatch-data";
 import { createDispatch } from "../actions";
+import { ACTIVE_DISPATCH_STATUSES } from "@/lib/dispatch/conflicts";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 const SECTION_DEFAULTS: Record<string, boolean> = {
@@ -41,8 +42,16 @@ export default async function NewDispatchPage({ searchParams }: { searchParams: 
     // authoritative now (0068 writer cutover). Merged in below, fetched
     // only for canSeeFinancials (unchanged from the 2G.9 gating already
     // here -- only the SOURCE changes).
-    const { data: loadsData } = await supabase.from("loads").select("id, load_number").in("status", ["draft", "posted", "booked"]).order("load_number");
-    const loads = (loadsData ?? []) as { id: string; load_number: string }[];
+    // Only loads that are NOT already on an active dispatch -- so the picker
+    // and the server-side conflict check (checkAssignmentConflicts, which
+    // now rejects a load that already has an active dispatch) agree, and a
+    // dispatcher is never invited to duplicate-dispatch a load.
+    const [{ data: loadsData }, { data: activeDispatchRows }] = await Promise.all([
+      supabase.from("loads").select("id, load_number").in("status", ["draft", "posted", "booked"]).order("load_number"),
+      supabase.from("dispatches").select("load_id").in("status", ACTIVE_DISPATCH_STATUSES),
+    ]);
+    const dispatchedLoadIds = new Set((activeDispatchRows ?? []).map((d) => d.load_id));
+    const loads = ((loadsData ?? []) as { id: string; load_number: string }[]).filter((l) => !dispatchedLoadIds.has(l.id));
     const rateByLoadId = new Map<string, number>();
     if (canSeeFinancials && loads.length > 0) {
       const { data: lf } = await supabase.from("load_financials").select("load_id, rate").in("load_id", loads.map((l) => l.id));

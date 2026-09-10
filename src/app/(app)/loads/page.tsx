@@ -6,7 +6,7 @@ import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { ACTIVE_LOAD_STATUSES, COMPLETED_LOAD_STATUSES } from "@/lib/loads/status";
+import { OPEN_LOAD_STATUSES, COMPLETED_LOAD_STATUSES } from "@/lib/loads/status";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
@@ -85,7 +85,7 @@ export default async function LoadsPage({
   const [{ data: summaryData }, { count: plainLoadCount }, { count: activeCount }, { count: deliveredCount }] = await Promise.all([
     canSeeFinancials ? supabase.rpc("get_load_summary", { p_search: q ?? null }).single() : Promise.resolve({ data: null }),
     canSeeFinancials ? Promise.resolve({ count: null }) : supabase.from("loads").select("id", { count: "exact", head: true }),
-    supabase.from("loads").select("id", { count: "exact", head: true }).in("status", ACTIVE_LOAD_STATUSES),
+    supabase.from("loads").select("id", { count: "exact", head: true }).in("status", OPEN_LOAD_STATUSES),
     supabase.from("loads").select("id", { count: "exact", head: true }).in("status", COMPLETED_LOAD_STATUSES),
   ]);
   const summary = summaryData as unknown as { total_loads: number; total_rate_value: number } | null;

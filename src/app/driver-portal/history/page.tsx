@@ -17,7 +17,7 @@ export default async function DriverPortalHistoryPage() {
   const supabase = createServiceRoleClient();
   const { data: dispatches } = await supabase
     .from("dispatches")
-    .select("id, status, dispatched_at, completed_at, loads(id, load_number, total_miles)")
+    .select("id, status, dispatched_at, completed_at, loads:loads!dispatches_load_id_fkey(id, load_number, total_miles)")
     .eq("driver_id", identity.driverId)
     .in("status", ["delivered", "completed"])
     .order("dispatched_at", { ascending: false })

@@ -496,7 +496,7 @@ export async function sendDriverMessage(dispatchId: string, body: string) {
 
   const { data: dispatch } = await supabase
     .from("dispatches")
-    .select("id, load_id, driver_id, organization_id, loads(load_number)")
+    .select("id, load_id, driver_id, organization_id, loads:loads!dispatches_load_id_fkey(load_number)")
     .eq("id", dispatchId)
     .maybeSingle();
   if (!dispatch || dispatch.driver_id !== identity.driverId || dispatch.organization_id !== identity.organizationId) {

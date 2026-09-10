@@ -79,7 +79,10 @@ export default async function DriversPage({
   // is authoritative now. The financial query itself is only issued for
   // canSeeFinancials -- not merely hidden from driver/viewer in the table
   // below.
-  const { data: dispatchRows } = await supabase.from("dispatches").select("id, driver_id, loads(status, total_miles)");
+  const { data: dispatchRows, error: dispatchRowsError } = await supabase
+    .from("dispatches")
+    .select("id, driver_id, loads:loads!dispatches_load_id_fkey(status, total_miles)");
+  if (dispatchRowsError) console.error("[drivers page] dispatch load lookup failed:", dispatchRowsError);
   const dispatchIds = (dispatchRows ?? []).map((d) => d.id);
   const { data: financialsRows } = canSeeFinancials && dispatchIds.length > 0
     ? await supabase.from("dispatch_financials").select("dispatch_id, carrier_net_amount").in("dispatch_id", dispatchIds)

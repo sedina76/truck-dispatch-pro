@@ -67,7 +67,7 @@ export async function DriverTripHistorySection({
     .from("dispatches")
     .select(
       `id, status, dispatched_at,
-       loads(id, load_number, status, total_miles,
+       loads:loads!dispatches_load_id_fkey(id, load_number, status, total_miles,
              brokers(company_name), customers(company_name),
              load_stops(stop_type, scheduled_at, arrived_at, departed_at, timezone)),
        trucks(unit_number),

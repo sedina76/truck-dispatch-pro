@@ -150,7 +150,7 @@ const TYPE_CONFIG: Record<string, TypeConfig> = {
   },
   dispatch: {
     table: "dispatches",
-    columns: "id, loads(load_number)",
+    columns: "id, loads:loads!dispatches_load_id_fkey(load_number)",
     toDisplay: (r) => ({
       displayName: r.loads?.load_number ? `Dispatch · ${r.loads.load_number}` : "Dispatch",
       secondaryIdentifier: null,

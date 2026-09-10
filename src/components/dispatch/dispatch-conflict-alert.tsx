@@ -14,6 +14,7 @@ const HEADING_BY_CODE: Record<string, string> = {
   TRUCK_OUT_OF_SERVICE: "Truck unavailable",
   TRAILER_OUT_OF_SERVICE: "Trailer unavailable",
   CARRIER_MISMATCH: "Assignment not valid",
+  LOAD_ALREADY_DISPATCHED: "Load already dispatched",
   CONCURRENT_UPDATE: "Assignment just changed",
   VALIDATION_ERROR: "Missing information",
   UNKNOWN: "Couldn't save this dispatch",
@@ -33,6 +34,7 @@ export function DispatchConflictAlert() {
   const heading = (state.code && HEADING_BY_CODE[state.code]) || "Couldn't save this dispatch";
   const isOutOfService = state.code === "TRUCK_OUT_OF_SERVICE" || state.code === "TRAILER_OUT_OF_SERVICE";
   const isActiveDispatchConflict = state.code === "DRIVER_ACTIVE_DISPATCH" || state.code === "TRUCK_ACTIVE_DISPATCH" || state.code === "TRAILER_ACTIVE_DISPATCH";
+  const isLoadAlreadyDispatched = state.code === "LOAD_ALREADY_DISPATCHED";
   const fieldLabel = state.field ? FIELD_LABEL[state.field] : null;
 
   function focusField() {
@@ -51,7 +53,7 @@ export function DispatchConflictAlert() {
           <p className="mt-0.5 text-desktop-text">{state.error}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isActiveDispatchConflict && state.conflictDispatchId && (
+          {(isActiveDispatchConflict || isLoadAlreadyDispatched) && state.conflictDispatchId && (
             <Link
               href={`/dispatch/${state.conflictDispatchId}`}
               className="inline-flex h-7 items-center rounded-sm border border-desktop-border bg-desktop-panel px-2.5 text-[12px] font-medium text-desktop-text transition-colors hover:bg-desktop-muted"

@@ -22,7 +22,7 @@ export default async function DriverPortalHistoryDetailPage({ params }: { params
   const supabase = createServiceRoleClient();
   const { data: dispatch } = await supabase
     .from("dispatches")
-    .select("id, status, dispatched_at, completed_at, trucks(unit_number), trailers(unit_number), loads(id, load_number, commodity, total_miles)")
+    .select("id, status, dispatched_at, completed_at, trucks(unit_number), trailers(unit_number), loads:loads!dispatches_load_id_fkey(id, load_number, commodity, total_miles)")
     .eq("id", dispatchId)
     .eq("driver_id", identity.driverId)
     .maybeSingle();

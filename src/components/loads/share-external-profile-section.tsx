@@ -13,7 +13,7 @@ export async function ShareExternalProfileSection({
   const supabase = await createClient();
   const query = supabase
     .from("dispatches")
-    .select("load_id, dispatched_at, loads(load_number, status)")
+    .select("load_id, dispatched_at, loads:loads!dispatches_load_id_fkey(load_number, status)")
     .order("dispatched_at", { ascending: false })
     .limit(20);
   const { data } =

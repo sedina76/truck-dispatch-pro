@@ -33,7 +33,7 @@ export default async function TrackingPage() {
       ? supabase.from("drivers").select("id, first_name, last_name").in("id", driverIds)
       : Promise.resolve({ data: [] }),
     dispatchIds.length > 0
-      ? supabase.from("dispatches").select("id, status, loads(load_number), trucks(unit_number)").in("id", dispatchIds)
+      ? supabase.from("dispatches").select("id, status, loads:loads!dispatches_load_id_fkey(load_number), trucks(unit_number)").in("id", dispatchIds)
       : Promise.resolve({ data: [] }),
   ]);
 
