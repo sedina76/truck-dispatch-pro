@@ -40,16 +40,22 @@ export function KpiTile({ data }: { data: KpiTileData }) {
     <Link
       href={data.href}
       className={cn(
-        "flex h-full w-full flex-col justify-between rounded-md border border-desktop-border bg-card px-2.5 py-2",
+        // Tightened padding so all 8 primary KPI cards fit one desktop row
+        // (see KpiStrip). Every value stays text-base for readability.
+        "flex h-full w-full flex-col justify-between rounded-md border border-desktop-border bg-card px-2 py-1.5",
         "shadow-elevation-1 transition-colors hover:border-primary/40"
       )}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-1.5">
         <div className="min-w-0">
-          <p className="truncate text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{data.label}</p>
+          {/* Full title always shown -- wraps to a 2nd line rather than
+              truncating to "ACTIVE LO..." (never an ellipsis). Short labels
+              are supplied by the dashboard so this stays one line on
+              desktop. */}
+          <p className="wrap-anywhere text-[10px] font-semibold uppercase leading-tight tracking-normal text-muted-foreground">{data.label}</p>
           <p className="mt-0.5 truncate text-base font-semibold leading-tight tabular-nums tracking-tight">{data.value}</p>
         </div>
-        <div className={cn("flex size-5 shrink-0 items-center justify-center rounded-sm", TONE_ICON_CLASSES[data.tone])}>
+        <div className={cn("flex size-4 shrink-0 items-center justify-center rounded-sm", TONE_ICON_CLASSES[data.tone])}>
           {data.icon}
         </div>
       </div>
@@ -77,7 +83,10 @@ export function KpiTile({ data }: { data: KpiTileData }) {
   );
 
   return (
-    <div className="h-20 w-full">
+    // min-h (not a fixed h): in the single-row KpiStrip the flex row
+    // stretches every card to the tallest, so if a label ever wraps the
+    // whole row grows together -- equal-width, equal-height, no clipping.
+    <div className="h-full min-h-20 w-full">
       {data.tooltip ? (
         <Tooltip>
           <TooltipTrigger asChild>{card}</TooltipTrigger>

@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { openCommandPalette } from "@/components/nav/command-palette";
 import { NotificationsMenu } from "@/components/nav/notifications-menu";
+import { FullscreenToggle } from "@/components/desktop/fullscreen-toggle";
 import { useDesktopActions } from "@/components/desktop/actions-context";
 import { DesktopExportMenu } from "@/components/desktop/export-menu";
 import { DesktopEmailDialog } from "@/components/desktop/email-dialog";
@@ -102,6 +103,7 @@ export function DesktopToolbar({ notifications }: { notifications: NotificationR
       <DesktopEmailDialog open={emailOpen} onOpenChange={setEmailOpen} />
 
       <div className="ml-auto flex items-center gap-0.5">
+        <FullscreenToggle />
         <NotificationsMenu notifications={notifications} />
         <ToolbarIconButton title="Search / Help" onClick={openCommandPalette}>
           <HelpCircle className="size-4" />

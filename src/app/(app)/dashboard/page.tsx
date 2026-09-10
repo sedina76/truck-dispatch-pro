@@ -1,19 +1,18 @@
 import Link from "next/link";
-import { ShieldAlert, Activity, CheckSquare, TrendingUp, Building2, Radio, MapPin } from "lucide-react";
+import { ShieldAlert, Activity, CheckSquare, TrendingUp, Building2, Radio, MapPin, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { RevenueChart, type RevenuePoint } from "@/components/dashboard/revenue-chart";
 import { StatusBarChart, type StatusPoint } from "@/components/dashboard/status-bar-chart";
 import { StatusDonutChart, type DonutSlice } from "@/components/dashboard/status-donut-chart";
-import { KpiScroller } from "@/components/dashboard/kpi-scroller";
+import { KpiStrip } from "@/components/dashboard/kpi-strip";
 import { getDashboardKpis } from "./kpi-data";
 import { EmptyState } from "@/components/ui/empty-state";
 import { COMPLETED_LOAD_STATUSES, INVOICED_LOAD_STATUSES } from "@/lib/loads/status";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { formatMoney } from "@/lib/collections/types";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
-import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -298,6 +297,90 @@ export default async function DashboardPage() {
     profiles: { full_name: string } | null;
   }[];
 
+  // KPI de-clutter: the primary strip is now EXACTLY these 8 operational
+  // tiles, in this order, in ONE horizontal row (KpiStrip -- all 8 fit on
+  // a large desktop; the strip itself scrolls on smaller screens). Every
+  // tile's VALUE / LINK / TONE / TOOLTIP / CALCULATION comes verbatim from
+  // getDashboardKpis(); only the visible label is shortened here (the full
+  // name still lives in each tile's tooltip). The tiles not in this list
+  // are routed elsewhere on the page (see below). For driver/viewer the
+  // financial ids (revenue-today / outstanding-invoices / ar-overdue) are
+  // already filtered out upstream, so they see the operational subset.
+  const PRIMARY_KPI_IDS = [
+    "revenue-today",
+    "active-loads",
+    "pending-dispatch",
+    "drivers-available",
+    "trucks-available",
+    "outstanding-invoices",
+    "ar-overdue",
+    "open-exceptions",
+  ];
+  const SHORT_KPI_LABELS: Record<string, string> = {
+    "revenue-today": "Revenue",
+    "active-loads": "Active Loads",
+    "pending-dispatch": "Pending",
+    "drivers-available": "Drivers Available",
+    "trucks-available": "Trucks Available",
+    "outstanding-invoices": "Outstanding",
+    "ar-overdue": "Overdue",
+    "open-exceptions": "Exceptions",
+  };
+  const primaryKpis = PRIMARY_KPI_IDS.map((id) => kpiTiles.find((t) => t.id === id))
+    .filter((t): t is (typeof kpiTiles)[number] => t != null)
+    .map((t) => ({ ...t, label: SHORT_KPI_LABELS[t.id] ?? t.label }));
+  // Relocated out of the primary row:
+  //   compliance-alerts -> Company Overview (compact line)
+  //   profit-month + collected-this-month -> Financial Performance section
+  const complianceTile = kpiTiles.find((t) => t.id === "compliance-alerts");
+  const profitTile = kpiTiles.find((t) => t.id === "profit-month");
+  const collectedTile = kpiTiles.find((t) => t.id === "collected-this-month");
+  const complianceCount = complianceTile ? Number(complianceTile.value) : 0;
+  const unapprovedExpenseCount = expenseSummary?.pending_count ?? 0;
+
+  // Financial Performance -- rendered as ONE horizontal row of metric
+  // cells (below). Values / links / tones are unchanged; the two "This
+  // Month" cells reuse the tiles getDashboardKpis() already built (Profit
+  // keeps its month-over-month sub-line). Expenses This Month / Direct
+  // Load Costs are included only when non-zero.
+  type FinMetric = { label: string; value: string | number; href: string; tone?: "success" | "danger" | "primary"; sub?: string };
+  const finPerf: FinMetric[] = [
+    { label: "Profitable Loads", value: profitability?.load_count ?? 0, href: "/reports/load-margin" },
+    { label: "MTD Revenue", value: `$${Number(profitability?.total_revenue ?? 0).toLocaleString()}`, href: "/reports/profitability" },
+    {
+      label: "Gross Profit",
+      value: `$${Number(profitability?.total_gross_profit ?? 0).toLocaleString()}`,
+      tone: (profitability?.total_gross_profit ?? 0) >= 0 ? "success" : "danger",
+      href: "/reports/profitability",
+    },
+    {
+      label: "Average Margin",
+      value: profitability?.avg_margin_percent != null ? `${Number(profitability.avg_margin_percent).toFixed(1)}%` : "--",
+      tone: "primary",
+      href: "/reports/profitability",
+    },
+    ...(profitTile
+      ? [
+          {
+            label: "Profit This Month",
+            value: profitTile.value,
+            tone: (profitTile.tone === "danger" ? "danger" : "success") as "success" | "danger",
+            sub: profitTile.delta ? `${Math.abs(profitTile.delta.value).toFixed(0)}% ${profitTile.delta.label}` : undefined,
+            href: profitTile.href,
+          } satisfies FinMetric,
+        ]
+      : []),
+    ...(collectedTile
+      ? [{ label: "Collected This Month", value: collectedTile.value, tone: "success" as const, href: collectedTile.href } satisfies FinMetric]
+      : []),
+    ...((expenseSummary?.total_amount ?? 0) > 0
+      ? [{ label: "Expenses This Month", value: `$${Number(expenseSummary?.total_amount ?? 0).toLocaleString()}`, href: "/reports/expenses" } satisfies FinMetric]
+      : []),
+    ...((expenseSummary?.direct_load_total ?? 0) > 0
+      ? [{ label: "Direct Load Costs", value: `$${Number(expenseSummary?.direct_load_total ?? 0).toLocaleString()}`, href: "/reports/expenses" } satisfies FinMetric]
+      : []),
+  ];
+
   return (
     <div className="space-y-3">
       <DesktopWorkspaceTabs tabs={[{ label: "Dashboard", href: "/dashboard" }]} />
@@ -310,53 +393,75 @@ export default async function DashboardPage() {
         </p>
       </div>
 
-      <KpiScroller tiles={kpiTiles} />
+      {/* Primary operational KPIs -- exactly 8 equal-width cards in ONE
+          row on large desktop; the strip scrolls horizontally (touch /
+          swipe / wheel) on smaller screens instead of shrinking cards to
+          unreadable. Only this strip scrolls -- the rest of the dashboard
+          stays put. */}
+      <KpiStrip tiles={primaryKpis} />
 
-      {/* Phase 2G.9: not rendered at all for driver/viewer, matching every
-          other financial section audited this phase -- their underlying
-          data is genuinely empty (the RPCs above were never called), so
-          showing a zeroed-out "Revenue"/"Profit" strip would be
-          misleading, not merely redundant.
-
-          UI fix (KPI layout): these 7 cards were previously two separate
-          <DesktopKpiStrip> grids (4 then 3), each independently wrapping
-          at its own xl:grid-cols-7 -- since neither strip ever had more
-          than 4 children, that class could never produce one shared row.
-          Merged into a single strip so the existing xl:grid-cols-7 (kicks
-          in at the default Tailwind xl breakpoint, 1280px -- unmodified
-          here, confirmed via the shared component) lays out all 7 in one
-          row together. dense (kpi-box.tsx) is opt-in and scoped to just
-          this call site -- every other DesktopKpiBox/Strip usage in the
-          app (~30 other pages) is untouched. No calculation, RPC, query,
-          value, or label changed -- purely the container/grouping. */}
+      {/* Financial Performance -- its own card below the primary KPI row,
+          with every visible metric on ONE horizontal line: equal-width
+          cells, vertical dividers, never wrapping to a second row. Fits
+          without scrolling on desktop; on narrower screens the row itself
+          scrolls (touch / swipe / trackpad), overscroll contained so the
+          dashboard never scrolls sideways. Not rendered for driver/viewer
+          -- their underlying RPCs were never called, so a zeroed strip
+          would mislead. Values, links, tones, and the Profit MoM sub-line
+          are unchanged; Expenses / Direct Load Costs cells appear only
+          when non-zero. Does not repeat any of the 8 primary KPI cards. */}
       {canSeeFinancials && (
-        <DesktopKpiStrip className="gap-1.5">
-          <DesktopKpiBox dense label="MTD Profitable Loads" value={profitability?.load_count ?? 0} href="/reports/load-margin" />
-          <DesktopKpiBox dense label="MTD Revenue" value={`$${Number(profitability?.total_revenue ?? 0).toLocaleString()}`} href="/reports/profitability" />
-          <DesktopKpiBox
-            dense
-            label="MTD Gross Profit"
-            value={`$${Number(profitability?.total_gross_profit ?? 0).toLocaleString()}`}
-            tone={(profitability?.total_gross_profit ?? 0) >= 0 ? "success" : "danger"}
-            href="/reports/profitability"
-          />
-          <DesktopKpiBox
-            dense
-            label="MTD Avg Margin %"
-            value={profitability?.avg_margin_percent != null ? `${Number(profitability.avg_margin_percent).toFixed(1)}%` : "--"}
-            tone="primary"
-            href="/reports/profitability"
-          />
-          <DesktopKpiBox dense label="Expenses This Month" value={`$${Number(expenseSummary?.total_amount ?? 0).toLocaleString()}`} href="/reports/expenses" />
-          <DesktopKpiBox dense label="Direct Load Costs" value={`$${Number(expenseSummary?.direct_load_total ?? 0).toLocaleString()}`} href="/reports/expenses" />
-          <DesktopKpiBox
-            dense
-            label="Unapproved Expenses"
-            value={`${expenseSummary?.pending_count ?? 0} ($${Number(expenseSummary?.pending_amount ?? 0).toLocaleString()})`}
-            tone={(expenseSummary?.pending_count ?? 0) > 0 ? "warning" : "neutral"}
-            href="/expenses?status=submitted"
-          />
-        </DesktopKpiStrip>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-[13px]">Financial Performance</CardTitle>
+            <CardDescription>Month-to-date profitability, expenses, and collections</CardDescription>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <div className="no-scrollbar flex overflow-x-auto overscroll-x-contain">
+              {finPerf.map((m, i) => (
+                <Link
+                  key={m.label}
+                  href={m.href}
+                  className={`flex min-w-32 flex-1 flex-col gap-1 px-3 py-1.5 transition-colors hover:bg-desktop-muted ${
+                    i > 0 ? "border-l border-desktop-border" : ""
+                  }`}
+                >
+                  <span className="text-[10px] font-semibold uppercase leading-tight tracking-normal text-muted-foreground">{m.label}</span>
+                  <span
+                    className={`text-[15px] font-semibold leading-tight tabular-nums ${
+                      m.tone === "success"
+                        ? "text-desktop-success"
+                        : m.tone === "danger"
+                          ? "text-desktop-danger"
+                          : m.tone === "primary"
+                            ? "text-primary"
+                            : "text-desktop-text"
+                    }`}
+                  >
+                    {m.value}
+                  </span>
+                  {m.sub && <span className="text-[10px] text-muted-foreground">{m.sub}</span>}
+                </Link>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Unapproved Expenses -- was a permanent (often zero) KPI box; now
+          an alert badge that appears ONLY when something is actually
+          waiting for review. Same value + link as before. */}
+      {canSeeFinancials && unapprovedExpenseCount > 0 && (
+        <Link
+          href="/expenses?status=submitted"
+          className="flex items-center justify-between rounded-md border border-warning/30 bg-warning/5 px-3 py-1.5 text-[12.5px] transition-colors hover:bg-warning/10"
+        >
+          <span className="flex items-center gap-2">
+            <AlertTriangle className="size-3.5 text-warning" />
+            <span className="font-medium">{unapprovedExpenseCount}</span> unapproved expense{unapprovedExpenseCount === 1 ? "" : "s"} (${Number(expenseSummary?.pending_amount ?? 0).toLocaleString()}) awaiting review
+          </span>
+          <span className="text-[11.5px] font-medium text-primary">Review &rarr;</span>
+        </Link>
       )}
 
       {deliveredLoadsMissingPod.length > 0 && (
@@ -501,6 +606,24 @@ export default async function DashboardPage() {
               <MiniStat label="Brokers" value={brokerCount.count ?? 0} />
               <MiniStat label="Carriers" value={carrierCount.count ?? 0} />
             </div>
+            {complianceTile && (
+              // Compliance moved out of the primary KPI row -- surfaced here
+              // as a compact status line (the detailed list lives in the
+              // "Compliance Alerts" card below). Same count + link as the
+              // old KPI tile.
+              <Link
+                href={complianceTile.href}
+                className="flex items-center justify-between gap-2 rounded-sm border border-border px-2 py-1.5 text-xs transition-colors hover:bg-muted"
+              >
+                <span className="flex items-center gap-1.5 font-medium">
+                  <ShieldAlert className={`size-3.5 ${complianceCount > 0 ? "text-danger" : "text-muted-foreground"}`} />
+                  Compliance
+                </span>
+                <span className={complianceCount > 0 ? "font-semibold text-danger" : "text-muted-foreground"}>
+                  {complianceCount > 0 ? `${complianceCount} expiring / expired` : "All clear"}
+                </span>
+              </Link>
+            )}
             <Link href="/settings/organization" className="block pt-1 text-xs font-medium text-primary hover:underline">
               Edit company profile &rarr;
             </Link>
