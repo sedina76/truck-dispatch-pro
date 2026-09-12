@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { FileText, CheckCircle2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { deleteRecord, getCurrentOrgId } from "@/lib/actions/records";
+import { deleteRecord } from "@/lib/actions/records";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
@@ -24,8 +24,7 @@ import { CollectionsSection } from "@/components/collections/collections-section
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { evaluateFactoringEligibility, isNonTerminalFactoredInvoiceStatus } from "@/lib/factoring/eligibility";
-import { getDefaultFactoringRelationship } from "@/lib/factoring/default-relationship";
-import { FactoringSection, type RelationshipOption, type FactoredInvoiceDisplay, type FactoringEventDisplay } from "@/components/invoices/factoring-section";
+import { FactoringSection, type FactoringSectionEligibility, type FactoredInvoiceDisplay, type FactoringEventDisplay } from "@/components/invoices/factoring-section";
 
 export default async function InvoiceDetailPage({
   params,
@@ -168,9 +167,34 @@ export default async function InvoiceDetailPage({
   // is the sole authority and re-validates everything itself. Reading
   // factored_invoices/factoring_events goes through this page's normal
   // caller-scoped client (RLS-safe) the same as every other query above.
+  //
+  // Phase 3B.1.5 (Section A) -- CORRECTION of 3B.1.3/3B.1.4's approach:
+  // a carrier "derived" by joining this invoice's dispatch/load record is
+  // LIVE, CURRENT operational state -- it can change at any time (a load
+  // correction, a new default relationship, a policy flip) with no trace
+  // left on the invoice itself. It is NOT an immutable financial snapshot
+  // (carrier/broker/customer/factor/NOA/remittance/terms) captured at the
+  // time the invoice was created, and no such snapshot exists anywhere in
+  // the schema yet for any invoice issued under this legacy flow.
+  // Treating a live derivation as authorization to submit -- as 3B.1.4's
+  // carrierGate did -- was exactly the mistake: it let a submission's
+  // financial identity silently ride on whatever the dispatch/load table
+  // says right now, not on what was true when the invoice was billed.
+  // Live derivation remains legitimate for non-authoritative purposes
+  // (explaining which carrier appears associated with the invoice,
+  // helping a user locate it for remediation, detecting conflicts) but
+  // must never again be used to authorize a submission -- so this page
+  // no longer derives, queries, or offers any carrier/relationship at all.
+  //
+  // submit_invoice_to_factor() (0140) now unconditionally rejects every
+  // legacy invoice with CARRIER_INVOICE_SNAPSHOT_REQUIRED, so eligibility
+  // below is FALSE (with that exact message) whenever the invoice is
+  // otherwise status-eligible and resubmittable -- matching the RPC's own
+  // wording so the two can never drift apart. The only other reasons
+  // ever shown are the status pre-check and the still-open-submission
+  // check, both pure UI conveniences the RPC itself also re-validates.
   // ---------------------------------------------------------------------
-  const organizationId = await getCurrentOrgId();
-  const eligibility = evaluateFactoringEligibility({ status: invoice.status, amountPaid: Number(invoice.amount_paid) });
+  const statusEligibility = evaluateFactoringEligibility({ status: invoice.status, amountPaid: Number(invoice.amount_paid) });
 
   const { data: factoredInvoicesRaw } = await supabase
     .from("factored_invoices")
@@ -255,34 +279,30 @@ export default async function InvoiceDetailPage({
   // not a re-guess of it.
   const canResubmit = !activeFactoredInvoice || !isNonTerminalFactoredInvoiceStatus(activeFactoredInvoice.status);
 
-  let relationshipOptions: RelationshipOption[] = [];
-  let defaultRelationshipId: string | null = null;
-  if (eligibility.eligible && canResubmit) {
-    const today = new Date().toISOString().slice(0, 10);
-    const { data: relRaw } = await supabase
-      .from("factoring_relationships")
-      .select(
-        "id, relationship_name, default_advance_percentage, default_factoring_fee_percentage, default_reserve_percentage, fee_timing, recourse_type, effective_from, effective_to, factoring_companies!inner(id, name, is_active)"
-      )
-      .eq("is_active", true)
-      .eq("factoring_companies.is_active", true)
-      .lte("effective_from", today)
-      .or(`effective_to.is.null,effective_to.gte.${today}`);
+  // Phase 3B.1.5 (Section A/B) + 3B.1.6 (Section F): no relationship is
+  // ever offered for a legacy invoice -- there is no immutable snapshot to
+  // authorize one, and submit_invoice_to_factor() (0140) rejects
+  // unconditionally regardless of what relationship_id (if any) were ever
+  // passed to it. Rather than threading permanently-empty
+  // relationshipOptions/defaultRelationshipId constants through props
+  // (3B.1.5's own approach -- correct, but an "artificial empty value" a
+  // future edit could still accidentally populate without ever flipping
+  // an "eligible" flag), this page now constructs a single discriminated
+  // FactoringEligibility value: the "blocked" variant carries no
+  // relationship field at all, so there is nothing here to populate,
+  // read, or offer a selection from by mistake. This EXACT wording
+  // matches what submit_invoice_to_factor() (0140) itself returns in its
+  // structured rejection -- the two must never drift apart (Section B,
+  // item 6: the app must display the blocked reason; the server
+  // rejection is authoritative either way).
+  const SNAPSHOT_REQUIRED_REASON =
+    "This invoice was created before carrier-specific financial snapshots were enabled. Review and reissue it through the new invoice workflow.";
 
-    relationshipOptions = (relRaw ?? []).map((r) => ({
-      id: r.id,
-      companyName: (r.factoring_companies as unknown as { name: string }).name,
-      relationshipName: r.relationship_name,
-      advancePercentage: Number(r.default_advance_percentage),
-      factoringFeePercentage: Number(r.default_factoring_fee_percentage),
-      reservePercentage: Number(r.default_reserve_percentage),
-      feeTiming: r.fee_timing,
-      recourseType: r.recourse_type,
-    }));
-
-    const defaultRel = await getDefaultFactoringRelationship(organizationId);
-    defaultRelationshipId = defaultRel && relationshipOptions.some((r) => r.id === defaultRel.relationship.id) ? defaultRel.relationship.id : null;
-  }
+  const factoringEligibility: FactoringSectionEligibility = !statusEligibility.eligible
+    ? { status: "blocked", reason: statusEligibility.reason }
+    : !canResubmit
+      ? { status: "blocked", reason: "A prior factoring submission for this invoice is still open." }
+      : { status: "blocked", reason: SNAPSHOT_REQUIRED_REASON };
 
   return (
     <div className="space-y-3">
@@ -529,13 +549,10 @@ export default async function InvoiceDetailPage({
 
       <FactoringSection
         invoiceId={id}
-        eligible={eligibility.eligible}
-        ineligibleReason={eligibility.eligible ? null : eligibility.reason}
+        eligibility={factoringEligibility}
         activeFactoredInvoice={activeFactoredInvoice}
         canResubmit={canResubmit}
         historicalFactoredInvoices={historicalFactoredInvoices}
-        relationshipOptions={relationshipOptions}
-        defaultRelationshipId={defaultRelationshipId}
         events={factoringEvents}
       />
 

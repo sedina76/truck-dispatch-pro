@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Star, Plus, Pencil } from "lucide-react";
+import { Loader2, Star, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
-import type { FactoringCompanyRow, FactoringRelationshipRow } from "@/lib/factoring/types";
+import type { OrgRole } from "@/lib/auth/require-role";
+import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow } from "@/lib/factoring/types";
 import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS, deriveEffectiveState } from "@/lib/factoring/types";
 import {
   createFactoringCompany,
@@ -18,6 +19,7 @@ import {
   updateFactoringRelationship,
   setDefaultFactoringRelationship,
   setFactoringRelationshipActive,
+  setCarrierFactoringPolicy,
   type FactoringActionResult,
 } from "./actions";
 
@@ -27,8 +29,9 @@ const labelCls = "flex flex-col gap-1 text-xs font-medium text-muted-foreground"
 // Same pattern as email-settings-client.tsx's useAction(): run a typed
 // -result action, surface its error inline, refresh on success. Expected
 // business errors (validation, "cannot delete", "cannot deactivate the
-// default") always come back as { ok: false, error } and are shown right
-// here -- never thrown into the route boundary / generic error page.
+// default", a structured RPC rejection mapped by actions.ts) always come
+// back as { ok: false, error } and are shown right here -- never thrown
+// into the route boundary / generic error page.
 function useAction() {
   const router = useRouter();
   const [pendingKey, setPendingKey] = useState<string | null>(null);
@@ -54,13 +57,38 @@ function fmtPct(n: number) {
   return `${Number(n).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}%`;
 }
 
-export function FactoringSettingsClient({ companies, relationships }: { companies: FactoringCompanyRow[]; relationships: FactoringRelationshipRow[] }) {
+export function FactoringSettingsClient({
+  companies,
+  relationships,
+  carriers,
+  carrierScopingApplied,
+  readinessByCarrierId,
+  carrierUpdatedAtById,
+  currentRole,
+}: {
+  companies: FactoringCompanyRow[];
+  relationships: FactoringRelationshipRow[];
+  carriers: CarrierOption[];
+  carrierScopingApplied: boolean;
+  readinessByCarrierId: Record<string, CarrierFactoringReadiness>;
+  carrierUpdatedAtById: Record<string, string>;
+  currentRole: OrgRole;
+}) {
+  // Phase 3B.1.4 (Section A/H): "unauthorized mutation buttons are not
+  // shown." Purely a display convenience -- every action below
+  // independently re-derives and re-checks the caller's real role/RLS
+  // regardless of what these booleans say; hiding a button here can never
+  // be the actual security boundary.
+  const canManage = currentRole === "owner" || currentRole === "admin"; // create/delete company or relationship, set default, change policy
+  const canEdit = canManage || currentRole === "accountant"; // ordinary relationship terms + is_active
+
   const [addCompanyOpen, setAddCompanyOpen] = useState(false);
   const [editCompany, setEditCompany] = useState<FactoringCompanyRow | null>(null);
   const [manageCompany, setManageCompany] = useState<FactoringCompanyRow | null>(null);
   const [editRelationship, setEditRelationship] = useState<FactoringRelationshipRow | null>(null);
 
   const companyById = new Map(companies.map((c) => [c.id, c]));
+  const carrierById = new Map(carriers.map((c) => [c.id, c]));
   const relationshipsByCompany = new Map<string, FactoringRelationshipRow[]>();
   for (const r of relationships) {
     const list = relationshipsByCompany.get(r.factoring_company_id) ?? [];
@@ -68,40 +96,46 @@ export function FactoringSettingsClient({ companies, relationships }: { companie
     relationshipsByCompany.set(r.factoring_company_id, list);
   }
 
-  const defaultRelationship = relationships.find((r) => r.is_default && r.is_active) ?? null;
-  const defaultCompany = defaultRelationship ? (companyById.get(defaultRelationship.factoring_company_id) ?? null) : null;
-  const hasAnyActiveRelationship = relationships.some((r) => r.is_active);
-
   return (
     <div className="space-y-6">
-      <DefaultFactorCard
-        company={defaultCompany}
-        relationship={defaultRelationship}
-        hasAnyActiveRelationship={hasAnyActiveRelationship}
-        onEditTerms={() => defaultRelationship && setEditRelationship(defaultRelationship)}
+      <CarrierFactoringPolicyPanel
+        carriers={carriers}
+        relationships={relationships}
+        companyById={companyById}
+        carrierScopingApplied={carrierScopingApplied}
+        readinessByCarrierId={readinessByCarrierId}
+        carrierUpdatedAtById={carrierUpdatedAtById}
+        canManage={canManage}
       />
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold">Factoring Companies</p>
-            <p className="text-xs text-muted-foreground">The factors your organization sells invoices to, and the commercial terms agreed with each.</p>
+            <p className="text-xs text-muted-foreground">The factors your organization sells invoices to, and the commercial terms agreed with each, per carrier.</p>
           </div>
-          <Button type="button" size="sm" onClick={() => setAddCompanyOpen(true)}>
-            <Plus className="size-3.5" />
-            Add Factoring Company
-          </Button>
+          {canManage && (
+            <Button type="button" size="sm" onClick={() => setAddCompanyOpen(true)}>
+              <Plus className="size-3.5" />
+              Add Factoring Company
+            </Button>
+          )}
         </div>
 
         {companies.length === 0 ? (
           <div className="space-y-3">
-            <EmptyState title="No factoring companies configured" description="Add your factoring company and default terms before submitting invoices for factoring." />
-            <div className="flex justify-center">
-              <Button type="button" size="sm" onClick={() => setAddCompanyOpen(true)}>
-                <Plus className="size-3.5" />
-                Add Factoring Company
-              </Button>
-            </div>
+            <EmptyState
+              title="No factoring companies configured"
+              description={canManage ? "Add your factoring company and default terms before submitting invoices for factoring." : "No factoring companies have been configured yet. An owner or admin can add one."}
+            />
+            {canManage && (
+              <div className="flex justify-center">
+                <Button type="button" size="sm" onClick={() => setAddCompanyOpen(true)}>
+                  <Plus className="size-3.5" />
+                  Add Factoring Company
+                </Button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-desktop-border bg-card shadow-elevation-1">
@@ -123,6 +157,7 @@ export function FactoringSettingsClient({ companies, relationships }: { companie
                     relationshipCount={relationshipsByCompany.get(company.id)?.length ?? 0}
                     onEdit={() => setEditCompany(company)}
                     onManage={() => setManageCompany(company)}
+                    canManage={canManage}
                   />
                 ))}
               </tbody>
@@ -137,69 +172,217 @@ export function FactoringSettingsClient({ companies, relationships }: { companie
         <ManageRelationshipsDialog
           company={manageCompany}
           relationships={relationshipsByCompany.get(manageCompany.id) ?? []}
+          carriers={carriers}
+          carrierById={carrierById}
           onClose={() => setManageCompany(null)}
           onEditRelationship={(r) => setEditRelationship(r)}
+          canManage={canManage}
+          canEdit={canEdit}
         />
       )}
-      {editRelationship && <RelationshipFormDialog mode="edit" companyId={editRelationship.factoring_company_id} relationship={editRelationship} onClose={() => setEditRelationship(null)} />}
+      {editRelationship && (
+        <RelationshipFormDialog
+          mode="edit"
+          companyId={editRelationship.factoring_company_id}
+          companyName={companyById.get(editRelationship.factoring_company_id)?.name ?? ""}
+          relationship={editRelationship}
+          carriers={carriers}
+          carrierById={carrierById}
+          onClose={() => setEditRelationship(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Default Factor summary card
+// Carrier Factoring Policy panel (Phase 3B.1.3, Section F) -- replaces the
+// old single org-wide "Default Factor" card. Every carrier's policy
+// (unconfigured/direct/factored), classifier readiness, and resolved
+// default relationship are shown per carrier -- never one org-wide
+// summary, since 0138 made the default itself carrier-scoped. Only
+// active carriers change policy; inactive ones are shown collapsed,
+// historical, and never offered a Change Policy control.
 // ---------------------------------------------------------------------------
-function DefaultFactorCard({
-  company,
-  relationship,
-  hasAnyActiveRelationship,
-  onEditTerms,
+function CarrierFactoringPolicyPanel({
+  carriers,
+  relationships,
+  companyById,
+  carrierScopingApplied,
+  readinessByCarrierId,
+  carrierUpdatedAtById,
+  canManage,
 }: {
-  company: FactoringCompanyRow | null;
-  relationship: FactoringRelationshipRow | null;
-  hasAnyActiveRelationship: boolean;
-  onEditTerms: () => void;
+  carriers: CarrierOption[];
+  relationships: FactoringRelationshipRow[];
+  companyById: Map<string, FactoringCompanyRow>;
+  carrierScopingApplied: boolean;
+  readinessByCarrierId: Record<string, CarrierFactoringReadiness>;
+  carrierUpdatedAtById: Record<string, string>;
+  canManage: boolean;
 }) {
+  const [showInactive, setShowInactive] = useState(false);
+  const [policyCarrier, setPolicyCarrier] = useState<CarrierOption | null>(null);
+
+  const activeCarriers = carriers.filter((c) => c.is_active);
+  const inactiveCarriers = carriers.filter((c) => !c.is_active);
+  const shown = showInactive ? carriers : activeCarriers;
+
   return (
     <div className="rounded-md border border-desktop-border bg-card shadow-elevation-1">
-      <div className="flex h-7 items-center rounded-t-md bg-desktop-header px-3 text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">Default Factor</div>
+      <div className="flex h-7 items-center justify-between rounded-t-md bg-desktop-header px-3 text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
+        <span>Carrier Factoring Policy</span>
+      </div>
       <div className="p-4">
-        {!company || !relationship ? (
-          <p className="text-sm text-muted-foreground">
-            {hasAnyActiveRelationship
-              ? "No default factoring relationship set. Open a company below and use Set Default on one of its relationships."
-              : "No default factoring relationship configured. Add a factoring company and relationship below, then set it as default."}
-          </p>
+        {!carrierScopingApplied ? (
+          <p className="text-sm text-muted-foreground">Carrier-specific factoring policy is not available yet. This section will appear once the database migration is applied.</p>
+        ) : carriers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No carriers yet. Add a carrier before configuring factoring policy.</p>
         ) : (
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold">
-                {company.name}
-                {relationship.relationship_name && <span className="font-normal text-muted-foreground"> &middot; {relationship.relationship_name}</span>}
-              </p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>Advance: <span className="font-medium text-foreground">{fmtPct(relationship.default_advance_percentage)}</span></span>
-                <span>Fee: <span className="font-medium text-foreground">{fmtPct(relationship.default_factoring_fee_percentage)}</span></span>
-                <span>Reserve: <span className="font-medium text-foreground">{fmtPct(relationship.default_reserve_percentage)}</span></span>
-                <span className="capitalize">{RECOURSE_TYPE_OPTIONS.find((o) => o.value === relationship.recourse_type)?.label}</span>
-                <StatusBadge status="active" />
-              </div>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Every carrier starts <span className="font-medium text-foreground">Unconfigured</span> and blocks invoice issuance until an owner or admin explicitly sets Direct or Factored.
+            </p>
+            <div className="overflow-x-auto rounded-md border border-desktop-border">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="border-b border-desktop-border bg-desktop-header text-left text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
+                    <th className="px-3 py-2">Carrier</th>
+                    <th className="px-3 py-2">Policy</th>
+                    <th className="px-3 py-2">Readiness</th>
+                    <th className="px-3 py-2">Default Factor</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((carrier) => {
+                    const readiness = readinessByCarrierId[carrier.id];
+                    const defaultRel = relationships.find((r) => r.carrier_id === carrier.id && r.is_default && r.is_active) ?? null;
+                    const defaultCompany = defaultRel ? companyById.get(defaultRel.factoring_company_id) : null;
+                    return (
+                      <tr key={carrier.id} className="border-b border-desktop-border last:border-0">
+                        <td className="px-3 py-2 font-medium">
+                          {carrier.legal_name}
+                          {!carrier.is_active && <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(Historical)</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          <StatusBadge status={carrier.factoring_mode ?? "unconfigured"} />
+                        </td>
+                        <td className="px-3 py-2">{readiness ? <StatusBadge status={readiness.classification} /> : <span className="text-xs text-muted-foreground">--</span>}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {defaultCompany ? (
+                            <span className="text-foreground">
+                              {defaultCompany.name}
+                              {defaultRel?.relationship_name ? ` · ${defaultRel.relationship_name}` : ""}
+                            </span>
+                          ) : (
+                            "Not set"
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {canManage && carrier.is_active && (
+                            <Button type="button" size="sm" variant="outline" onClick={() => setPolicyCarrier(carrier)}>
+                              Change Policy
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-            <Button type="button" size="sm" variant="outline" onClick={onEditTerms}>
-              <Pencil className="size-3.5" />
-              Edit Terms
-            </Button>
+            {inactiveCarriers.length > 0 && (
+              <button type="button" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowInactive((v) => !v)}>
+                {showInactive ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                {showInactive ? "Hide" : "Show"} {inactiveCarriers.length} historical (inactive) carrier{inactiveCarriers.length === 1 ? "" : "s"}
+              </button>
+            )}
           </div>
         )}
       </div>
+      {policyCarrier && (
+        <ChangeCarrierPolicyDialog carrier={policyCarrier} expectedUpdatedAt={carrierUpdatedAtById[policyCarrier.id] ?? ""} onClose={() => setPolicyCarrier(null)} />
+      )}
     </div>
+  );
+}
+
+function ChangeCarrierPolicyDialog({ carrier, expectedUpdatedAt, onClose }: { carrier: CarrierOption; expectedUpdatedAt: string; onClose: () => void }) {
+  const { run, pendingKey, error } = useAction();
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Change Factoring Policy &mdash; {carrier.legal_name}</DialogTitle>
+          <DialogDescription>
+            Currently <span className="font-medium text-foreground">{carrier.factoring_mode ?? "unconfigured"}</span>. Choosing Factored requires this carrier to already have a complete, ready default
+            factoring relationship configured below -- owner/admin only, and a reason is required for every change.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const mode = String(fd.get("mode") ?? "") as CarrierFactoringMode;
+            const reason = String(fd.get("reason") ?? "");
+            const ok = await run("save", () => setCarrierFactoringPolicy(carrier.id, mode, reason, expectedUpdatedAt));
+            if (ok) onClose();
+          }}
+          className="space-y-3"
+        >
+          <label className={labelCls}>
+            New Policy <span className="text-danger">*</span>
+            <select name="mode" defaultValue={carrier.factoring_mode === "factored" ? "factored" : "direct"} required className={inputCls}>
+              <option value="direct">Direct &mdash; this carrier is paid directly</option>
+              <option value="factored">Factored &mdash; invoices for this carrier are sold to a factor</option>
+            </select>
+          </label>
+          <label className={labelCls}>
+            Reason <span className="text-danger">*</span>
+            <textarea
+              name="reason"
+              required
+              rows={2}
+              placeholder="Why is this carrier's factoring policy changing?"
+              className="w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm shadow-elevation-1 outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
+            />
+          </label>
+          {error && <p className="text-xs text-danger">{error}</p>}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={pendingKey === "save"}>
+              {pendingKey === "save" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Companies table row
 // ---------------------------------------------------------------------------
-function CompanyTableRow({ company, relationshipCount, onEdit, onManage }: { company: FactoringCompanyRow; relationshipCount: number; onEdit: () => void; onManage: () => void }) {
+function CompanyTableRow({
+  company,
+  relationshipCount,
+  onEdit,
+  onManage,
+  canManage,
+}: {
+  company: FactoringCompanyRow;
+  relationshipCount: number;
+  onEdit: () => void;
+  onManage: () => void;
+  canManage: boolean;
+}) {
   const { run, pendingKey, error } = useAction();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -218,25 +401,31 @@ function CompanyTableRow({ company, relationshipCount, onEdit, onManage }: { com
         </td>
         <td className="px-3 py-2">
           <div className="flex items-center justify-end gap-1.5">
-            <Button type="button" size="sm" variant="outline" onClick={onEdit}>
-              Edit
-            </Button>
+            {canManage && (
+              <Button type="button" size="sm" variant="outline" onClick={onEdit}>
+                Edit
+              </Button>
+            )}
             <Button type="button" size="sm" variant="outline" disabled={pendingKey === "manage"} onClick={onManage}>
-              Manage
+              {canManage ? "Manage" : "View"}
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={pendingKey === "toggle-active"}
-              onClick={() => run("toggle-active", () => setFactoringCompanyActive(company.id, !company.is_active))}
-            >
-              {pendingKey === "toggle-active" ? <Loader2 className="size-3.5 animate-spin" /> : null}
-              {company.is_active ? "Deactivate" : "Reactivate"}
-            </Button>
-            <Button type="button" size="sm" variant="danger" disabled={pendingKey === "delete"} onClick={() => setConfirmDelete(true)}>
-              Delete
-            </Button>
+            {canManage && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pendingKey === "toggle-active"}
+                onClick={() => run("toggle-active", () => setFactoringCompanyActive(company.id, !company.is_active))}
+              >
+                {pendingKey === "toggle-active" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                {company.is_active ? "Deactivate" : "Reactivate"}
+              </Button>
+            )}
+            {canManage && (
+              <Button type="button" size="sm" variant="danger" disabled={pendingKey === "delete"} onClick={() => setConfirmDelete(true)}>
+                Delete
+              </Button>
+            )}
           </div>
         </td>
       </tr>
@@ -363,43 +552,65 @@ function CompanyFormDialog({ mode, company, onClose }: { mode: "create" | "edit"
 }
 
 // ---------------------------------------------------------------------------
-// Manage relationships dialog (per company)
+// Manage relationships dialog (per company) -- Phase 3B.1.3: each
+// relationship's carrier is shown as its own immutable label; relationships
+// can also be understood per-carrier via the Carrier Factoring Policy
+// panel above (grouped/filterable by carrier, Section F).
 // ---------------------------------------------------------------------------
 function ManageRelationshipsDialog({
   company,
   relationships,
+  carriers,
+  carrierById,
   onClose,
   onEditRelationship,
+  canManage,
+  canEdit,
 }: {
   company: FactoringCompanyRow;
   relationships: FactoringRelationshipRow[];
+  carriers: CarrierOption[];
+  carrierById: Map<string, CarrierOption>;
   onClose: () => void;
   onEditRelationship: (r: FactoringRelationshipRow) => void;
+  canManage: boolean;
+  canEdit: boolean;
 }) {
   const [addOpen, setAddOpen] = useState(false);
+  const activeCarriers = carriers.filter((c) => c.is_active);
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{company.name} &mdash; Relationships</DialogTitle>
-          <DialogDescription>Commercial terms agreed with this factor. Editing a relationship&apos;s terms only affects future submissions -- already-submitted invoices keep the terms in effect when they were submitted.</DialogDescription>
+          <DialogDescription>Commercial terms agreed with this factor, per carrier. Editing a relationship&apos;s terms only affects future submissions -- already-submitted invoices keep the terms in effect when they were submitted.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-2">
-          <div className="flex justify-end">
-            <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
-              <Plus className="size-3.5" />
-              Add Relationship
-            </Button>
-          </div>
+          {canManage && (
+            <div className="flex justify-end">
+              <Button type="button" size="sm" disabled={activeCarriers.length === 0} onClick={() => setAddOpen(true)}>
+                <Plus className="size-3.5" />
+                Add Relationship
+              </Button>
+            </div>
+          )}
+          {canManage && activeCarriers.length === 0 && <p className="text-xs text-muted-foreground">Add an active carrier before creating a factoring relationship.</p>}
 
           {relationships.length === 0 ? (
             <p className="rounded-md border border-dashed border-desktop-border p-4 text-center text-sm text-muted-foreground">No relationships yet for this factor.</p>
           ) : (
             <div className="space-y-2">
               {relationships.map((r) => (
-                <RelationshipCard key={r.id} relationship={r} onEdit={() => onEditRelationship(r)} />
+                <RelationshipCard
+                  key={r.id}
+                  relationship={r}
+                  carrier={carrierById.get(r.carrier_id) ?? null}
+                  onEdit={() => onEditRelationship(r)}
+                  canManage={canManage}
+                  canEdit={canEdit}
+                />
               ))}
             </div>
           )}
@@ -411,13 +622,27 @@ function ManageRelationshipsDialog({
           </Button>
         </DialogFooter>
 
-        {addOpen && <RelationshipFormDialog mode="create" companyId={company.id} onClose={() => setAddOpen(false)} />}
+        {addOpen && (
+          <RelationshipFormDialog mode="create" companyId={company.id} companyName={company.name} carriers={activeCarriers} carrierById={carrierById} onClose={() => setAddOpen(false)} />
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
-function RelationshipCard({ relationship, onEdit }: { relationship: FactoringRelationshipRow; onEdit: () => void }) {
+function RelationshipCard({
+  relationship,
+  carrier,
+  onEdit,
+  canManage,
+  canEdit,
+}: {
+  relationship: FactoringRelationshipRow;
+  carrier: CarrierOption | null;
+  onEdit: () => void;
+  canManage: boolean;
+  canEdit: boolean;
+}) {
   const { run, pendingKey, error } = useAction();
   const state = deriveEffectiveState(relationship);
   const feeTimingLabel = FEE_TIMING_OPTIONS.find((o) => o.value === relationship.fee_timing)?.label ?? relationship.fee_timing;
@@ -427,6 +652,10 @@ function RelationshipCard({ relationship, onEdit }: { relationship: FactoringRel
     <div className="rounded-md border border-desktop-border p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
+          <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            Carrier: <span className="text-foreground">{carrier?.legal_name ?? "Unknown carrier"}</span>
+            {carrier && !carrier.is_active && <span className="text-[11px] font-normal">(Historical)</span>}
+          </p>
           <p className="text-sm font-medium">
             {relationship.relationship_name || "Unnamed Relationship"}
             {relationship.is_default && (
@@ -451,25 +680,29 @@ function RelationshipCard({ relationship, onEdit }: { relationship: FactoringRel
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <Button type="button" size="sm" variant="outline" onClick={onEdit}>
-            Edit
-          </Button>
-          {relationship.is_active && !relationship.is_default && (
+          {canEdit && (
+            <Button type="button" size="sm" variant="outline" onClick={onEdit}>
+              Edit
+            </Button>
+          )}
+          {canManage && relationship.is_active && !relationship.is_default && (
             <Button type="button" size="sm" variant="outline" disabled={pendingKey === "default"} onClick={() => run("default", () => setDefaultFactoringRelationship(relationship.id))}>
               {pendingKey === "default" ? <Loader2 className="size-3.5 animate-spin" /> : null}
               Set Default
             </Button>
           )}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={pendingKey === "toggle-active"}
-            onClick={() => run("toggle-active", () => setFactoringRelationshipActive(relationship.id, !relationship.is_active))}
-          >
-            {pendingKey === "toggle-active" ? <Loader2 className="size-3.5 animate-spin" /> : null}
-            {relationship.is_active ? "Deactivate" : "Reactivate"}
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pendingKey === "toggle-active"}
+              onClick={() => run("toggle-active", () => setFactoringRelationshipActive(relationship.id, !relationship.is_active))}
+            >
+              {pendingKey === "toggle-active" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              {relationship.is_active ? "Deactivate" : "Reactivate"}
+            </Button>
+          )}
         </div>
       </div>
       {error && <p className="mt-2 text-xs text-danger">{error}</p>}
@@ -478,37 +711,83 @@ function RelationshipCard({ relationship, onEdit }: { relationship: FactoringRel
 }
 
 // ---------------------------------------------------------------------------
-// Add/Edit relationship dialog
+// Add/Edit relationship dialog -- Phase 3B.1.3 (Section B/F): carrier is
+// the FIRST field a user chooses when creating (active carriers only,
+// Section B.3); once created, the carrier is shown as a locked, immutable
+// label (Section B.9/F) -- there is no control anywhere in this dialog
+// that can move a relationship to a different carrier.
 // ---------------------------------------------------------------------------
 function RelationshipFormDialog({
   mode,
   companyId,
+  companyName,
   relationship,
+  carriers,
+  carrierById,
   onClose,
 }: {
   mode: "create" | "edit";
   companyId: string;
+  companyName: string;
   relationship?: FactoringRelationshipRow;
+  carriers: CarrierOption[]; // active carriers only, for the create-mode selector
+  carrierById: Map<string, CarrierOption>; // all carriers (incl. inactive), for the locked edit-mode label
   onClose: () => void;
 }) {
-  const { run, pendingKey, error } = useAction();
+  const { run, pendingKey, error, setError } = useAction();
+  const [carrierId, setCarrierId] = useState("");
+  const lockedCarrier = relationship ? carrierById.get(relationship.carrier_id) : null;
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "Add Factoring Relationship" : "Edit Factoring Relationship"}</DialogTitle>
-          <DialogDescription>Percentages are entered as whole percentage points (e.g. 95 for 95%), not decimals.</DialogDescription>
+          <DialogDescription>
+            For {companyName}. Percentages are entered as whole percentage points (e.g. 95 for 95%), not decimals.
+          </DialogDescription>
         </DialogHeader>
         <form
           onSubmit={async (e) => {
             e.preventDefault();
+            if (mode === "create" && !carrierId) {
+              setError("A carrier is required.");
+              return;
+            }
             const fd = new FormData(e.currentTarget);
-            const ok = mode === "create" ? await run("save", () => createFactoringRelationship(companyId, fd)) : await run("save", () => updateFactoringRelationship(relationship!.id, fd));
+            const ok =
+              mode === "create" ? await run("save", () => createFactoringRelationship(carrierId, companyId, fd)) : await run("save", () => updateFactoringRelationship(relationship!.id, fd));
             if (ok) onClose();
           }}
           className="max-h-[70vh] space-y-3 overflow-y-auto pr-1"
         >
+          {mode === "create" ? (
+            <label className={labelCls}>
+              Carrier <span className="text-danger">*</span>
+              <select value={carrierId} onChange={(e) => setCarrierId(e.target.value)} required className={inputCls}>
+                <option value="" disabled>
+                  Select a carrier&hellip;
+                </option>
+                {carriers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.legal_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className={labelCls}>
+              Carrier
+              <div className="flex h-8 items-center justify-between rounded-md border border-border bg-muted/40 px-2 text-sm text-foreground">
+                <span>{lockedCarrier?.legal_name ?? "Unknown carrier"}</span>
+                <span className="text-[11px] font-medium text-muted-foreground">Locked</span>
+              </div>
+              <span className="text-[11px] font-normal text-muted-foreground">
+                A relationship&apos;s carrier cannot be changed after creation. To move this factor to a different carrier, create a new relationship.
+              </span>
+            </label>
+          )}
+
           <label className={labelCls}>
             Relationship Name
             <input name="relationship_name" defaultValue={relationship?.relationship_name ?? ""} placeholder="e.g. Standard Recourse" className={inputCls} />

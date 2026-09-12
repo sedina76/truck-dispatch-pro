@@ -602,6 +602,21 @@ end
 $t$;
 -- (this relationship is now resolved but is_default=false / incomplete -- it never became a carrier's default without going through the classifier-checked RPC path, matching item 8's own posture)
 
+\echo '----- P27b (Phase 3B.1.3, Section B): a BRAND NEW factoring_relationships row with carrier_id explicitly NULL is rejected outright -- no null-carrier relationship can be created after the cutover, confirming migration 0140 is unnecessary for this gap -----'
+do $t$
+begin
+  begin
+    insert into public.factoring_relationships
+      (organization_id, factoring_company_id, carrier_id, default_advance_percentage, default_factoring_fee_percentage, default_reserve_percentage, fee_timing, recourse_type)
+    values
+      ('11111111-1111-1111-1111-111111111111', 'fc000000-0000-0000-0000-00000000000c', null, 90, 3, 10, 'deducted_at_funding', 'non_recourse');
+    raise exception 'TEST FAIL: a fresh null-carrier factoring_relationships row was created after the cutover.';
+  exception when check_violation then
+    raise notice 'OK: a brand new null-carrier relationship is rejected by factoring_relationships_new_writes_need_carrier -- the database contract alone already closes this gap, application-layer or not.';
+  end;
+end
+$t$;
+
 -- ---------------------------------------------------------------------------
 -- P28-P31. privilege matrix: 0133 provenance + the rest of the fixed gaps
 -- ---------------------------------------------------------------------------
@@ -671,5 +686,17 @@ begin
   raise notice 'OK: catalog confirms none of the fixed privilege-matrix gaps remain granted to authenticated.';
 end
 $t$;
+
+-- P32 (Phase 3B.1.3's own version of this test) asserted that a dispatcher
+-- COULD create a carrier-scoped factoring_relationship via their own
+-- session -- an accurate description of 0139's own behavior at the time
+-- (0139 never touched factoring_companies/factoring_relationships base
+-- CRUD authorization at all), but Phase 3B.1.4 explicitly identified that
+-- exact permissiveness as a gap to CLOSE, not a behavior to keep proving
+-- correct going forward. Removed here (rather than left describing now-
+-- undesired behavior) -- its replacement (proving dispatcher creation is
+-- REJECTED, owner/admin creation succeeds, and dispatcher retains read-
+-- only visibility) lives in TEST_0140, alongside the migration that
+-- actually changes this.
 
 \echo '################  TEST 0139 PASSED  ################'

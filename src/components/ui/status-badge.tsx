@@ -112,6 +112,27 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   EXPIRED: "danger",
   MISSING: "danger",
   UNVERIFIED: "warning",
+  // classify_carrier_factoring_readiness() (0138/0139, Phase 3B.1.3) --
+  // carrier factoring policy + per-carrier readiness vocabulary. `ready`
+  // and `direct_billing` already have a home above (success/info) --
+  // everything else is specific to this classifier.
+  factoring_policy_unconfigured: "danger",
+  no_factoring_configuration: "warning",
+  no_default: "warning",
+  default_inactive: "warning",
+  default_expired: "warning",
+  default_not_yet_effective: "warning",
+  factoring_company_inactive: "danger",
+  relationship_incomplete: "warning",
+  multiple_defaults: "danger",
+  api_integration_missing: "warning",
+  api_integration_not_ready: "warning",
+  carrier_party_inactive: "neutral",
+  carrier_party_ineligible: "danger",
+  carrier_party_direct_billing_exception: "info",
+  unconfigured: "danger",
+  factored: "success",
+  direct: "info",
 };
 
 // Compact desktop-grid status indicator: a small square swatch + colored

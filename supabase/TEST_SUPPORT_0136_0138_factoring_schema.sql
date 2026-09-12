@@ -114,6 +114,38 @@ create unique index factoring_relationships_one_default_per_org
 create trigger set_updated_at before update on public.factoring_relationships
   for each row execute function public.set_updated_at();
 
+-- Phase 3B.1.4: the real 0071 RLS enablement + policies were missing from
+-- this stub entirely (harmless before now -- no prior TEST_0136-0139 file
+-- exercised factoring_companies/factoring_relationships direct-write
+-- authorization) -- TEST_0140 is the first to need it, since 0140 itself
+-- rewrites these exact policies. Faithfully reproduced from 0071, byte-
+-- for-byte, so 0140's `drop policy ...; create policy ...` has real,
+-- correct "before" objects to replace, and so a dispatcher/accountant
+-- session in the disposable harness is genuinely RLS-gated exactly as in
+-- production, not accidentally unrestricted because RLS was never turned
+-- on here.
+alter table public.factoring_companies enable row level security;
+create policy factoring_companies_select on public.factoring_companies
+  for select using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+create policy factoring_companies_insert on public.factoring_companies
+  for insert with check (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+create policy factoring_companies_update on public.factoring_companies
+  for update using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]))
+  with check (organization_id = public.current_org_id());
+create policy factoring_companies_delete on public.factoring_companies
+  for delete using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+
+alter table public.factoring_relationships enable row level security;
+create policy factoring_relationships_select on public.factoring_relationships
+  for select using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+create policy factoring_relationships_insert on public.factoring_relationships
+  for insert with check (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+create policy factoring_relationships_update on public.factoring_relationships
+  for update using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]))
+  with check (organization_id = public.current_org_id());
+create policy factoring_relationships_delete on public.factoring_relationships
+  for delete using (organization_id = public.current_org_id() and public.has_role(array['owner','admin','dispatcher','accountant']::public.org_role[]));
+
 create or replace function public.guard_factoring_relationship_org()
 returns trigger language plpgsql as $$
 declare v_company_org uuid;
@@ -137,6 +169,8 @@ create table public.factored_invoices (
   factoring_company_id uuid not null references public.factoring_companies (id) on delete restrict,
   factoring_relationship_id uuid not null references public.factoring_relationships (id) on delete restrict,
   status public.factored_invoice_status not null default 'draft',
+  submitted_at timestamptz,
+  submitted_by uuid,
   invoice_face_value numeric(10,2) not null check (invoice_face_value >= 0),
   advance_percentage numeric(5,2) not null check (advance_percentage >= 0 and advance_percentage <= 100),
   expected_advance_amount numeric(10,2) not null check (expected_advance_amount >= 0),
@@ -181,6 +215,9 @@ create table public.factoring_events (
   organization_id uuid not null references public.organizations (id) on delete cascade,
   factored_invoice_id uuid not null references public.factored_invoices (id) on delete cascade,
   event_type text not null,
+  from_status text,
+  to_status text,
+  performed_by uuid,
   created_at timestamptz not null default now());
 
 -- --- 0072: set_default_factoring_relationship (pre-0138 form) + company
@@ -237,3 +274,128 @@ $$;
 create trigger factoring_companies_guard_deactivation
   before update of is_active on public.factoring_companies
   for each row execute function public.guard_factoring_company_deactivation();
+
+-- --- 0073-0075: submit_invoice_to_factor (final pre-0140 form, 0075) -----
+-- Faithful reproduction of the LIVE (0075) function body, byte-for-byte
+-- copied from that migration -- this is what 0140's TEST/VERIFY files
+-- exercise as "the pre-0140 baseline" before asserting what 0140 itself
+-- changes. Not a simplified stub: real production runs exactly this body
+-- today.
+create or replace function public.submit_invoice_to_factor(
+  p_invoice_id uuid,
+  p_relationship_id uuid
+)
+returns table (factored_invoice_id uuid, status public.factored_invoice_status)
+language plpgsql
+security invoker
+as $$
+declare
+  v_org_id uuid;
+  v_invoice record;
+  v_relationship record;
+  v_company_active boolean;
+  v_existing_active uuid;
+  v_face_value numeric(10, 2);
+  v_advance_amount numeric(10, 2);
+  v_fee_amount numeric(10, 2);
+  v_reserve_amount numeric(10, 2);
+  v_other_fees numeric(10, 2);
+  v_funding_amount numeric(10, 2);
+  v_new_id uuid;
+begin
+  v_org_id := public.current_org_id();
+  if v_org_id is null then
+    raise exception 'No organization on this account.';
+  end if;
+
+  if not public.has_role(array['owner', 'admin', 'dispatcher', 'accountant']::public.org_role[]) then
+    raise exception 'You do not have permission to submit invoices for factoring.';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('factoring_submission:' || p_invoice_id::text));
+
+  select inv.id, inv.organization_id, inv.status, inv.total_amount, inv.amount_paid
+    into v_invoice
+  from public.invoices inv
+  where inv.id = p_invoice_id;
+
+  if v_invoice.id is null or v_invoice.organization_id <> v_org_id then
+    raise exception 'Invoice not found.';
+  end if;
+
+  if v_invoice.status not in ('sent', 'viewed') or v_invoice.amount_paid <> 0 then
+    raise exception 'This invoice is not eligible for factoring.';
+  end if;
+
+  select fi.id into v_existing_active
+  from public.factored_invoices fi
+  where fi.invoice_id = p_invoice_id and fi.status not in ('rejected', 'cancelled')
+  limit 1;
+  if v_existing_active is not null then
+    raise exception 'This invoice has already been submitted to a factor.';
+  end if;
+
+  select rel.id, rel.organization_id, rel.factoring_company_id, rel.is_active,
+         rel.default_advance_percentage, rel.default_factoring_fee_percentage, rel.default_reserve_percentage,
+         rel.fee_timing, rel.other_fee_default, rel.effective_from, rel.effective_to
+    into v_relationship
+  from public.factoring_relationships rel
+  where rel.id = p_relationship_id
+  for update;
+
+  if v_relationship.id is null or v_relationship.organization_id <> v_org_id then
+    raise exception 'This factoring relationship is not available.';
+  end if;
+  if not v_relationship.is_active then
+    raise exception 'The selected factoring relationship is inactive.';
+  end if;
+  if v_relationship.effective_from > current_date or (v_relationship.effective_to is not null and v_relationship.effective_to < current_date) then
+    raise exception 'The selected factoring relationship is not currently effective.';
+  end if;
+
+  select comp.is_active into v_company_active
+  from public.factoring_companies comp
+  where comp.id = v_relationship.factoring_company_id;
+  if not coalesce(v_company_active, false) then
+    raise exception 'The selected factoring company is inactive.';
+  end if;
+
+  v_face_value := v_invoice.total_amount;
+  v_advance_amount := round(v_face_value * v_relationship.default_advance_percentage / 100, 2);
+  v_fee_amount := round(v_face_value * v_relationship.default_factoring_fee_percentage / 100, 2);
+  v_reserve_amount := round(v_face_value * v_relationship.default_reserve_percentage / 100, 2);
+  v_other_fees := coalesce(v_relationship.other_fee_default, 0);
+  v_funding_amount := v_advance_amount - v_other_fees - (case when v_relationship.fee_timing = 'deducted_at_funding' then v_fee_amount else 0 end);
+
+  if v_funding_amount < 0 then
+    raise exception 'Estimated funding amount for this invoice would be negative under the selected relationship''s terms.';
+  end if;
+
+  insert into public.factored_invoices (
+    organization_id, invoice_id, factoring_company_id, factoring_relationship_id,
+    status, submitted_at, submitted_by,
+    invoice_face_value, advance_percentage, expected_advance_amount,
+    factoring_fee_percentage, factoring_fee_amount,
+    reserve_percentage, reserve_amount,
+    other_fees, fee_timing, expected_funding_amount
+  ) values (
+    v_org_id, p_invoice_id, v_relationship.factoring_company_id, p_relationship_id,
+    'submitted', now(), auth.uid(),
+    v_face_value, v_relationship.default_advance_percentage, v_advance_amount,
+    v_relationship.default_factoring_fee_percentage, v_fee_amount,
+    v_relationship.default_reserve_percentage, v_reserve_amount,
+    v_other_fees, v_relationship.fee_timing, v_funding_amount
+  )
+  returning id into v_new_id;
+
+  insert into public.factoring_events (
+    organization_id, factored_invoice_id, event_type, from_status, to_status, performed_by
+  ) values (
+    v_org_id, v_new_id, 'submitted', null, 'submitted', auth.uid()
+  );
+
+  return query select v_new_id, 'submitted'::public.factored_invoice_status;
+end;
+$$;
+
+grant execute on function public.submit_invoice_to_factor(uuid, uuid) to authenticated;

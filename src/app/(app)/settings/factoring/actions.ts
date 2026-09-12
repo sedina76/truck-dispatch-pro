@@ -2,10 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
-import { FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
 import { emptyToNull } from "@/lib/utils/form";
+import type { CarrierFactoringMode } from "@/lib/factoring/types";
+import { resolveStructuredRpcResult, type StructuredRpcResult } from "@/lib/factoring/rpc-result";
 import {
   validateOptionalEmail,
   validateOptionalWebsite,
@@ -22,16 +23,43 @@ export type FactoringActionResult = { ok: true } | { ok: false; error: string };
 
 // ---------------------------------------------------------------------------
 // Every mutation below independently re-derives user/org/role from the
-// authenticated session (never trusts a client-supplied organization_id,
-// spec section 16) then re-verifies the row being acted on actually
-// belongs to THAT organization before touching it (spec section 15/16) --
-// same shape as requireEmailAdmin()/requireExceptionOwnership() elsewhere
-// in this app. FINANCIAL_ROLES (owner/admin/dispatcher/accountant), not
-// owner/admin-only -- spec section 14 grants this whole area to every
-// financial role, matching the Billing nav section's own tier exactly.
-// RLS (0071) is the real, unconditional backstop underneath all of this.
+// authenticated session (never trusts a client-supplied organization_id)
+// then re-verifies the row being acted on actually belongs to THAT
+// organization before touching it -- same shape as
+// requireEmailAdmin()/requireExceptionOwnership() elsewhere in this app.
+// RLS (0071/0140) is the real, unconditional backstop underneath all of
+// this -- these functions are UX (a clean message before a round trip),
+// never the actual boundary.
+//
+// Phase 3B.1.3 (Section C): every mutation in this file executes through
+// the CALLER'S OWN authenticated session (createClient(), never
+// createServiceRoleClient()) -- this server never treats "holds an
+// authenticated web session" as if it were a trusted migration/service
+// context; that posture is reserved for actual migrations and the
+// SECURITY DEFINER RPCs below, which derive their own authorization from
+// auth.uid()/current_org_id()/has_role() internally, never from anything
+// this file passes them.
+//
+// Phase 3B.1.4 (Section A) authorization matrix, replacing the original
+// Phase 2H.3 "every FINANCIAL_ROLES member may do everything here" design
+// (0071's own RLS, since narrowed by migration 0140):
+//   requireFactoringAccess()            -- READ-ONLY gate (all FINANCIAL_
+//                                           ROLES: owner/admin/dispatcher/
+//                                           accountant may still VIEW).
+//   requireFactoringEditAccess()        -- owner/admin/accountant may edit
+//                                           ORDINARY relationship terms
+//                                           (advance/fee/reserve/timing/
+//                                           payment terms) and toggle
+//                                           is_active. Dispatcher excluded.
+//   requireOwnerAdminFactoringAccess()  -- owner/admin only: create/delete
+//                                           a company or relationship,
+//                                           change company identity, set
+//                                           default, approve NOA, change
+//                                           factoring policy.
+// Dispatcher oversight means visibility across authorized carriers, not
+// authority to configure where carrier receivables are sent (Section A).
 // ---------------------------------------------------------------------------
-async function requireFactoringAccess(): Promise<{ organizationId: string; userId: string } | { error: string }> {
+async function requireFactoringAccess(): Promise<{ organizationId: string; userId: string; role: OrgRole } | { error: string }> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -50,7 +78,35 @@ async function requireFactoringAccess(): Promise<{ organizationId: string; userI
     return { error: "You do not have access to factoring settings." };
   }
 
-  return { organizationId, userId: user.id };
+  return { organizationId, userId: user.id, role: profile.role as OrgRole };
+}
+
+const EDIT_ROLES: OrgRole[] = ["owner", "admin", "accountant"];
+
+// owner/admin/accountant -- ordinary relationship terms + is_active only.
+// Dispatcher is excluded (Section A: view-only, never configuration).
+async function requireFactoringEditAccess(): Promise<{ organizationId: string; userId: string } | { error: string }> {
+  const auth = await requireFactoringAccess();
+  if ("error" in auth) return auth;
+  if (!EDIT_ROLES.includes(auth.role)) {
+    return { error: "Only an owner, admin, or accountant may make this change." };
+  }
+  return auth;
+}
+
+// Owner/admin-only gate -- app-layer mirror of what the protected RPCs
+// below (set_carrier_factoring_policy, approve_factoring_relationship_noa,
+// set_default_factoring_relationship) and 0140's tightened RLS already
+// enforce at the database layer. This is UX (a clean message before a
+// round trip), never the real boundary -- dispatcher/accountant are
+// rejected by RLS/the RPC itself regardless of what this function does.
+async function requireOwnerAdminFactoringAccess(): Promise<{ organizationId: string; userId: string } | { error: string }> {
+  const auth = await requireFactoringAccess();
+  if ("error" in auth) return auth;
+  if (!OWNER_ADMIN_ROLES.includes(auth.role)) {
+    return { error: "Only an owner or admin may make this change." };
+  }
+  return auth;
 }
 
 // entity_type (public.entity_type, 0001) is a closed enum with no
@@ -60,10 +116,12 @@ async function requireFactoringAccess(): Promise<{ organizationId: string; userI
 // is found). 'organization' is the same generic bucket
 // settings/email/actions.ts already uses for its own sub-features
 // (domains/senders) that likewise have no dedicated entity_type -- not a
-// new convention, the existing one for exactly this situation.
+// new convention, the existing one for exactly this situation. Uses the
+// caller's own session (log_activity is SECURITY DEFINER, 0009/0044/0046
+// -- it does not need RLS bypassed to write activity_logs).
 async function logFactoringActivity(organizationId: string, action: string, changes: Record<string, unknown>) {
-  const service = createServiceRoleClient();
-  const { error } = await service.rpc("log_activity", {
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("log_activity", {
     p_entity_type: "organization",
     p_entity_id: organizationId,
     p_action: action,
@@ -94,7 +152,30 @@ function friendlyDbError(error: { code?: string; message: string }, context: "co
   if (error.code === "23514") {
     return context === "relationship" ? "One of the values entered is outside the allowed range." : "One of the values entered is invalid.";
   }
+  if (error.code === "42501") {
+    return "You do not have permission to make this change.";
+  }
   return error.message;
+}
+
+// ---------------------------------------------------------------------------
+// Structured RPC-result handling (Phase 3B.1.3, Section D). 0138/0139's
+// protected RPCs (set_default_factoring_relationship,
+// set_carrier_factoring_policy) return a NORMAL (non-exception) jsonb
+// result for business-rule rejections -- {success:false, ...} -- so a
+// caller that only checks the Postgres/transport-level `error` and never
+// looks at `data` will silently treat a rejected change as if it
+// succeeded. The actual decision logic lives in the framework-independent
+// lib/factoring/rpc-result.ts (unit-tested directly, without a Supabase
+// client) -- this is a thin wrapper that adapts a Supabase `.rpc()` call
+// (a PromiseLike, not a plain Promise) to it. It is never sufficient to
+// check `error` alone.
+// ---------------------------------------------------------------------------
+async function resolveStructuredRpc<T extends StructuredRpcResult>(
+  call: PromiseLike<{ data: T | null; error: { message: string } | null }>
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  const { data, error } = await call;
+  return resolveStructuredRpcResult(data, error);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,13 +211,13 @@ function companyValuesFromForm(formData: FormData): { ok: true; values: Record<s
 }
 
 export async function createFactoringCompany(formData: FormData): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
   const parsed = companyValuesFromForm(formData);
   if (!parsed.ok) return { ok: false, error: parsed.error };
 
-  const service = createServiceRoleClient();
-  const { data, error } = await service.from("factoring_companies").insert({ ...parsed.values, organization_id: auth.organizationId }).select("id").single();
+  const supabase = await createClient();
+  const { data, error } = await supabase.from("factoring_companies").insert({ ...parsed.values, organization_id: auth.organizationId }).select("id").single();
   if (error) return { ok: false, error: friendlyDbError(error, "generic") };
 
   await logFactoringActivity(auth.organizationId, "factoring_company_created", { factoring_company_id: data.id, name: parsed.values.name });
@@ -145,16 +226,16 @@ export async function createFactoringCompany(formData: FormData): Promise<Factor
 }
 
 export async function updateFactoringCompany(companyId: string, formData: FormData): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
   const parsed = companyValuesFromForm(formData);
   if (!parsed.ok) return { ok: false, error: parsed.error };
 
-  const service = createServiceRoleClient();
-  const { data: existing } = await service.from("factoring_companies").select("id").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
+  const supabase = await createClient();
+  const { data: existing } = await supabase.from("factoring_companies").select("id").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!existing) return { ok: false, error: "Factoring company not found." };
 
-  const { error } = await service.from("factoring_companies").update(parsed.values).eq("id", companyId);
+  const { error } = await supabase.from("factoring_companies").update(parsed.values).eq("id", companyId);
   if (error) return { ok: false, error: friendlyDbError(error, "generic") };
 
   await logFactoringActivity(auth.organizationId, "factoring_company_updated", { factoring_company_id: companyId, name: parsed.values.name });
@@ -163,8 +244,8 @@ export async function updateFactoringCompany(companyId: string, formData: FormDa
 }
 
 // Deactivation (isActive = false) can be rejected by
-// guard_factoring_company_deactivation() (0072) when this company owns
-// the org's current active default relationship -- surfaced as a clean
+// guard_factoring_company_deactivation() (0072/0138) when this company owns
+// a carrier's current active default relationship -- surfaced as a clean
 // typed-result message via friendlyDbError's "company_deactivate"
 // context, never a raw Postgres error or a route-boundary exception. The
 // trigger deliberately does not offer to clear the default or deactivate
@@ -172,14 +253,14 @@ export async function updateFactoringCompany(companyId: string, formData: FormDa
 // relationship as default first (setDefaultFactoringRelationship), then
 // retry deactivating this company.
 export async function setFactoringCompanyActive(companyId: string, isActive: boolean): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
-  const service = createServiceRoleClient();
-  const { data: existing } = await service.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
+  const supabase = await createClient();
+  const { data: existing } = await supabase.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!existing) return { ok: false, error: "Factoring company not found." };
 
-  const { error } = await service.from("factoring_companies").update({ is_active: isActive }).eq("id", companyId);
+  const { error } = await supabase.from("factoring_companies").update({ is_active: isActive }).eq("id", companyId);
   if (error) return { ok: false, error: friendlyDbError(error, isActive ? "generic" : "company_deactivate") };
 
   await logFactoringActivity(auth.organizationId, isActive ? "factoring_company_reactivated" : "factoring_company_deactivated", { factoring_company_id: companyId, name: existing.name });
@@ -193,14 +274,14 @@ export async function setFactoringCompanyActive(companyId: string, isActive: boo
 // that into the friendly message spec section 17 asks for, it doesn't
 // weaken or route around the restriction.
 export async function deleteFactoringCompany(companyId: string): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
-  const service = createServiceRoleClient();
-  const { data: existing } = await service.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
+  const supabase = await createClient();
+  const { data: existing } = await supabase.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!existing) return { ok: false, error: "Factoring company not found." };
 
-  const { error } = await service.from("factoring_companies").delete().eq("id", companyId);
+  const { error } = await supabase.from("factoring_companies").delete().eq("id", companyId);
   if (error) return { ok: false, error: friendlyDbError(error, "company_delete") };
 
   await logFactoringActivity(auth.organizationId, "factoring_company_deleted", { factoring_company_id: companyId, name: existing.name });
@@ -209,7 +290,13 @@ export async function deleteFactoringCompany(companyId: string): Promise<Factori
 }
 
 // ---------------------------------------------------------------------------
-// Factoring relationships
+// Factoring relationships -- Phase 3B.1.3 (Section B): every relationship
+// now belongs to exactly one carrier, chosen at creation from carriers
+// authorized for the current user, active-only. Changing the carrier
+// later is not offered anywhere in this file -- a relationship pointed at
+// the wrong carrier is corrected by creating a new one, never by
+// repointing history (matches carrier_id's own UPDATE-revoked column
+// privilege, 0138/0139: even a hand-crafted request could not repoint it).
 // ---------------------------------------------------------------------------
 
 function relationshipValuesFromForm(formData: FormData): { ok: true; values: Record<string, unknown> } | { ok: false; error: string } {
@@ -265,12 +352,32 @@ function relationshipValuesFromForm(formData: FormData): { ok: true; values: Rec
   };
 }
 
-export async function createFactoringRelationship(companyId: string, formData: FormData): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+// The one place that decides whether `carrierId` may be used for a NEW
+// factoring relationship: must belong to the caller's own organization
+// AND be active (Section B.2/B.3 -- same predicate
+// carrier_ids_selectable_for_new_records(), 0130, documents as ITS OWN
+// contract; queried directly here rather than through that RPC so the
+// exact failure -- "not found/wrong org" vs. "inactive" -- can be told
+// apart and reported with a distinct message, which a bare id-set RPC
+// result cannot do on its own).
+async function validateCarrierForNewRelationship(carrierId: string, organizationId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!carrierId) return { ok: false, error: "A carrier is required." };
+  const supabase = await createClient();
+  const { data: carrier } = await supabase.from("carriers").select("id, is_active").eq("id", carrierId).eq("organization_id", organizationId).maybeSingle();
+  if (!carrier) return { ok: false, error: "That carrier is not available." };
+  if (!carrier.is_active) return { ok: false, error: "That carrier is inactive and cannot be used for a new factoring relationship." };
+  return { ok: true };
+}
+
+export async function createFactoringRelationship(carrierId: string, companyId: string, formData: FormData): Promise<FactoringActionResult> {
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
-  const service = createServiceRoleClient();
-  const { data: company } = await service.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
+  const carrierCheck = await validateCarrierForNewRelationship(carrierId, auth.organizationId);
+  if (!carrierCheck.ok) return carrierCheck;
+
+  const supabase = await createClient();
+  const { data: company } = await supabase.from("factoring_companies").select("id, name").eq("id", companyId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!company) return { ok: false, error: "Factoring company not found." };
 
   const parsed = relationshipValuesFromForm(formData);
@@ -280,21 +387,28 @@ export async function createFactoringRelationship(companyId: string, formData: F
   // Default" as its own distinct action/step, not a create-time option) --
   // every new relationship starts is_default = false, is_active = true
   // (0071's own column defaults), so it can never collide with
-  // factoring_relationships_one_default_per_org on insert.
-  const { data, error } = await service.from("factoring_relationships").insert({ ...parsed.values, organization_id: auth.organizationId, factoring_company_id: companyId }).select("id").single();
+  // factoring_relationships_one_default_per_carrier (0138) on insert.
+  // guard_factoring_relationship_org() (0071/0136) independently re-checks
+  // carrier_id's organization at the database layer regardless of what
+  // this app-layer check above already confirmed.
+  const { data, error } = await supabase
+    .from("factoring_relationships")
+    .insert({ ...parsed.values, organization_id: auth.organizationId, factoring_company_id: companyId, carrier_id: carrierId })
+    .select("id")
+    .single();
   if (error) return { ok: false, error: friendlyDbError(error, "relationship") };
 
-  await logFactoringActivity(auth.organizationId, "factoring_relationship_created", { factoring_relationship_id: data.id, factoring_company_id: companyId, company_name: company.name });
+  await logFactoringActivity(auth.organizationId, "factoring_relationship_created", { factoring_relationship_id: data.id, factoring_company_id: companyId, carrier_id: carrierId, company_name: company.name });
   revalidatePath(PATH);
   return { ok: true };
 }
 
 export async function updateFactoringRelationship(relationshipId: string, formData: FormData): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireFactoringEditAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
-  const service = createServiceRoleClient();
-  const { data: existing } = await service.from("factoring_relationships").select("id").eq("id", relationshipId).eq("organization_id", auth.organizationId).maybeSingle();
+  const supabase = await createClient();
+  const { data: existing } = await supabase.from("factoring_relationships").select("id").eq("id", relationshipId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!existing) return { ok: false, error: "Factoring relationship not found." };
 
   const parsed = relationshipValuesFromForm(formData);
@@ -304,9 +418,11 @@ export async function updateFactoringRelationship(relationshipId: string, formDa
   // reserve percentages + fee_timing copied onto factored_invoices at
   // submission time, Phase 2H.4) means this can never rewrite an
   // already-submitted transaction's numbers; only future submissions that
-  // read this relationship's CURRENT values are affected. is_default/
-  // is_active are separate actions below, never touched here.
-  const { error } = await service.from("factoring_relationships").update(parsed.values).eq("id", relationshipId);
+  // read this relationship's CURRENT values are affected. carrier_id/
+  // is_default/is_active are never included in `parsed.values` -- the
+  // carrier a relationship belongs to is immutable after creation (Section
+  // B.7/B.9), and is_default/is_active are separate, dedicated actions.
+  const { error } = await supabase.from("factoring_relationships").update(parsed.values).eq("id", relationshipId);
   if (error) return { ok: false, error: friendlyDbError(error, "relationship") };
 
   await logFactoringActivity(auth.organizationId, "factoring_relationship_updated", { factoring_relationship_id: relationshipId });
@@ -314,35 +430,31 @@ export async function updateFactoringRelationship(relationshipId: string, formDa
   return { ok: true };
 }
 
-// Phase 2H.3A: a single atomic RPC (0072_factoring_default_relationship_rpc.sql
-// -- proposed, not yet applied), not the two-sequential-update "clear then
-// set" pattern this used to share with setDefaultEmailSender/
-// setDefaultEmailDomain. Phase 2H.4 will treat the org's default
-// relationship as the authoritative source for financial snapshots on
-// every new factored invoice, so the brief "nobody is default"/"who wins"
-// windows that pattern tolerates for a cosmetic email preference are not
-// acceptable here. Called through the CALLER'S OWN session client (never
-// the service-role client) -- the RPC is SECURITY INVOKER specifically so
-// factoring_relationships' RLS applies to it exactly as it would to a
-// direct query, and org/role are derived from that session inside the
-// function itself (current_org_id()/has_role()), never trusted from this
-// action's own arguments.
+// Phase 2H.3A / 3B.1 (0072 -> 0138): a single atomic, carrier-scoped RPC.
+// Called through the CALLER'S OWN session client (never service_role) --
+// org/role/carrier are derived and re-verified INSIDE the function itself
+// (current_org_id()/has_role(), 0138), never trusted from this action's
+// own arguments. Phase 3B.1.3 (Section D) fix: the RPC's own STRUCTURED
+// result is now the authority on success, not merely a null transport
+// error -- resolveStructuredRpc() maps {success:false, incomplete:true,
+// ...} (a normal, non-exception result the RPC returns for "this
+// relationship isn't complete enough to become the default yet") to a
+// failed FactoringActionResult exactly the same as a raised exception
+// (SFAUT/SFROL/SFDNF/SFCAR/SFINV/SFCMP) would be -- this action can no
+// longer report success while the database's own is_default flag never
+// actually changed.
 export async function setDefaultFactoringRelationship(relationshipId: string): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireOwnerAdminFactoringAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
   const supabase = await createClient();
-  const { error } = await supabase.rpc("set_default_factoring_relationship", { p_relationship_id: relationshipId });
-  // The function's own raise exception messages ARE the human-readable
-  // messages (spec section 7's exact three strings, plus the inactive
-  // -company one) -- passed straight through rather than re-mapped, since
-  // there's no raw constraint name to hide here (the function's checks
-  // preempt every constraint it could otherwise hit).
-  if (error) return { ok: false, error: error.message };
+  const resolved = await resolveStructuredRpc(supabase.rpc("set_default_factoring_relationship", { p_relationship_id: relationshipId }));
+  if (!resolved.ok) return { ok: false, error: resolved.error };
 
-  const service = createServiceRoleClient();
-  const { data: relationship } = await service.from("factoring_relationships").select("factoring_company_id").eq("id", relationshipId).maybeSingle();
-  await logFactoringActivity(auth.organizationId, "factoring_relationship_set_default", { factoring_relationship_id: relationshipId, factoring_company_id: relationship?.factoring_company_id });
+  await logFactoringActivity(auth.organizationId, "factoring_relationship_set_default", {
+    factoring_relationship_id: relationshipId,
+    carrier_id: resolved.data.carrier_id,
+  });
   revalidatePath(PATH);
   return { ok: true };
 }
@@ -353,24 +465,63 @@ export async function setDefaultFactoringRelationship(relationshipId: string): P
 // factoring_relationships_default_must_be_active CHECK would force that
 // combination anyway, but surfacing it as a hard stop here means a user
 // is never surprised to discover, only after the fact, that their
-// organization quietly lost its default. To deactivate the current
-// default, set a different relationship as default first (which clears
-// this one's is_default), then deactivate it.
+// carrier quietly lost its default. To deactivate the current default,
+// set a different relationship as that SAME carrier's default first
+// (which clears this one's is_default), then deactivate it.
 export async function setFactoringRelationshipActive(relationshipId: string, isActive: boolean): Promise<FactoringActionResult> {
-  const auth = await requireFactoringAccess();
+  const auth = await requireFactoringEditAccess();
   if ("error" in auth) return { ok: false, error: auth.error };
 
-  const service = createServiceRoleClient();
-  const { data: existing } = await service.from("factoring_relationships").select("id, is_default, factoring_company_id").eq("id", relationshipId).eq("organization_id", auth.organizationId).maybeSingle();
+  const supabase = await createClient();
+  const { data: existing } = await supabase.from("factoring_relationships").select("id, is_default, carrier_id").eq("id", relationshipId).eq("organization_id", auth.organizationId).maybeSingle();
   if (!existing) return { ok: false, error: "Factoring relationship not found." };
   if (!isActive && existing.is_default) {
-    return { ok: false, error: "This factoring relationship cannot be deactivated while it is the default." };
+    return { ok: false, error: "This factoring relationship cannot be deactivated while it is this carrier's default." };
   }
 
-  const { error } = await service.from("factoring_relationships").update({ is_active: isActive }).eq("id", relationshipId);
+  const { error } = await supabase.from("factoring_relationships").update({ is_active: isActive }).eq("id", relationshipId);
   if (error) return { ok: false, error: friendlyDbError(error, "relationship") };
 
-  await logFactoringActivity(auth.organizationId, isActive ? "factoring_relationship_reactivated" : "factoring_relationship_deactivated", { factoring_relationship_id: relationshipId, factoring_company_id: existing.factoring_company_id });
+  await logFactoringActivity(auth.organizationId, isActive ? "factoring_relationship_reactivated" : "factoring_relationship_deactivated", { factoring_relationship_id: relationshipId, carrier_id: existing.carrier_id });
+  revalidatePath(PATH);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Carrier factoring policy (Phase 3B.1.3 -- the app's one entry point to
+// public.set_carrier_factoring_policy(), 0139). Owner/admin only, app
+// layer AND database layer both -- see requireOwnerAdminFactoringAccess()
+// above and the RPC's own has_role() check. A reason is mandatory (the
+// RPC itself rejects an empty one); p_expected_updated_at makes this
+// optimistic-concurrency-safe the same way setDefaultFactoringRelationship
+// is. Never broadens dispatcher/accountant authority: they can still view
+// a carrier's policy/readiness (read-only, via the classifier), never
+// change it.
+// ---------------------------------------------------------------------------
+export async function setCarrierFactoringPolicy(
+  carrierId: string,
+  mode: CarrierFactoringMode,
+  reason: string,
+  expectedUpdatedAt: string
+): Promise<FactoringActionResult> {
+  const auth = await requireOwnerAdminFactoringAccess();
+  if ("error" in auth) return { ok: false, error: auth.error };
+
+  if (!reason.trim()) return { ok: false, error: "A reason is required." };
+  if (!expectedUpdatedAt) return { ok: false, error: "Missing the carrier's current version -- please refresh and try again." };
+
+  const supabase = await createClient();
+  const resolved = await resolveStructuredRpc(
+    supabase.rpc("set_carrier_factoring_policy", {
+      p_carrier_id: carrierId,
+      p_mode: mode,
+      p_reason: reason,
+      p_expected_updated_at: expectedUpdatedAt,
+      p_idempotency_key: null,
+    })
+  );
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+
   revalidatePath(PATH);
   return { ok: true };
 }

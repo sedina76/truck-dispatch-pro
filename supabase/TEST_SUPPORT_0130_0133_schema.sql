@@ -231,6 +231,15 @@ create table public.invoices (
   organization_id uuid not null references public.organizations (id) on delete cascade,
   load_id uuid references public.loads (id) on delete set null,
   dispatch_id uuid references public.dispatches (id) on delete set null,
+  broker_id uuid references public.brokers (id) on delete set null,
+  customer_id uuid references public.customers (id) on delete set null,
+  -- Phase 3B.1.4: submit_invoice_to_factor()'s carrier-resolution gate
+  -- (0140) reads status/total_amount/amount_paid/broker_id/customer_id
+  -- directly -- added here so TEST_0140 can exercise the real function
+  -- against a faithful invoices shape, not a mismatched stub.
+  status text not null default 'draft',
+  total_amount numeric(10,2) not null default 0,
+  amount_paid numeric(10,2) not null default 0,
   invoice_number text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());

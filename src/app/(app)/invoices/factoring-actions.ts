@@ -4,10 +4,30 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { FINANCIAL_ROLES } from "@/lib/auth/require-role";
 import { checkOperationalAccess } from "@/lib/billing/operational-access";
+import { resolveStructuredRpcResult, type StructuredRpcResult } from "@/lib/factoring/rpc-result";
 
 export type SubmitInvoiceToFactorResult =
   | { ok: true; data: { factoredInvoiceId: string; status: string } }
-  | { ok: false; error: string };
+  | { ok: false; error: string; code?: string; snapshotRequired?: boolean };
+
+// Phase 3B.1.5: submit_invoice_to_factor() (0140) now returns jsonb, not
+// table(factored_invoice_id, status) -- {success:false, code:
+// "CARRIER_INVOICE_SNAPSHOT_REQUIRED", snapshot_required:true, message}
+// for every legacy invoice today (there is no immutable
+// carrier/broker/customer/factor/NOA/remittance/terms snapshot to
+// authorize a submission against yet -- see 0140's own header comment),
+// and would return {success:true, factored_invoice_id, status} once a
+// future invoice-issuance migration adds that snapshot marker and
+// resumes real submission (0140's own "FUTURE MIGRATION" comment marks
+// exactly where). `code`/`snapshot_required` are carried through so the
+// UI can special-case the snapshot-required message if it ever wants to,
+// without this action hardcoding a decision the RPC alone should make.
+type SubmitInvoiceToFactorRpcResult = StructuredRpcResult & {
+  factored_invoice_id?: string;
+  status?: string;
+  code?: string;
+  snapshot_required?: boolean;
+};
 
 export type FactoringLifecycleResult = { ok: true } | { ok: false; error: string };
 
@@ -108,16 +128,32 @@ export async function submitInvoiceToFactor(invoiceId: string, relationshipId: s
   // human-readable messages spec section 18 lists verbatim -- passed
   // straight through, never a raw constraint name or PostgREST internal
   // (there is no raw constraint this function's own checks don't already
-  // preempt with a specific message).
-  if (error) return { ok: false, error: error.message };
+  // preempt with a specific message). That covers `error` (transport/
+  // Postgres-exception level, e.g. not-found/not-eligible/already-
+  // submitted). But 0140 ALSO returns a normal (non-exception) jsonb
+  // result for the snapshot-required rejection -- {success:false,
+  // code, snapshot_required, message} -- so `error` being null is never
+  // sufficient on its own to declare success. resolveStructuredRpcResult()
+  // is the one place that decides this, exactly like every other
+  // 0138/0139-era protected RPC; it is never bypassed here.
+  const rpcResult = data as SubmitInvoiceToFactorRpcResult | null;
+  const resolved = resolveStructuredRpcResult<SubmitInvoiceToFactorRpcResult>(rpcResult, error);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: resolved.error,
+      code: rpcResult?.code,
+      snapshotRequired: rpcResult?.snapshot_required === true,
+    };
+  }
 
-  // Function returns table(...) -- supabase-js hands back an array of rows.
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row?.factored_invoice_id) return { ok: false, error: "Submission did not return a result. Please refresh and check the invoice before retrying." };
+  if (!resolved.data.factored_invoice_id || !resolved.data.status) {
+    return { ok: false, error: "Submission did not return a result. Please refresh and check the invoice before retrying." };
+  }
 
   revalidatePath(`/invoices/${invoiceId}`);
   revalidatePath("/invoices");
-  return { ok: true, data: { factoredInvoiceId: row.factored_invoice_id, status: row.status } };
+  return { ok: true, data: { factoredInvoiceId: resolved.data.factored_invoice_id, status: resolved.data.status } };
 }
 
 // ---------------------------------------------------------------------------

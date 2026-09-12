@@ -33,6 +33,7 @@ function fmtPct(n: number) {
 
 export type RelationshipOption = {
   id: string;
+  carrierName: string;
   companyName: string;
   relationshipName: string | null;
   advancePercentage: number;
@@ -41,6 +42,17 @@ export type RelationshipOption = {
   feeTiming: string;
   recourseType: string;
 };
+
+// Phase 3B.1.6 (Section F): a discriminated union, not a boolean + two
+// separately-threaded "permanently empty" arrays. A blocked invoice (every
+// legacy invoice today -- Phase 3B.1.5) carries NO relationship data field
+// at all, so there is nothing here for a future edit to accidentally read
+// or offer a selection from. "ready" is the future invoice-issuance
+// phase's own shape -- unused today, but never deleted (Section F: keep
+// the reusable future-facing surface).
+export type FactoringSectionEligibility =
+  | { status: "blocked"; reason: string }
+  | { status: "ready"; relationshipOptions: RelationshipOption[]; defaultRelationshipId: string | null };
 
 export type FactoredInvoiceDisplay = {
   id: string;
@@ -86,32 +98,28 @@ export type FactoringEventDisplay = {
 
 export function FactoringSection({
   invoiceId,
-  eligible,
-  ineligibleReason,
+  eligibility,
   activeFactoredInvoice,
   canResubmit,
   historicalFactoredInvoices,
-  relationshipOptions,
-  defaultRelationshipId,
   events,
 }: {
   invoiceId: string;
-  eligible: boolean;
-  ineligibleReason: string | null;
+  eligibility: FactoringSectionEligibility;
   activeFactoredInvoice: FactoredInvoiceDisplay | null;
   canResubmit: boolean;
   historicalFactoredInvoices: FactoredInvoiceDisplay[];
-  relationshipOptions: RelationshipOption[];
-  defaultRelationshipId: string | null;
   events: FactoringEventDisplay[];
 }) {
   const [submitOpen, setSubmitOpen] = useState(false);
-  // Submitting is offered whenever eligible + a usable relationship
-  // exists AND resubmission is currently allowed (no row yet, or the
-  // most recent row is rejected/cancelled) -- matches
-  // factored_invoices_one_active_per_invoice (0071) exactly, never a
-  // re-guess of it.
-  const canShowSubmitButton = eligible && relationshipOptions.length > 0 && canResubmit;
+  // Submitting is offered whenever a usable relationship exists (the
+  // "ready" variant with at least one option) AND resubmission is
+  // currently allowed (no row yet, or the most recent row is
+  // rejected/cancelled) -- matches factored_invoices_one_active_per_invoice
+  // (0071) exactly, never a re-guess of it. A "blocked" eligibility
+  // carries no relationship data at all, so there is no separate flag to
+  // keep in sync here -- the discriminant alone rules the dialog out.
+  const canShowSubmitButton = eligibility.status === "ready" && eligibility.relationshipOptions.length > 0 && canResubmit;
 
   return (
     <div className="rounded-xl border border-border bg-card p-4 shadow-elevation-1">
@@ -130,17 +138,7 @@ export function FactoringSection({
       {activeFactoredInvoice ? (
         <FactoringStatusCard invoiceId={invoiceId} factoredInvoice={activeFactoredInvoice} events={events} />
       ) : (
-        <div className="mt-3 text-sm text-muted-foreground">
-          {eligible ? (
-            relationshipOptions.length > 0 ? (
-              "This invoice can be submitted to a factor."
-            ) : (
-              "No active, currently-effective factoring relationship is configured. Add one under Settings -> Factoring before submitting."
-            )
-          ) : (
-            ineligibleReason
-          )}
-        </div>
+        <BlockedOrReadyNotice eligibility={eligibility} />
       )}
 
       {historicalFactoredInvoices.length > 0 && (
@@ -164,14 +162,33 @@ export function FactoringSection({
         </div>
       )}
 
-      {submitOpen && (
+      {submitOpen && eligibility.status === "ready" && (
         <SubmitToFactorDialog
           invoiceId={invoiceId}
-          relationshipOptions={relationshipOptions}
-          defaultRelationshipId={defaultRelationshipId}
+          relationshipOptions={eligibility.relationshipOptions}
+          defaultRelationshipId={eligibility.defaultRelationshipId}
           onClose={() => setSubmitOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// A first-class blocked-state notice -- distinct from "ready but nothing
+// configured yet" -- rather than a boolean/empty-array combination a
+// future edit could silently miswire. Every legacy invoice renders the
+// "blocked" branch today (Phase 3B.1.5/3B.1.6); "ready" is reserved for
+// the future invoice-issuance phase, once a real snapshot exists and this
+// component is handed actual relationship data again.
+function BlockedOrReadyNotice({ eligibility }: { eligibility: FactoringSectionEligibility }) {
+  if (eligibility.status === "blocked") {
+    return <div className="mt-3 text-sm text-muted-foreground">{eligibility.reason}</div>;
+  }
+  return (
+    <div className="mt-3 text-sm text-muted-foreground">
+      {eligibility.relationshipOptions.length > 0
+        ? "This invoice can be submitted to a factor."
+        : "No active, currently-effective factoring relationship is configured. Add one under Settings -> Factoring before submitting."}
     </div>
   );
 }
@@ -610,6 +627,12 @@ function SubmitToFactorDialog({
         </DialogHeader>
 
         <div className="space-y-3">
+          {selected && (
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">Carrier: </span>
+              <span className="font-medium text-foreground">{selected.carrierName}</span>
+            </div>
+          )}
           <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
             Factoring Relationship
             <select

@@ -36,9 +36,52 @@ export type FactoringCompanyRow = {
   created_at: string;
 };
 
+// Phase 3B.1.3 -- carrier-scoped classifier vocabulary
+// (classify_carrier_factoring_readiness(), 0138/0139). One string union so
+// every caller that renders a classification (settings UI, invoice page)
+// shares the same exhaustive set -- never a bare `string`.
+export type CarrierFactoringClassification =
+  | "factoring_policy_unconfigured"
+  | "direct_billing"
+  | "no_factoring_configuration"
+  | "no_default"
+  | "default_inactive"
+  | "default_expired"
+  | "default_not_yet_effective"
+  | "factoring_company_inactive"
+  | "relationship_incomplete"
+  | "multiple_defaults"
+  | "api_integration_missing"
+  | "api_integration_not_ready"
+  | "carrier_party_inactive"
+  | "carrier_party_ineligible"
+  | "carrier_party_direct_billing_exception"
+  | "ready"
+  | "error";
+
+export type CarrierFactoringReadiness = {
+  classification: CarrierFactoringClassification;
+  relationshipId: string | null;
+  missing: string[] | null;
+  message: string | null;
+};
+
+export type CarrierFactoringMode = "unconfigured" | "direct" | "factored";
+
+// Carrier option for a relationship's carrier picker/label -- deliberately
+// NEVER the full carriers row (no address/contact/financial fields leak
+// into a factoring dropdown that has no reason to see them).
+export type CarrierOption = {
+  id: string;
+  legal_name: string;
+  is_active: boolean;
+  factoring_mode: CarrierFactoringMode | null; // null only when 0136 is not yet applied
+};
+
 export type FactoringRelationshipRow = {
   id: string;
   organization_id: string;
+  carrier_id: string;
   factoring_company_id: string;
   relationship_name: string | null;
   default_advance_percentage: number;
