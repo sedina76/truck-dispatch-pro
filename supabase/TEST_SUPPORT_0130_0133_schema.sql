@@ -101,6 +101,14 @@ create table public.carriers (
   onboarded_at date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
+-- production's 0009 attaches set_updated_at() to EVERY table with an
+-- updated_at column, carriers included -- faithfully reproduced here so
+-- 0139's set_carrier_factoring_policy() optimistic-concurrency check
+-- (Phase 3B.1.1, item 6) is exercised against a value that actually moves
+-- on every write, exactly as it does in production (not merely a frozen
+-- INSERT-time default).
+create trigger set_updated_at before update on public.carriers
+  for each row execute function public.set_updated_at();
 
 create table public.brokers (
   id uuid primary key default gen_random_uuid(),

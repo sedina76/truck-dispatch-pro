@@ -64,6 +64,10 @@ tests=(
   "0134|TEST_0134_dispatch_status_transition_and_trailer_privilege_hotfix.sql|t_0134|TEST 0134 PASSED"
   "canceldedup|TEST_CANCELLATION_AUDIT_DEDUP.sql|t_canceldedup|TEST CANCELLATION AUDIT DEDUP PASSED"
   "0135|TEST_0135_dispatch_resource_reassignment_and_carrier_lockdown.sql|t_0135|TEST 0135 PASSED"
+  "0136|TEST_0136_carrier_factoring_policy_and_relationship_columns.sql|t_0136|TEST 0136 PASSED"
+  "0137|TEST_0137_deterministic_factoring_carrier_backfill.sql|t_0137|TEST 0137 PASSED"
+  "0138|TEST_0138_carrier_default_cutover_classifier_and_secured_rpcs.sql|t_0138|TEST 0138 PASSED"
+  "0139|TEST_0139_factoring_policy_safety_integrations_and_privilege_remediation.sql|t_0139|TEST 0139 PASSED"
   "backward|TEST_STATUS_MATRIX_BACKWARD_CORRECTIONS.sql|t_backward|TEST STATUS MATRIX BACKWARD CORRECTIONS PASSED"
 )
 for row in "${tests[@]}"; do
