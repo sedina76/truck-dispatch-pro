@@ -51,12 +51,14 @@ export function FormSelect({
   options,
   defaultValue,
   required,
+  disabled,
 }: {
   label: string;
   name: string;
   options: { value: string; label: string }[];
   defaultValue?: string | null;
   required?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <div className="min-w-0 space-y-1">
@@ -68,8 +70,9 @@ export function FormSelect({
         id={name}
         name={name}
         required={required}
+        disabled={disabled}
         defaultValue={defaultValue ?? ""}
-        className="h-8 w-full rounded-sm border border-desktop-border bg-card px-2.5 text-[13px] shadow-elevation-1 outline-none transition-[box-shadow,border-color] focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
+        className="h-8 w-full rounded-sm border border-desktop-border bg-card px-2.5 text-[13px] shadow-elevation-1 outline-none transition-[box-shadow,border-color] focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
         <option value="" disabled>
           Select...

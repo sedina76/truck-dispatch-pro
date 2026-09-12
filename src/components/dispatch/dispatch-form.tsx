@@ -41,6 +41,7 @@ export function DispatchForm({
         trailerId: String(formData.get("trailer_id") || ""),
         feePercentage: String(formData.get("dispatch_fee_percentage") || ""),
         notes: String(formData.get("notes") || ""),
+        reassignmentReason: String(formData.get("reassignment_reason") || ""),
       },
     };
   }

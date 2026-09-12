@@ -161,14 +161,16 @@ export function conflictMessage(c: AssignmentConflict): string {
 }
 
 // ---------------------------------------------------------------------------
-// 0129 atomic RPC error translation.
+// 0129 / 0134 / 0135 atomic RPC error translation.
 //
-// public.create_dispatch / public.cancel_dispatch RAISE with a 5-char
-// SQLSTATE (TDxxx), a user-safe MESSAGE (the exact copy to show), and --
-// for the resource/load conflicts -- DETAIL = the conflicting dispatch id.
+// public.create_dispatch / public.cancel_dispatch (TDxxx, 0129), public.
+// transition_dispatch_status (TSxxx, 0134 -- Phase 3A.1 hotfix), and public.
+// reassign_dispatch_resources (RRxxx, 0135 -- Phase 3A.2) all RAISE with a
+// 5-char SQLSTATE, a user-safe MESSAGE (the exact copy to show), and -- for
+// the resource/load conflicts -- DETAIL = the conflicting dispatch id.
 // supabase-js surfaces this as { code, message, details, hint }. This maps
 // it back onto the SAME DispatchConflictError shape the UX pre-flight uses,
-// so the RPC (authoritative) and the pre-flight never show two different
+// so every RPC (authoritative) and the pre-flight never show two different
 // messages for the same situation.
 // ---------------------------------------------------------------------------
 export type RpcLikeError =
@@ -187,6 +189,24 @@ const RPC_CODE_MAP: Record<string, { appCode: string; field: ConflictResource | 
   TDTRM: { appCode: "DISPATCH_TERMINAL", field: null },
   TDROL: { appCode: "forbidden", field: null },
   TDAUT: { appCode: "not_authenticated", field: null },
+  // transition_dispatch_status (0134, Phase 3A.1 hotfix)
+  TSAUT: { appCode: "not_authenticated", field: null },
+  TSDNF: { appCode: "DISPATCH_NOT_FOUND", field: null },
+  TSROL: { appCode: "forbidden", field: null },
+  TSRSN: { appCode: "REASON_REQUIRED", field: null }, // reactivating a cancelled dispatch, or a backward status correction, requires a reason
+  TSCAR: { appCode: "CARRIER_MISMATCH", field: null }, // reactivation would put the dispatch onto a carrier the load no longer has
+  TSINV: { appCode: "INVALID_STATUS_TRANSITION", field: null }, // the status-transition matrix rejected this shape
+  // reassign_dispatch_resources (0135, Phase 3A.2)
+  RRAUT: { appCode: "not_authenticated", field: null },
+  RRROL: { appCode: "forbidden", field: null },
+  RRDNF: { appCode: "DISPATCH_NOT_FOUND", field: null },
+  RRVAL: { appCode: "RESOURCE_REQUIRED", field: null }, // driver/truck missing from the request
+  RRCAR: { appCode: "CARRIER_MISMATCH", field: null }, // the dispatch/load carrier is inconsistent or unresolved
+  RRDRV: { appCode: CONFLICT_CODE.driver, field: "driver" }, // wrong carrier, inactive, or already active elsewhere
+  RRTRK: { appCode: CONFLICT_CODE.truck, field: "truck" },
+  RRTRL: { appCode: CONFLICT_CODE.trailer, field: "trailer" }, // wrong carrier, unresolved, inactive, or already active elsewhere
+  RRRSN: { appCode: "REASON_REQUIRED", field: null }, // replacing an already-assigned resource requires a reason
+  RRINV: { appCode: "DISPATCH_TERMINAL", field: null }, // dispatch is cancelled/delivered/completed
 };
 
 export type RpcDispatchConflict = {

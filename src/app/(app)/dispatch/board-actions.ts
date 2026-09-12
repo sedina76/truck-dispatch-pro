@@ -12,8 +12,8 @@ import { isValidIanaTimezone } from "@/lib/timezone/iana";
 import { formatStopDateTime } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
-import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
 import { isWithinActiveRetention, deliveredRetentionCountdown } from "@/lib/dispatch/board-retention";
+import { rpcDispatchConflict } from "@/lib/dispatch/conflicts";
 
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
@@ -88,25 +88,7 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
   const previousStatus = dispatch.status;
   if (previousStatus === newStatus) return { ok: true };
 
-  // Optional/degradable, same as the drawer: if 0057 hasn't landed yet (or
-  // this one query hits any other issue), the status move still goes
-  // through -- it just can't apply "only set if still null" bookkeeping
-  // for these five columns this time, so timestampsAvailable gates
-  // writing to them below rather than attempting a doomed write against
-  // columns that don't exist.
-  const { data: existingTimestamps, error: timestampsReadError } = await supabase
-    .from("dispatches")
-    .select("en_route_pickup_at, loaded_at, in_transit_at, delivered_at, cancelled_at")
-    .eq("id", dispatchId)
-    .maybeSingle();
-  const timestampsAvailable = !timestampsReadError;
-  if (timestampsReadError) {
-    console.warn(`[dispatch board] operational timestamps unavailable for dispatch ${dispatchId} (likely migration 0057 not applied yet) -- status will still update, timestamp bookkeeping skipped this time:`, timestampsReadError);
-  }
-  const priorTimestamps = (existingTimestamps ?? {}) as { en_route_pickup_at?: string | null; loaded_at?: string | null; in_transit_at?: string | null; delivered_at?: string | null; cancelled_at?: string | null };
-
   const now = new Date().toISOString();
-  const dispatchUpdates: Record<string, string> = { status: newStatus };
   let pickupStopUpdate: Record<string, string> | null = null;
   let deliveryStopUpdate: Record<string, string> | null = null;
 
@@ -129,18 +111,6 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
     return data;
   }
 
-  // Phase 2I.1: the dedicated-timestamp-column half of this switch (which
-  // column gets stamped, only if not already set) is now the ONE shared
-  // computeOperationalTimestampUpdates() (src/lib/dispatch/operational-
-  // timestamps.ts) -- also used by updateDispatch() (dispatch/actions.ts)
-  // so the full edit-form path gets the identical bookkeeping this board
-  // move already had, closing the exact gap that left 3 live dispatches
-  // with delivered_at null (see the Phase 2I.1 pre-migration report). The
-  // load_stops arrived_at/departed_at half is a separate concern and
-  // stays inline here, unchanged.
-  if (timestampsAvailable) {
-    Object.assign(dispatchUpdates, computeOperationalTimestampUpdates(newStatus, priorTimestamps, now));
-  }
   switch (newStatus) {
     case "at_pickup": {
       const stop = await stopId("pickup");
@@ -163,15 +133,45 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
       break;
     }
     // en_route_to_pickup/en_route_to_delivery/cancelled: dedicated-column
-    // bookkeeping only, already applied above. assigned/accepted/
-    // completed: no dedicated timestamp column and no stop-timestamp side
-    // effect (dispatched_at already covers "assigned").
+    // bookkeeping only, now applied by transition_dispatch_status() itself.
+    // assigned/accepted/completed: no dedicated timestamp column and no
+    // stop-timestamp side effect (dispatched_at already covers "assigned").
   }
 
-  const { error } = await supabase.from("dispatches").update(dispatchUpdates).eq("id", dispatchId);
+  // Phase 3A.1 hotfix (item E): the status write itself now goes through
+  // public.transition_dispatch_status() (migration 0134) instead of a
+  // direct `dispatches.update()`. That RPC locks the LOAD row first, then
+  // the dispatch row, UNCONDITIONALLY -- closing the reverse-lock-order
+  // deadlock a raw UPDATE here could hit against cancel_dispatch()'s own
+  // load-then-dispatch order (reproduced by TEST_DEADLOCK_0132_lock_
+  // order.sh, closed by TEST_DEADLOCK_0134_no_deadlock_after_hotfix.sh). It
+  // also stamps the same operational timestamp columns
+  // computeOperationalTimestampUpdates() used to compute here (now done
+  // inside the RPC, identically) and writes the audit event atomically --
+  // the separate log_activity() call this function used to make afterward
+  // is gone, folded into the RPC itself.
+  //
+  // No reason is passed: the board has no reason-prompt UI. This means a
+  // drag-based REACTIVATION (moving a card OUT of the Cancelled column) is
+  // now ALWAYS rejected from the board, even for an owner/admin -- correct,
+  // deliberate behavior per the recommended status-transition matrix
+  // ("ordinary dispatchers cannot reactivate a cancelled dispatch
+  // directly"; a controlled reactivation with a reason belongs on the
+  // dispatch detail page or a future dedicated action, not a one-click
+  // drag). Ordinary forward/backward moves among the non-terminal statuses,
+  // and moving any status to Cancelled, are unaffected.
+  //
+  // No unsafe fallback: if the RPC is unavailable (e.g. migration 0134 not
+  // yet applied) or rejects the transition, this returns a clean failure --
+  // it never falls back to the raw UPDATE this hotfix removed.
+  const { error } = await supabase.rpc("transition_dispatch_status", {
+    p_dispatch_id: dispatchId,
+    p_new_status: newStatus,
+  });
   if (error) {
     console.error("[dispatch board] status update failed:", error);
-    return { ok: false, error: "Unable to update status. Please try again." };
+    const conflict = rpcDispatchConflict(error);
+    return { ok: false, error: conflict?.message ?? error.message ?? "Unable to update status. Please try again." };
   }
 
   // Stop-timestamp writes are secondary to the status change itself -- a
@@ -192,14 +192,6 @@ export async function updateDispatchBoardStatus(dispatchId: string, newStatus: s
       if (stopErr) console.error("[dispatch board] delivery stop timestamp update failed:", stopErr);
     }
   }
-
-  await supabase.rpc("log_activity", {
-    p_entity_type: "dispatch",
-    p_entity_id: dispatchId,
-    p_action: "status_changed",
-    p_changes: { field: "status", old_value: previousStatus, new_value: newStatus },
-    p_organization_id: organizationId,
-  });
 
   // Auto-stop tracking on Delivered (spec section 8): additive only, never
   // touches dispatch/load status logic itself -- this only ever closes an

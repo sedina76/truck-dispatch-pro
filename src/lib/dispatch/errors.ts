@@ -31,6 +31,9 @@ export type DispatchActionState = {
     trailerId: string;
     feePercentage: string;
     notes: string;
+    // Phase 3A.3 (item 1): echoed back so a failed reassignment resubmission
+    // doesn't lose whatever reason the dispatcher already typed.
+    reassignmentReason: string;
   };
 };
 
@@ -110,6 +113,19 @@ export function translateDispatchError(err: unknown): DispatchActionState {
     // conflict, never a raw "duplicate key value violates..." string.
     if (err.code === "23505") {
       return { error: "This assignment was just taken by another dispatch. Please review and choose different equipment/driver.", code: "CONCURRENT_UPDATE" };
+    }
+    // Phase 3A.3 (item 2): a lock-wait timeout, a serialization failure, or
+    // a genuine deadlock (all raw Postgres codes, never one of reassign_
+    // dispatch_resources's own RRxxx codes) means this dispatch's row was
+    // busy under another in-flight request the instant this one tried to
+    // lock it -- "please retry" is the correct, honest answer (nothing was
+    // corrupted, nothing was silently dropped), never a raw "canceling
+    // statement due to statement timeout" or "deadlock detected" string.
+    if (err.code === "55P03" || err.code === "57014" || err.code === "40P01" || err.code === "40001") {
+      return {
+        error: "This dispatch is currently being updated by another request. Please wait a moment and try again.",
+        code: "LOCK_TIMEOUT",
+      };
     }
     if (err.message && GUARD_ORG_PATTERNS.some((re) => re.test(err.message!))) {
       return { error: "This driver, truck, or trailer isn't valid for the selected carrier. Choose a driver/truck/trailer that belongs to the same carrier.", code: "CARRIER_MISMATCH" };

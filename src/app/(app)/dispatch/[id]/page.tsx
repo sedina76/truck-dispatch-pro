@@ -2,7 +2,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { FormSelect } from "@/components/ui/form-field";
 import { DispatchNotesField } from "@/components/dispatch/dispatch-notes-field";
 import { Button } from "@/components/ui/button";
 import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
@@ -37,18 +36,15 @@ import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 const DISPATCH_SAFE_COLUMNS =
   "id, organization_id, load_id, carrier_id, truck_id, driver_id, trailer_id, status, dispatched_at, completed_at, en_route_pickup_at, loaded_at, in_transit_at, delivered_at, cancelled_at, created_at, updated_at";
 
-const STATUS_OPTIONS = [
-  { value: "assigned", label: "Assigned" },
-  { value: "accepted", label: "Accepted" },
-  { value: "en_route_to_pickup", label: "En Route to Pickup" },
-  { value: "at_pickup", label: "At Pickup" },
-  { value: "loaded", label: "Loaded" },
-  { value: "en_route_to_delivery", label: "En Route to Delivery" },
-  { value: "at_delivery", label: "At Delivery" },
-  { value: "delivered", label: "Delivered" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
+// Phase 3A.4 (item 2): status editing was removed from this form entirely
+// -- STATUS_OPTIONS/a status <select> used to live here. Status is now
+// display-only on this page (the StatusBadge below); the Dispatch Board's
+// drag-and-drop (updateDispatchBoardStatus, board-actions.ts) is the sole
+// sanctioned way to change it, and that path already goes through
+// transition_dispatch_status() (0134) on its own. This is the "Preferred"
+// design from the Phase 3A.4 spec: it structurally eliminates the partial-
+// success risk a combined status+resource Save previously had (status
+// applied via one RPC, resources rejected by a second, independent one).
 
 const SECTION_DEFAULTS: Record<string, boolean> = {
   load_summary: true,
@@ -76,11 +72,17 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
     truck_id: string;
     trailer_id: string | null;
     status: string;
+    updated_at: string;
   };
 
   const [summary, options, rateConDoc, financialsRes, notesRes] = await Promise.all([
     getLoadSummary(supabase, dispatch.load_id),
-    getAssignmentOptions(supabase),
+    // Phase 3A.3 (item 5): pass this dispatch's OWN current assignment so a
+    // driver/truck/trailer that has since gone inactive (or, for a trailer,
+    // been reclassified) still appears in the option list -- merged in as
+    // an explicitly-labeled historical entry, never as a new-pick choice
+    // for anything else (see getAssignmentOptions).
+    getAssignmentOptions(supabase, { driverId: dispatch.driver_id, truckId: dispatch.truck_id, trailerId: dispatch.trailer_id }),
     // Rate Confirmation document itself is STAFF ONLY financial context
     // (same tier as everything else on this page) -- never fetched at all
     // for driver/viewer.
@@ -117,6 +119,12 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
           causing a hydration error). Same "Save button submits via the
           form attribute" convention FormCard already uses elsewhere. */}
       <DispatchForm id="dispatch-edit-form" action={updateDispatch.bind(null, id)} className="space-y-3">
+        {/* Phase 3A.3 (item 3): the exact updated_at this page loaded the
+            dispatch with -- submitted back as p_expected_updated_at so
+            reassign_dispatch_resources() (0135) can detect and reject a
+            stale edit (someone else changed this dispatch in the meantime)
+            instead of silently overwriting it. Not user-editable. */}
+        <input type="hidden" name="expected_updated_at" value={dispatch.updated_at} readOnly />
         <CollapsibleSectionsProvider defaults={SECTION_DEFAULTS}>
           <div className="flex items-center justify-between">
             <div>
@@ -151,10 +159,20 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
                   defaultTruckId={dispatch.truck_id}
                   defaultTrailerId={dispatch.trailer_id}
                   defaultFeePercentage={canSeeFinancials ? financials?.dispatch_fee_percentage : undefined}
+                  carrierReadOnly
                 />
-                <div className="max-w-xs">
-                  <FormSelect label="Dispatch Status" name="status" defaultValue={dispatch.status} options={STATUS_OPTIONS} />
-                </div>
+                {/* Phase 3A.4 (item 2): status is no longer editable from
+                    this form -- move it on the Dispatch Board (drag the
+                    card between columns) instead, which routes through
+                    transition_dispatch_status() (0134) with its own
+                    role/reason rules for backward corrections. */}
+                <p className="text-[11.5px] text-desktop-text-muted">
+                  To change status, use the{" "}
+                  <Link href="/dispatch/board" className="font-medium text-primary hover:underline">
+                    Dispatch Board
+                  </Link>
+                  .
+                </p>
               </div>
             </DesktopCollapsibleSection>
 

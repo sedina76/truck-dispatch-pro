@@ -35,11 +35,20 @@ export default async function TrailerDetailPage({
         deleteAction={deleteRecord.bind(null, "trailers", id, "/trailers")}
       >
         <FormGrid>
+          {/* Phase 3A.1 hotfix: trailers.carrier_id is no longer directly
+              UPDATE-able by authenticated users (0134 column-privilege
+              correction) -- changing a trailer's carrier ownership after
+              creation requires an owner/admin using the guarded
+              approve_trailer_ownership_scope() RPC, which has no dedicated
+              UI yet. Disabled here (not removed) so the current value stays
+              visible; the field is set at creation and stops being a plain
+              editable form field on this page from here on. */}
           <FormSelect
-            label="Carrier"
+            label="Carrier (set at creation — an owner/admin must change this)"
             name="carrier_id"
             defaultValue={trailer.carrier_id}
             options={(carriers ?? []).map((c) => ({ value: c.id, label: c.legal_name }))}
+            disabled
           />
           <FormField label="Unit number" name="unit_number" defaultValue={trailer.unit_number} required />
           <FormSelect

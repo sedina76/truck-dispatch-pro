@@ -3,11 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { updateRecordInPlace, getCurrentOrgId } from "@/lib/actions/records";
+import { getCurrentOrgId } from "@/lib/actions/records";
 import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { DispatchConflictError, translateDispatchError, type DispatchActionState } from "@/lib/dispatch/errors";
-import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
+import { buildReassignmentIdempotencyKey } from "@/lib/dispatch/reassignment-idempotency";
 import {
   ACTIVE_DISPATCH_STATUSES,
   classifyAssignmentConflict,
@@ -19,15 +19,9 @@ import {
   rpcDispatchConflict,
   type AssignmentConflict,
   type ClassifyParams,
-  type ConflictResource,
   type DispatchLite,
 } from "@/lib/dispatch/conflicts";
 
-const UNIQUE_INDEX_FIELD: Record<string, ConflictResource> = {
-  dispatches_active_driver_unique: "driver",
-  dispatches_active_truck_unique: "truck",
-  dispatches_active_trailer_unique: "trailer",
-};
 
 // Fetch every ACTIVE dispatch that touches this load / driver / truck /
 // trailer, in ONE query, then let src/lib/dispatch/conflicts.ts decide.
@@ -104,8 +98,34 @@ function toDispatchConflictError(c: AssignmentConflict): DispatchConflictError {
   });
 }
 
+// Phase 3A.1 hotfix (item E, "search the entire repository for every direct
+// dispatch status mutation"): this export has NO caller anywhere in the
+// codebase today (grep-confirmed) -- dead code, not part of the reproduced
+// deadlock's reachable risk class. Left in place (a future caller may start
+// using it) but fixed rather than removed: it used to do a raw
+// `updateRecordInPlace("dispatches", id, { status }, ...)`, the SAME
+// unguarded pattern (no transition-matrix check, no lock-order guarantee,
+// no role/reason check for reactivation) that board-actions.ts and this
+// file's own updateDispatch() were fixed to stop using. Routed through the
+// same authoritative RPC so it can never become a live, unguarded
+// reactivation path if it is ever wired up later.
+//
+// requireOperationalAccess() is called explicitly here, not inherited: the
+// old body's only write was updateRecordInPlace(...), which gates
+// internally; replacing it with a direct .rpc() call would otherwise have
+// silently DROPPED the D.2.11 billing gate this export always had (caught
+// by operational-access.test.mjs's D.2.11 #27 static check, not merely
+// theoretical -- confirmed failing before this line was added, passing
+// after).
 export async function updateDispatchStatus(id: string, status: string) {
-  await updateRecordInPlace("dispatches", id, { status }, "/dispatch/board");
+  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("transition_dispatch_status", { p_dispatch_id: id, p_new_status: status });
+  if (error) {
+    const conflict = rpcDispatchConflict(error);
+    throw conflict ? new DispatchConflictError(conflict.message, { code: conflict.code, field: conflict.field }) : error;
+  }
+  revalidatePath("/dispatch/board");
 }
 
 // ---------------------------------------------------------------------------
@@ -183,49 +203,16 @@ async function checkEquipmentAvailable(
   }
 }
 
-// A 0054 unique_violation slipped past the pre-check (a genuine concurrent
-// race). Re-derive the exact same rich conflict -- who actually holds the
-// slot now -- rather than surfacing "duplicate key value violates unique
-// constraint...". If that re-lookup somehow comes up empty (the winner's
-// own dispatch was cancelled/edited in the instant between the failed
-// insert and this query), still return an expected conflict, never fall
-// through to the raw DB error.
-async function raceLoserConflict(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  indexName: string,
-  values: { driver_id: string; truck_id: string; trailer_id: string | null },
-  excludeDispatchId?: string
-): Promise<DispatchConflictError> {
-  const field = UNIQUE_INDEX_FIELD[indexName];
-  const candidates = await fetchConflictCandidates(supabase, {
-    driverId: values.driver_id,
-    truckId: values.truck_id,
-    trailerId: values.trailer_id,
-    excludeDispatchId,
-  });
-  const conflict = classifyAssignmentConflict(candidates, {
-    driverId: values.driver_id,
-    truckId: values.truck_id,
-    trailerId: values.trailer_id,
-    excludeDispatchId,
-  });
-  if (conflict) return toDispatchConflictError(conflict);
-  // The winner's own dispatch was cancelled/edited in the instant between
-  // the failed insert and this re-lookup -- still an expected "someone else
-  // just took this" conflict, never the raw DB error.
-  return new DispatchConflictError("This assignment was just taken by another dispatch. Please review and choose different equipment/driver.", {
-    code: "CONCURRENT_UPDATE",
-    field,
-  });
-}
-
-function matchedUniqueIndex(message: string | undefined): string | null {
-  if (!message) return null;
-  for (const name of Object.keys(UNIQUE_INDEX_FIELD)) {
-    if (message.includes(name)) return name;
-  }
-  return null;
-}
+// Phase 3A.2 (item 3): a 0054 unique_violation slipped past the pre-check
+// used to be re-derived here (raceLoserConflict/matchedUniqueIndex) for
+// updateDispatch()'s old direct-UPDATE path. That path is gone -- driver/
+// truck/trailer reassignment now goes through public.reassign_dispatch_
+// resources() (0135), which translates its OWN 0054 unique_violation race
+// internally (RRDRV/RRTRK/RRTRL, with the conflicting dispatch id as
+// DETAIL) via rpcDispatchConflict() below, exactly like createDispatch()
+// already relies on create_dispatch() (0129) to do the same for TDDRV/
+// TDTRK/TDTRL. A raw 23505 no longer needs to be caught and re-derived
+// client-side for ANY dispatch write path in this file.
 
 // Phase 2G.10 writer cutover: dispatch_fee_percentage and notes are no
 // longer part of the dispatches insert/update -- they're written to
@@ -275,12 +262,11 @@ async function writeDispatchNotes(supabase: Awaited<ReturnType<typeof createClie
 
 // Status is intentionally NOT part of dispatchValues(): createDispatch
 // always hardcodes 'assigned' for a brand-new dispatch (a status field on
-// the create form would be meaningless before it exists), while
-// updateDispatch reads it from the form separately, below.
-function statusValue(formData: FormData): string {
-  const status = String(formData.get("status") || "").trim();
-  return status || "assigned";
-}
+// the create form would be meaningless before it exists). Phase 3A.4 (item
+// 2) removed status editing from updateDispatch() entirely -- status
+// transitions are now exclusively a Dispatch Board / dedicated-action
+// concern (transition_dispatch_status(), 0134, via board-actions.ts) -- so
+// there is no longer a corresponding helper here at all.
 
 // Bespoke rather than the generic insertRecord() helper: this also flips
 // the load's status to "dispatched" in the same action, and insertRecord's
@@ -353,75 +339,184 @@ export async function createDispatch(_prevState: DispatchActionState, formData: 
   redirect(`/dispatch/${newDispatchId}`);
 }
 
-// Plain update -- same row, same id, no duplicate ever created. Re-runs the
-// same conflict + org/relationship + equipment-availability checks (the DB
-// guard trigger fires on UPDATE too) since the assignment can change on an
-// edit exactly like on create. Same useActionState/expected-error
-// convention as createDispatch.
+// Phase 3A.2 (item 1): fields the generic dispatch edit form may change.
+// carrier_id is DELIBERATELY EXCLUDED -- a dispatch's carrier can never be
+// changed through this ordinary form (see updateDispatch below for the
+// explicit tamper/staleness check, and dispatch/[id]/page.tsx for the
+// now-read-only Carrier field).
+function updateDispatchResourceValues(formData: FormData) {
+  const truckId = String(formData.get("truck_id") || "").trim();
+  const driverId = String(formData.get("driver_id") || "").trim();
+  if (!truckId) throw new Error("Truck is required.");
+  if (!driverId) throw new Error("Driver is required.");
+  return {
+    truck_id: truckId,
+    driver_id: driverId,
+    trailer_id: emptyToNull(formData.get("trailer_id")),
+  };
+}
+
+// Phase 3A.4 (item 2): status is NOT part of this action at all, in either
+// direction. Preferred design selected over a combined orchestration RPC:
+// status transitions stay EXCLUSIVELY on the Dispatch Board
+// (updateDispatchBoardStatus, board-actions.ts) or a future dedicated
+// status action -- both already route through transition_dispatch_status()
+// (0134) on their own, unaffected by this file. Removing status from this
+// form structurally eliminates the partial-success risk a combined "Save"
+// ever had (status applied via one RPC, resources rejected by a second,
+// independent one, in two separate transactions, presented to the user as
+// one action): there is now only ONE mutating RPC call anywhere in this
+// function's body (reassign_dispatch_resources, and only when a resource
+// actually changed -- see resourcesChanged below), plus the separately-
+// safe (per-row-upsert, no shared transaction to partially fail)
+// financials/notes table writes. A rejected resource reassignment can
+// never leave a status change applied out from under it, because this
+// action never touches status at all.
+//
+// Plain update -- same row, same id, no duplicate ever created. Same
+// useActionState/expected-error convention as createDispatch.
 export async function updateDispatch(id: string, _prevState: DispatchActionState, formData: FormData): Promise<DispatchActionState> {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
 
   try {
-    const organizationId = await getCurrentOrgId();
-    const values = dispatchValues(formData);
-    const status = statusValue(formData);
+    const values = updateDispatchResourceValues(formData);
 
-    await checkEquipmentAvailable(supabase, { truckId: values.truck_id, trailerId: values.trailer_id });
-    await checkAssignmentConflicts(supabase, {
-      driverId: values.driver_id,
-      truckId: values.truck_id,
-      trailerId: values.trailer_id,
-      excludeDispatchId: id,
-    });
-
-    // Phase 2I.1: this full-edit-form path is the OTHER real way a
-    // dispatch can reach status='delivered'/'completed' (the Dispatch
-    // Board's own drag/drop, updateDispatchBoardStatus(), already applied
-    // this bookkeeping) -- confirmed live to have been the actual cause
-    // of 3 dispatches reaching a delivered-like status with delivered_at
-    // left null (see the Phase 2I.1 pre-migration report's audit trail).
-    // Same shared, idempotent rule as the board move -- never overwrites
-    // a timestamp that's already set, applied to whichever ONE of the
-    // five 0057 columns this specific status transition (if any) owns.
-    const { data: priorRow } = await supabase
+    // Phase 3A.4 (item 3): fetch the CURRENTLY SAVED assignment ONCE --
+    // authoritative for BOTH the carrier-tamper check below AND the "did
+    // driver/truck/trailer actually change" decision that follows. Never
+    // trust the browser to decide whether a resource-reassignment RPC call
+    // is even needed, any more than the RPC itself trusts the browser to
+    // decide whether a change is a REPLACEMENT (0135, Phase 3A.4 item 1).
+    const { data: currentDispatch, error: currentDispatchError } = await supabase
       .from("dispatches")
-      .select("status, en_route_pickup_at, loaded_at, in_transit_at, delivered_at, cancelled_at")
+      .select("carrier_id, driver_id, truck_id, trailer_id")
       .eq("id", id)
       .maybeSingle();
-    const previousStatus = priorRow?.status ?? null;
-    const nowIso = new Date().toISOString();
-    const timestampUpdates = priorRow ? computeOperationalTimestampUpdates(status, priorRow, nowIso) : {};
+    if (currentDispatchError || !currentDispatch) {
+      throw new DispatchConflictError("This dispatch could not be found. It may have been removed.", { code: "DISPATCH_NOT_FOUND", field: null });
+    }
 
-    const { error } = await supabase
-      .from("dispatches")
-      .update({ ...values, status, ...timestampUpdates })
-      .eq("id", id);
-    if (error) {
-      const indexName = matchedUniqueIndex(error.message);
-      if (error.code === "23505" && indexName) {
-        throw await raceLoserConflict(supabase, indexName, values, id);
+    // Phase 3A.2 (item 1): a dispatch's carrier must not be changed through
+    // this ordinary form. The rendered field is now read-only
+    // (dispatch/[id]/page.tsx), so a normal submission never carries a
+    // carrier_id at all -- but a tampered or stale request (a hand-crafted
+    // POST, or a stale form that captured an old carrier_id before someone
+    // else changed it) is NOT silently ignored: if one arrives and
+    // disagrees with the dispatch's actual current carrier, the whole
+    // update is rejected outright, not partially applied.
+    const submittedCarrierId = emptyToNull(formData.get("carrier_id"));
+    if (submittedCarrierId !== null && currentDispatch.carrier_id !== submittedCarrierId) {
+      throw new DispatchConflictError(
+        "Carrier is controlled by the load and cannot be changed here. Your request appears to be stale or tampered with -- reload this page and try again, or use the controlled carrier-reassignment workflow to change it.",
+        { code: "CARRIER_CHANGE_REJECTED", field: null }
+      );
+    }
+
+    // Phase 3A.4 (item 3): call reassign_dispatch_resources() ONLY when
+    // driver/truck/trailer actually differ from what is CURRENTLY saved --
+    // never for a notes-only edit, and never merely because a currently-
+    // assigned resource has since gone inactive or unresolved (that
+    // resource isn't being REPLACED by this save, so its own status/scope
+    // is irrelevant to it). This is a pure efficiency/UX decision, not a
+    // security boundary: the RPC re-derives "is this a replacement" itself,
+    // under its own lock, from the database row (0135), exactly as
+    // strictly as if this check did not exist -- it just means an
+    // unrelated save is never rejected on account of a historical resource
+    // it isn't touching.
+    const resourcesChanged =
+      values.driver_id !== currentDispatch.driver_id ||
+      values.truck_id !== currentDispatch.truck_id ||
+      (values.trailer_id ?? null) !== (currentDispatch.trailer_id ?? null);
+
+    // Read once, reused below for the idempotency key (when a resource
+    // actually changes) AND for the financials/notes writes that always
+    // run -- avoids a redundant current_org_id() round trip either way.
+    const organizationId = await getCurrentOrgId();
+
+    if (resourcesChanged) {
+      await checkEquipmentAvailable(supabase, { truckId: values.truck_id, trailerId: values.trailer_id });
+      await checkAssignmentConflicts(supabase, {
+        driverId: values.driver_id,
+        truckId: values.truck_id,
+        trailerId: values.trailer_id,
+        excludeDispatchId: id,
+      });
+
+      const reassignmentReason = emptyToNull(formData.get("reassignment_reason"));
+      const expectedUpdatedAt = emptyToNull(formData.get("expected_updated_at"));
+      // Phase 3A.4 (item 4): server-generated, deterministic idempotency
+      // key -- see reassignment-idempotency.ts for the full contract. A
+      // byte-identical retry of this same submission (same dispatch,
+      // driver/truck/trailer, reason, and version) always reduces to the
+      // SAME key with nothing stored client- or server-side; any actual
+      // change to what is being submitted produces a different one.
+      const idempotencyKey = buildReassignmentIdempotencyKey({
+        organizationId,
+        dispatchId: id,
+        driverId: values.driver_id,
+        truckId: values.truck_id,
+        trailerId: values.trailer_id,
+        reason: reassignmentReason,
+        expectedUpdatedAt,
+      });
+
+      const { data: resourceResult, error: resourceError } = await supabase.rpc("reassign_dispatch_resources", {
+        p_dispatch_id: id,
+        p_driver_id: values.driver_id,
+        p_truck_id: values.truck_id,
+        p_trailer_id: values.trailer_id,
+        p_reason: reassignmentReason,
+        p_idempotency_key: idempotencyKey,
+        p_expected_updated_at: expectedUpdatedAt,
+      });
+      if (resourceError) {
+        // reassign_dispatch_resources() (0135) translates a 0054 unique-
+        // violation race into its OWN friendly RRDRV/RRTRK/RRTRL error
+        // internally -- a raw 23505 never escapes this RPC, unlike the old
+        // direct-UPDATE path this replaced (matchedUniqueIndex/
+        // raceLoserConflict are for THAT raw-constraint shape and no
+        // longer apply here).
+        const conflict = rpcDispatchConflict(resourceError);
+        throw conflict ? new DispatchConflictError(conflict.message, { code: conflict.code, field: conflict.field }) : resourceError;
       }
-      throw error;
+      // Phase 3A.3/3A.4 (item 3 / item 1): a stale or missing expected_
+      // updated_at comes back as a STRUCTURED result, not a thrown error --
+      // the RPC made no change and wrote no audit event either way.
+      // Translate both into the same DispatchConflictError shape as every
+      // other expected conflict so the user sees one consistent alert.
+      const resourceOutcome = resourceResult as
+        | { success?: boolean; stale_record?: boolean; expected_version_required?: boolean; message?: string }
+        | null;
+      if (resourceOutcome?.stale_record) {
+        throw new DispatchConflictError(
+          resourceOutcome.message ??
+            "This dispatch was changed by someone else while you were editing it. Please refresh and review the latest assignment before trying again.",
+          { code: "STALE_RECORD", field: null }
+        );
+      }
+      if (resourceOutcome?.expected_version_required) {
+        throw new DispatchConflictError(
+          resourceOutcome.message ?? "This reassignment requires the version of the dispatch you loaded. Please reload the page and try again.",
+          { code: "EXPECTED_VERSION_REQUIRED", field: null }
+        );
+      }
     }
 
     // Phase 2G.10: same split as createDispatch above.
     await writeDispatchFinancials(supabase, id, organizationId, formData);
     await writeDispatchNotes(supabase, id, organizationId, formData);
 
-    // Phase 2I.1: capture the actual status transition when one happened,
-    // same shape updateDispatchBoardStatus() already logs -- previously
-    // this call always passed p_changes: null unconditionally, which is
-    // exactly why no historical log row from this path could ever prove
-    // WHEN a status change happened (see the pre-migration report). Still
-    // logs on every save (not only status changes), matching this
-    // action's own prior "updated" semantics for anyone watching the
-    // Activity section for non-status edits.
+    // Phase 2I.1: logs the general "updated" action unconditionally,
+    // matching this action's prior semantics for anyone watching the
+    // Activity section for non-resource edits (notes/fee only), without
+    // duplicating the resource-specific detail reassign_dispatch_
+    // resources() already recorded when resourcesChanged was true.
     await supabase.rpc("log_activity", {
       p_entity_type: "dispatch",
       p_entity_id: id,
       p_action: "updated",
-      p_changes: previousStatus && previousStatus !== status ? { field: "status", old_value: previousStatus, new_value: status } : null,
+      p_changes: null,
       p_organization_id: organizationId,
     });
   } catch (err) {
