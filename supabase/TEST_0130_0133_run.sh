@@ -72,6 +72,7 @@ tests=(
   "0141|TEST_0141_factoring_integration_lifecycle_integrity.sql|t_0141|TEST 0141 PASSED"
   "0142|TEST_0142_immutable_carrier_invoice_foundation.sql|t_0142|TEST 0142 PASSED"
   "0143|TEST_0143_canonical_financial_idempotency_hardening.sql|t_0143|TEST 0143 PASSED"
+  "0144|TEST_0144_atomic_carrier_invoice_issuance.sql|t_0144|TEST 0144 PASSED"
   "backward|TEST_STATUS_MATRIX_BACKWARD_CORRECTIONS.sql|t_backward|TEST STATUS MATRIX BACKWARD CORRECTIONS PASSED"
 )
 for row in "${tests[@]}"; do

@@ -324,9 +324,40 @@ P5B=$!
 set +e; wait "$P5A"; E5A=$?; wait "$P5B"; E5B=$?; set -e
 echo "S5-A(rotate) exit=$E5A  S5-B(deactivate) exit=$E5B"
 assert_no_deadlock "$T/s5a.out" "$T/s5b.out"
+if [ "$E5A" -ne 0 ] || [ "$E5B" -ne 0 ]; then
+  echo "!! FAIL: both calls should return normally (any rejection is a structured jsonb result, never a raised error/nonzero exit) -- exits were A=$E5A B=$E5B"; FAIL=1
+fi
 echo "-- outcome: --"; cat "$T/s5a.out" "$T/s5b.out" | grep -i "result\|ERROR" 2>/dev/null || true
+# Two, and only two, legitimate final states exist here -- BOTH p_expected_
+# updated_at arguments are live subqueries (evaluated at call time, not a
+# single pre-captured snapshot shared by both sessions), so rotate's OWN
+# optimistic-concurrency check can genuinely fire if deactivate's commit
+# lands between rotate's subquery read and rotate's own row-lock
+# acquisition. This is a real, reachable ordering -- not a database defect
+# -- so each allowed outcome gets its own explicit, positive final-state
+# assertion (never accepted merely by the absence of a check):
+#   (A) rotate won/ran: S5_IID revoked, exactly one NEW draft integration
+#       exists on this relationship replacing it, rotate's own output
+#       shows success:true.
+#   (B) deactivate won AND rotate's own optimistic-concurrency check then
+#       correctly rejected it: S5_IID suspended (never revoked), rotate's
+#       own output shows STALE_RECORD (a genuine, deterministic rejection,
+#       not silently ignored), deactivate's output shows success:true, and
+#       NO new integration row was created (rotate made no mutation at all).
 N_REVOKED="$(Q "select count(*) from public.carrier_factoring_integrations where id='$S5_IID'::uuid and configuration_status='revoked';")"
-if [ "$N_REVOKED" != "1" ]; then echo "!! FAIL: the original integration should end up revoked either way (rotation always revokes it; deactivation alone would not -- so rotation must have won or run), got revoked=$N_REVOKED"; fi
+N_SUSPENDED="$(Q "select count(*) from public.carrier_factoring_integrations where id='$S5_IID'::uuid and configuration_status='suspended';")"
+N_NEW_DRAFT="$(Q "select count(*) from public.carrier_factoring_integrations where factoring_relationship_id='fe0e0000-0000-0000-0000-0000000000a1' and id<>'$S5_IID'::uuid and configuration_status='draft';")"
+ROTATE_SUCCESS=0; grep -q '"success": true' "$T/s5a.out" && ROTATE_SUCCESS=1
+ROTATE_STALE=0; grep -q 'STALE_RECORD' "$T/s5a.out" && ROTATE_STALE=1
+DEACT_SUCCESS=0; grep -q '"success": true' "$T/s5b.out" && DEACT_SUCCESS=1
+if [ "$N_REVOKED" = "1" ] && [ "$N_NEW_DRAFT" = "1" ] && [ "$ROTATE_SUCCESS" = "1" ]; then
+  echo "-> OK (outcome A): rotation won/ran -- the original integration is revoked, exactly one new draft replacement exists, and rotate's own result reports success:true."
+elif [ "$N_SUSPENDED" = "1" ] && [ "$N_REVOKED" = "0" ] && [ "$N_NEW_DRAFT" = "0" ] && [ "$ROTATE_STALE" = "1" ] && [ "$DEACT_SUCCESS" = "1" ]; then
+  echo "-> OK (outcome B): deactivation won and rotation's own optimistic-concurrency check correctly detected the conflict -- the integration is suspended (never revoked), no replacement was created, and rotate's own result explicitly reports STALE_RECORD (a genuine, non-silent rejection)."
+else
+  echo "!! FAIL: neither of the two legitimate final states was reached -- revoked=$N_REVOKED suspended=$N_SUSPENDED new_draft=$N_NEW_DRAFT rotate_success=$ROTATE_SUCCESS rotate_stale=$ROTATE_STALE deactivate_success=$DEACT_SUCCESS. A=$(cat "$T/s5a.out") B=$(cat "$T/s5b.out")"
+  FAIL=1
+fi
 assert_invariant_holds
 echo "-> OK: no deadlock; the two operations serialize on the same relationship+integration rows -- whichever ran first determined the other's outcome deterministically (a deactivation of an already-rotated/revoked integration gets REVOKED_TERMINAL; a rotation of an already-deactivated integration still succeeds, since rotate accepts any non-revoked source state), with no double effect."
 

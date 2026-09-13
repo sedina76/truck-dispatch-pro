@@ -110,10 +110,25 @@ create table public.carriers (
 create trigger set_updated_at before update on public.carriers
   for each row execute function public.set_updated_at();
 
+-- Phase 3B.3C (0144): mc_number/contact_name/phone/email/address_* added
+-- so issue_carrier_invoice()'s snapshot-construction code (which reads
+-- these real 0003 columns) has something faithful to read in this
+-- disposable stub -- every column is nullable, so existing INSERTs
+-- (0142/0143's own test fixtures) that never mention them are unaffected.
 create table public.brokers (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations (id) on delete cascade,
   company_name text not null,
+  mc_number text,
+  contact_name text,
+  phone text,
+  email text,
+  address_line1 text,
+  address_line2 text,
+  city text,
+  state text,
+  postal_code text,
+  country text not null default 'US',
   is_blacklisted boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
@@ -122,6 +137,15 @@ create table public.customers (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations (id) on delete cascade,
   company_name text not null,
+  contact_name text,
+  phone text,
+  email text,
+  billing_address_line1 text,
+  billing_address_line2 text,
+  city text,
+  state text,
+  postal_code text,
+  country text not null default 'US',
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
@@ -182,6 +206,9 @@ create table public.loads (
   customer_id uuid references public.customers (id) on delete set null,
   status public.load_status not null default 'draft',
   commodity text, weight_lbs integer,
+  -- Phase 3B.3C (0144): rate added -- issue_carrier_invoice()'s snapshot
+  -- reads the real 0004 rate column as "agreed_freight_charge".
+  rate numeric(10, 2) not null default 0,
   total_miles numeric(8,2),
   route_miles numeric(8,2), route_miles_calculated_at timestamptz,
   actual_miles numeric(8,2), actual_miles_recorded_at timestamptz,
@@ -191,12 +218,20 @@ create table public.loads (
   updated_at timestamptz not null default now(),
   unique (organization_id, load_number));
 
+-- Phase 3B.3C (0144): facility_name/city/state/scheduled_at/arrived_at
+-- added -- issue_carrier_invoice()'s snapshot reads the real 0004
+-- load_stops columns for each load's origin/destination.
 create table public.load_stops (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations (id) on delete cascade,
   load_id uuid not null references public.loads (id) on delete cascade,
   stop_type public.stop_type not null,
   stop_sequence integer not null default 1,
+  facility_name text,
+  city text,
+  state text,
+  scheduled_at timestamptz,
+  arrived_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
 

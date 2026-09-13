@@ -74,10 +74,15 @@ create type public.factored_invoice_status as enum (
   'draft','submitted','pending','approved','rejected','cancelled',
   'funded','partially_settled','disputed','recourse','chargeback','closed');
 
+-- Phase 3B.3C (0144): legal_name added -- issue_carrier_invoice()'s
+-- snapshot reads the real 0071 legal_name column (falling back to name
+-- when absent); nullable, so existing fixtures that never mention it are
+-- unaffected.
 create table public.factoring_companies (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations (id) on delete cascade,
   name text not null,
+  legal_name text,
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
