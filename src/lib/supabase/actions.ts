@@ -1,8 +1,14 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { createHash } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { SIGNUP_OTP_LENGTH } from "@/lib/auth/otp";
+import {
+  normalizeSignupEmail,
+  signupVerificationErrorMessage,
+  type SupabaseAuthErrorLike,
+} from "@/lib/auth/signup-verification";
 
 export type ActionState = { error: string | null };
 
@@ -45,7 +51,7 @@ export async function login(_prev: ActionState, formData: FormData): Promise<Act
 
 export async function signup(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const supabase = await createClient();
-  const email = String(formData.get("email"));
+  const email = normalizeSignupEmail(formData.get("email"));
   const password = String(formData.get("password"));
   const confirmPassword = String(formData.get("confirmPassword") ?? "");
 
@@ -167,9 +173,23 @@ export async function createOrganization(
 // ---------------------------------------------------------------------------
 export type VerifyOtpState = { error: string | null };
 
+function logSignupVerificationFailure(
+  operation: "verify_signup_otp" | "resend_signup_otp",
+  email: string,
+  error: SupabaseAuthErrorLike
+) {
+  console.error("[auth] signup verification failed", {
+    operation,
+    verificationType: "signup",
+    errorCode: error.code ?? "unknown",
+    httpStatus: error.status ?? null,
+    emailHash: createHash("sha256").update(email).digest("hex").slice(0, 16),
+  });
+}
+
 export async function verifySignupOtp(_prev: VerifyOtpState, formData: FormData): Promise<VerifyOtpState> {
   const supabase = await createClient();
-  const email = String(formData.get("email") || "");
+  const email = normalizeSignupEmail(formData.get("email"));
   const token = String(formData.get("token") || "");
 
   // The signup confirmation code is exactly SIGNUP_OTP_LENGTH digits (6 --
@@ -182,22 +202,56 @@ export async function verifySignupOtp(_prev: VerifyOtpState, formData: FormData)
     return { error: `Enter the ${SIGNUP_OTP_LENGTH}-digit code.` };
   }
 
-  const { error } = await supabase.auth.verifyOtp({ email, token, type: "signup" });
-  if (error) return { error: friendlyAuthError(error.message) };
+  try {
+    const { error } = await supabase.auth.verifyOtp({ email, token, type: "signup" });
+    if (error) {
+      // A completed retry or a second click can reach this branch after the
+      // first request established the session. Continue without creating
+      // anything; /onboarding performs its existing profile/org guard.
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.email_confirmed_at) {
+        logSignupVerificationFailure("verify_signup_otp", email, error);
+        return { error: signupVerificationErrorMessage(error) };
+      }
+      // Continue below and redirect outside the catch block: Next's
+      // redirect() deliberately throws a framework control-flow exception.
+    }
+  } catch (error) {
+    const safeError = error instanceof Error ? error : new Error("Unknown verification failure");
+    logSignupVerificationFailure("verify_signup_otp", email, safeError);
+    return { error: signupVerificationErrorMessage(safeError) };
+  }
 
   redirect("/onboarding");
 }
 
-export type ResendOtpState = { error: string | null; sent: boolean };
+export type ResendOtpState = { error: string | null; sent: boolean; sentAt?: number };
 
 export async function resendSignupOtp(_prev: ResendOtpState, formData: FormData): Promise<ResendOtpState> {
   const supabase = await createClient();
-  const email = String(formData.get("email") || "");
+  const email = normalizeSignupEmail(formData.get("email"));
+  let alreadyConfirmed = false;
 
-  const { error } = await supabase.auth.resend({ type: "signup", email });
-  if (error) return { error: friendlyAuthError(error.message), sent: false };
+  try {
+    const { error } = await supabase.auth.resend({ type: "signup", email });
+    if (error) {
+      const { data: { user } } = await supabase.auth.getUser();
+      alreadyConfirmed = Boolean(user?.email_confirmed_at);
+      if (!alreadyConfirmed) {
+        logSignupVerificationFailure("resend_signup_otp", email, error);
+        return { error: signupVerificationErrorMessage(error), sent: false };
+      }
+    }
+  } catch (error) {
+    const safeError = error instanceof Error ? error : new Error("Unknown resend failure");
+    logSignupVerificationFailure("resend_signup_otp", email, safeError);
+    return { error: signupVerificationErrorMessage(safeError), sent: false };
+  }
 
-  return { error: null, sent: true };
+
+  if (alreadyConfirmed) redirect("/onboarding");
+
+  return { error: null, sent: true, sentAt: Date.now() };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import { verifySignupOtp, resendSignupOtp, type VerifyOtpState, type ResendOtpState } from "@/lib/supabase/actions";
@@ -17,10 +17,18 @@ export function VerifyEmailForm({ email }: { email: string }) {
   const [verifyState, verifyAction, verifyPending] = useActionState(verifySignupOtp, verifyInitial);
   const [resendState, resendAction, resendPending] = useActionState(resendSignupOtp, resendInitial);
   const [cooldown, setCooldown] = useState(0);
+  const verifySubmitting = useRef(false);
 
   useEffect(() => {
-    if (resendState.sent) setCooldown(RESEND_COOLDOWN_SECONDS);
-  }, [resendState.sent]);
+    if (!resendState.sentAt) return;
+    setOtp("");
+    setCooldown(RESEND_COOLDOWN_SECONDS);
+    requestAnimationFrame(() => document.getElementById("signup-verification-code")?.focus());
+  }, [resendState.sentAt]);
+
+  useEffect(() => {
+    if (!verifyPending) verifySubmitting.current = false;
+  }, [verifyPending, verifyState]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -32,11 +40,19 @@ export function VerifyEmailForm({ email }: { email: string }) {
 
   return (
     <div className="space-y-5">
-      <form action={verifyAction} className="space-y-5" aria-busy={verifyPending}>
+      <form
+        action={verifyAction}
+        onSubmit={(event) => {
+          if (verifySubmitting.current || verifyPending) event.preventDefault();
+          else verifySubmitting.current = true;
+        }}
+        className="space-y-5"
+        aria-busy={verifyPending}
+      >
         <input type="hidden" name="email" value={email} />
         <input type="hidden" name="token" value={otp} />
 
-        <OtpInput value={otp} onChange={setOtp} disabled={verifyPending} autoFocus length={SIGNUP_OTP_LENGTH} />
+        <OtpInput id="signup-verification-code" value={otp} onChange={setOtp} disabled={verifyPending} autoFocus length={SIGNUP_OTP_LENGTH} />
 
         {/* No "code expires in..." countdown here, deliberately: Supabase
             Auth's verifyOtp/resend responses carry no expires-at value for
@@ -78,9 +94,9 @@ export function VerifyEmailForm({ email }: { email: string }) {
         </form>
       </div>
 
-      {resendState.sent && cooldown === RESEND_COOLDOWN_SECONDS && (
+      {resendState.sent && cooldown > 0 && (
         <p role="status" aria-live="polite" className="text-center text-sm text-emerald-600">
-          Code resent.
+          A new code was sent. Your previous code is no longer valid—enter only the newest code.
         </p>
       )}
       {resendState.error && (
