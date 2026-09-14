@@ -63,6 +63,24 @@ create table public.organizations (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text not null unique,
+  -- Phase 3B.4: dba_name/mc_number/dot_number/business_phone/
+  -- business_email/address_line1/address_line2/city/state/postal_code
+  -- added -- the real 0002_core_saas_tables.sql shape this fixture had
+  -- never previously needed (no earlier migration through 0144 reads a
+  -- dispatch organization's own legal/contact identity); 0145's
+  -- dispatch-service invoice issuer snapshot is the first to need it.
+  -- country matches 0002's own NOT NULL DEFAULT 'US'.
+  dba_name text,
+  mc_number text,
+  dot_number text,
+  business_phone text,
+  business_email text,
+  address_line1 text,
+  address_line2 text,
+  city text,
+  state text,
+  postal_code text,
+  country text not null default 'US',
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now());
@@ -206,8 +224,23 @@ create table public.loads (
   customer_id uuid references public.customers (id) on delete set null,
   status public.load_status not null default 'draft',
   commodity text, weight_lbs integer,
-  -- Phase 3B.3C (0144): rate added -- issue_carrier_invoice()'s snapshot
-  -- reads the real 0004 rate column as "agreed_freight_charge".
+  -- Phase 3B.4 CORRECTION: this table must NOT carry a live `rate` column
+  -- post-0069 -- 0069_financial_column_removal.sql drops loads.rate (and
+  -- detention_rate/layover_rate) for real, moving the authoritative value
+  -- to load_financials.rate (0067). The Phase 3B.3C (0144) comment this
+  -- replaces incorrectly claimed "rate added -- reads the real 0004 rate
+  -- column" -- 0004's rate column was real THEN, but was already gone by
+  -- 0069, long before 0144 existed; that error made issue_carrier_
+  -- invoice() (0144) read a column that does not exist in a real,
+  -- fully-migrated database, masked here only because this fixture had
+  -- silently grown a `loads.rate` column of its own to match it. `rate`
+  -- is kept below ONLY as a test-fixture convenience so every already-
+  -- committed 0144 test (which inserts `rate` directly into `loads`)
+  -- keeps working unchanged -- mirror_load_financials_test_only() below
+  -- copies it into the REAL table (load_financials) every time, so
+  -- 0145's corrected issue_carrier_invoice() (which reads load_financials
+  -- .rate, matching real production exactly) sees accurate data either
+  -- way. No real migration reads loads.rate directly ever again.
   rate numeric(10, 2) not null default 0,
   total_miles numeric(8,2),
   route_miles numeric(8,2), route_miles_calculated_at timestamptz,
@@ -217,6 +250,43 @@ create table public.loads (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (organization_id, load_number));
+
+-- Phase 3B.4: the REAL, authoritative post-0067/0069 table -- see
+-- 0067_financial_column_isolation.sql / 0069_financial_column_removal.sql.
+-- issue_carrier_invoice() (corrected in 0145) reads THIS table, exactly
+-- like create_load_with_stops() (0114) already writes to it directly (no
+-- mirror exists in real production -- 0069's cutover removed the need).
+create table public.load_financials (
+  load_id uuid primary key references public.loads (id) on delete cascade,
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  rate numeric(10, 2) not null default 0,
+  detention_rate numeric(10, 2),
+  layover_rate numeric(10, 2),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- TEST-FIXTURE-ONLY compatibility shim (does not exist in real
+-- production -- real production has no loads.rate to mirror FROM, since
+-- 0069 already dropped it there). Keeps every already-committed 0144
+-- test (which sets `rate` directly on `loads`) producing the same
+-- load_financials.rate value 0145's corrected function actually reads,
+-- without needing to touch any already-committed test file.
+create function public.mirror_load_financials_test_only()
+returns trigger
+language plpgsql
+as $$
+begin
+  insert into public.load_financials (load_id, organization_id, rate)
+  values (new.id, new.organization_id, new.rate)
+  on conflict (load_id) do update set rate = excluded.rate, updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger a_mirror_load_financials_test_only
+  after insert or update of rate on public.loads
+  for each row execute function public.mirror_load_financials_test_only();
 
 -- Phase 3B.3C (0144): facility_name/city/state/scheduled_at/arrived_at
 -- added -- issue_carrier_invoice()'s snapshot reads the real 0004
