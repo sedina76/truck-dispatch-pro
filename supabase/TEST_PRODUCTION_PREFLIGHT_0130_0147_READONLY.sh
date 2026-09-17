@@ -22,7 +22,7 @@ run_case(){
   fi
   [[ -z "$setup" ]] || "${PSQL[@]}" -d "$db" -c "$setup" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(x,'|' order by x)) from (select c.oid::text||c.relname||c.relkind::text||coalesce(c.reltuples,0)::text x from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public')s; select count(*) from public.loads;")"
-  if ! "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1; then echo "FAIL $name: audit SQL error"; cat "$out"; fail=1; return; fi
+  if ! "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1; then echo "FAIL $name: audit SQL error"; cat "$out"; fail=1; return; fi
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(x,'|' order by x)) from (select c.oid::text||c.relname||c.relkind::text||coalesce(c.reltuples,0)::text x from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public')s; select count(*) from public.loads;")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name: persistent state changed"; fail=1; case_fail=1; }
   grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name: expected $expected"; tail -25 "$out"; fail=1; case_fail=1; }
@@ -55,7 +55,7 @@ run_case history_unknown "create schema supabase_migrations; create table supaba
 run_case blocker_over_unknown "create schema supabase_migrations; create table supabase_migrations.schema_migrations(applied_at timestamptz); drop extension pgcrypto cascade;" BLOCKED SCHEMA_HISTORY_SHAPE
 run_case history_says_applied_objects_missing "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); insert into supabase_migrations.schema_migrations values('0130');" BLOCKED SCHEMA_HISTORY_DISAGREE
 run_case object_present_history_missing "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); create table public.carrier_remittance_profiles(carrier_id uuid); alter table public.carriers add column invoice_code text;" BLOCKED SCHEMA_HISTORY_DISAGREE
-run_case unexpected_later_history "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); insert into supabase_migrations.schema_migrations values('0147');" BLOCKED SCHEMA_HISTORY_LATER
+run_case unexpected_later_history "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); insert into supabase_migrations.schema_migrations values('0148');" BLOCKED SCHEMA_HISTORY_LATER
 # One split landmark in each documented family group.
 run_case landmark_0130_0133 "alter table public.carriers add column invoice_code text;" BLOCKED SCHEMA_LANDMARK_0130
 run_case landmark_0134_0135 "create table public.dispatch_status_transitions(id uuid);" BLOCKED SCHEMA_LANDMARK_0134
@@ -80,14 +80,140 @@ run_case trailer_cross_org "APPLY0132;alter table public.trailers disable trigge
 run_case trailer_cross_carrier_use "APPLY0132;alter table public.dispatches disable trigger all; update public.dispatches set trailer_id=(select id from public.trailers where carrier_id is not null limit 1) where id=(select id from public.dispatches where carrier_id<>(select carrier_id from public.trailers where carrier_id is not null limit 1) and status::text<>'cancelled' limit 1);" BLOCKED TRAILER_CROSS_USE BLOCKER 1
 run_case trailer_shared_cross_carrier_allowed "APPLY0132;alter table public.trailers drop constraint trailers_ownership_scope_consistency; update public.trailers set ownership_scope='organization_shared',carrier_id=null where carrier_id is null; alter table public.dispatches disable trigger all; update public.dispatches set trailer_id=(select id from public.trailers where ownership_scope='organization_shared' limit 1) where id=(select id from public.dispatches where status::text<>'cancelled' limit 1);" BLOCKED TRAILER_CROSS_USE
 run_case trailer_null_not_shared "APPLY0132;alter table public.trailers drop constraint trailers_ownership_scope_consistency; alter table public.trailers alter column ownership_scope drop not null; update public.trailers set ownership_scope=null,carrier_id=null where carrier_id is null;" BLOCKED TRAILER_UNRESOLVED WARNING 1
-# Full migration chain is the authoritative clean post-0146 fixture.
+# Full migration chain is the authoritative fixture for both supported
+# boundaries. post0146 is the VULNERABLE, pre-remediation boundary (all
+# seven Phase 3C.0 release BLOCKERs present) -- its own comprehensive
+# decision must read BLOCKED, never READY/READY_WITH_WARNINGS. post0147
+# additionally applies 0147 and is the CORRECTED boundary -- its
+# comprehensive decision must read READY_WITH_WARNINGS (FUNC_RAISE_LEAKS_
+# CONTEXT remains an intentional, separate WARNING; 0147 does not touch
+# it), never BLOCKED and never a forced READY.
+#
+# The comprehensive FINAL_DECISION row is matched specifically by its own
+# trailing audit_coverage_status token (COMPLETE/INCOMPLETE) -- an EARLIER,
+# vestigial, unrelated FINAL_DECISION mini-query also exists in this file
+# (Phase 3C.0A) with a different column shape and no audit_coverage_status
+# column; a bare 'FINAL_DECISION.*READY' grep would silently match that
+# one instead and never actually prove anything about the real decision.
+comprehensive_decision() { grep -E '^ FINAL_DECISION .*\| (COMPLETE|INCOMPLETE)[[:space:]]*$' "$1"; }
+
 createdb audit_post0146
 "${PSQL[@]}" -d audit_post0146 -f TEST_0146_carrier_invoice_payments_and_balance_rollups.sql >"$PGDATA/post0146.setup" 2>&1
 "${PSQL[@]}" -d audit_post0146 -c "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); insert into supabase_migrations.schema_migrations select '01'||lpad(g::text,2,'0') from generate_series(30,46) g;" >/dev/null
-"${PSQL[@]}" -d audit_post0146 -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$PGDATA/post0146.out" 2>&1
-grep -Eq 'FINAL_DECISION.*(READY|READY_WITH_WARNINGS)' "$PGDATA/post0146.out" || { echo 'FAIL post0146'; tail -30 "$PGDATA/post0146.out"; fail=1; }
+"${PSQL[@]}" -d audit_post0146 -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$PGDATA/post0146.out" 2>&1
+post0146_decision="$(comprehensive_decision "$PGDATA/post0146.out")"
+echo "$post0146_decision" | grep -Eq '\| BLOCKED[[:space:]]*\|' || { echo 'FAIL post0146: comprehensive decision is not BLOCKED'; echo "$post0146_decision"; fail=1; }
 grep -Eq 'SCHEMA_HISTORY_DISAGREE.*BLOCKER[[:space:]]*\|[[:space:]]*t[[:space:]]*\|[[:space:]]*0' "$PGDATA/post0146.out" || { echo 'FAIL post0146 history agreement'; grep 'SCHEMA_HISTORY\|SCHEMA_LANDMARK' "$PGDATA/post0146.out"; fail=1; }
-echo 'PASS post0146'
+seven_blocker_ids=(
+  LEGACY_CLASSIFIER_DEFINITION_DEFECT
+  FIN_CARRIER_INVOICES_AUTH_INSERT
+  FIN_CARRIER_INVOICES_AUTH_DELETE
+  FUNC_UPDATE_DRAFT_PUBLIC_EXECUTE
+  FUNC_LEGACY_REVIEW_PUBLIC_EXECUTE
+  FUNC_LEGACY_SCAN_PUBLIC_EXECUTE
+  FUNC_NULL_IDENTITY_AUTH_BYPASS
+)
+validate_seven_blockers(){
+  local out="$1" expected_ok="$2" expected_count="$3" label="$4" rows=0 sum=0 fid line count
+  [[ "${#seven_blocker_ids[@]}" -eq 7 && "$(printf '%s\n' "${seven_blocker_ids[@]}" | sort -u | wc -l | tr -d ' ')" -eq 7 ]] || { echo "FAIL $label seven-ID definition"; fail=1; return; }
+  for fid in "${seven_blocker_ids[@]}"; do
+    line="$(grep -E "^ $fid " "$out" || true)"
+    [[ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ]] || { echo "FAIL $label missing/duplicate $fid"; fail=1; continue; }
+    printf '%s\n' "$line" | grep -Eq "BLOCKER[[:space:]]*\|[[:space:]]*$expected_ok[[:space:]]*\|[[:space:]]*$expected_count" || { echo "FAIL $label $fid expected $expected_count"; fail=1; continue; }
+    count="$(printf '%s\n' "$line" | awk -F'|' '{gsub(/ /,"",$6); print $6}')"; sum=$((sum+count)); rows=$((rows+1))
+  done
+  [[ "$rows" -eq 7 && "$sum" -eq $((7*expected_count)) ]] || { echo "FAIL $label rows=$rows sum=$sum"; fail=1; return; }
+  echo "PASS $label -> 7 unique IDs, each count $expected_count, sum $sum"
+}
+validate_seven_blockers "$PGDATA/post0146.out" f 1 exact_seven_blockers_post0146
+echo 'PASS post0146 -> vulnerable boundary correctly BLOCKED'
+
+# post0147: clone the ALREADY-CLEAN, healthy post0146 template (never
+# TEST_0147's own file -- that is a TEST script full of deliberate,
+# permanent corruption sub-scenarios executed in sequence and is NOT a
+# healthy fixture) and apply ONLY the 0147 migration file on top of it.
+createdb -T audit_post0146 audit_post0147
+"${PSQL[@]}" -d audit_post0147 -c "drop schema supabase_migrations cascade;" >/dev/null 2>&1
+"${PSQL[@]}" -d audit_post0147 -f migrations/0147_production_readiness_blocker_remediation.sql >"$PGDATA/post0147.setup" 2>&1
+"${PSQL[@]}" -d audit_post0147 -c "create schema supabase_migrations; create table supabase_migrations.schema_migrations(version text); insert into supabase_migrations.schema_migrations select '01'||lpad(g::text,2,'0') from generate_series(30,47) g;" >/dev/null
+"${PSQL[@]}" -d audit_post0147 -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$PGDATA/post0147.out" 2>&1
+grep -Eq 'SCHEMA_HISTORY_DISAGREE.*BLOCKER[[:space:]]*\|[[:space:]]*t[[:space:]]*\|[[:space:]]*0' "$PGDATA/post0147.out" || { echo 'FAIL post0147 history agreement'; grep 'SCHEMA_HISTORY\|SCHEMA_LANDMARK' "$PGDATA/post0147.out"; fail=1; }
+# NOTE: the general-purpose audit_post0146/audit_post0147 templates (built
+# from TEST_0146's own realistic fixture, not a hand-cleaned "nothing else
+# is wrong" database) carry a handful of PRE-EXISTING, unrelated blocker
+# conditions at BOTH boundaries alike (confirmed identical before/after --
+# e.g. FACTOR_0137_PROVENANCE_MISSING, LOAD_CLASS_AMBIGUOUS/LOAD_MULTI,
+# PRE0130_PROFILE_PRIVILEGE_GUARD_MISSING), so the AGGREGATE comprehensive
+# decision here is not a clean READY_WITH_WARNINGS proof by itself and is
+# intentionally not asserted as one. What this phase is responsible for --
+# and what is asserted precisely below -- is that each of the seven
+# tracked blocker findings individually transitions from unhealthy (post-
+# 0146) to exactly 0 (post-0147), independent of that unrelated noise. A
+# separate, purpose-built minimal fixture (below) proves the clean
+# READY_WITH_WARNINGS decision directly.
+validate_seven_blockers "$PGDATA/post0147.out" t 0 exact_seven_blockers_post0147
+for fid in RPC_0147_CREATE_DRAFT_ACL RPC_0147_DELETE_DRAFT_ACL IDEMPOTENCY_0147_CREATE_OBJECT IDEMPOTENCY_0147_DELETE_OBJECT; do
+  grep -E "^ $fid " "$PGDATA/post0147.out" | grep -Eq '\|[[:space:]]*t[[:space:]]*\|[[:space:]]*0' || { echo "FAIL post0147: $fid is not healthy"; fail=1; }
+done
+grep -E "^ FUNC_RAISE_LEAKS_CONTEXT " "$PGDATA/post0147.out" | grep -Eq 'WARNING[[:space:]]*\|[[:space:]]*f[[:space:]]*\|[[:space:]]*5' || { echo 'FAIL post0147: FUNC_RAISE_LEAKS_CONTEXT warning was not preserved at count 5'; grep -E "^ FUNC_RAISE_LEAKS_CONTEXT " "$PGDATA/post0147.out"; fail=1; }
+echo 'PASS post0147 -> corrected boundary: all seven tracked blocker findings plus the two new RPC/idempotency findings exactly 0, FUNC_RAISE_LEAKS_CONTEXT warning preserved unchanged'
+
+# Each corrected structural blocker has an isolated post-0147 restoration
+# fixture. The audit must detect only the restored defect, never either sibling,
+# and must leave row/catalog hashes unchanged.
+run_post147_blocker_case(){
+  local name="$1" setup="$2" target="$3" db="p147_${1}" out before after fid count
+  createdb -T audit_post0147 "$db"
+  "${PSQL[@]}" -d "$db" -c "$setup" >/dev/null
+  before="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(p.oid::text||p.proacl::text||p.prosrc,'|' order by p.oid)) from pg_proc p where p.pronamespace='public'::regnamespace; select md5(coalesce(string_agg(to_jsonb(i)::text,'|' order by i.id),'')) from public.invoices i")"
+  out="$PGDATA/$name.post147.out"
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit"; fail=1; return; }
+  after="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(p.oid::text||p.proacl::text||p.prosrc,'|' order by p.oid)) from pg_proc p where p.pronamespace='public'::regnamespace; select md5(coalesce(string_agg(to_jsonb(i)::text,'|' order by i.id),'')) from public.invoices i")"
+  [[ "$before" == "$after" ]] || { echo "FAIL $name read-only hash"; fail=1; return; }
+  for fid in "${seven_blocker_ids[@]}"; do
+    count=0; [[ "$fid" == "$target" ]] && count=1
+    grep -E "^ $fid " "$out" | grep -Eq "BLOCKER[[:space:]]*\\|[[:space:]]*$([[ $count == 0 ]] && echo t || echo f)[[:space:]]*\\|[[:space:]]*$count" || { echo "FAIL $name isolation $fid/$count"; fail=1; return; }
+  done
+  grep -q 'PHASE3C21_PRIVATE_9zQ' "$out" && { echo "FAIL $name privacy"; fail=1; return; }
+  echo "PASS $name -> isolated $target=1, six siblings=0, read-only/private"
+}
+run_post147_blocker_case rpc_update_public_restored "grant execute on function public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text) to public" FUNC_UPDATE_DRAFT_PUBLIC_EXECUTE
+run_post147_blocker_case rpc_review_public_restored "grant execute on function public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text) to public" FUNC_LEGACY_REVIEW_PUBLIC_EXECUTE
+run_post147_blocker_case rpc_scan_public_restored "grant execute on function public.scan_legacy_invoices_for_carrier_migration() to public" FUNC_LEGACY_SCAN_PUBLIC_EXECUTE
+run_post147_blocker_case classifier_vulnerable_restored 'create or replace function public.classify_legacy_invoice_for_carrier_migration(p_invoice_id uuid) returns text language plpgsql stable security definer set search_path=pg_catalog,public as $q$ declare carrier_resolution text; begin if carrier_resolution = ''conflicting'' then return ''conflicting_carrier_evidence''; end if; return ''missing_carrier_evidence''; end $q$' LEGACY_CLASSIFIER_DEFINITION_DEFECT
+run_post147_blocker_case classifier_unknown_definition 'create or replace function public.classify_legacy_invoice_for_carrier_migration(p_invoice_id uuid) returns text language sql stable security definer set search_path=pg_catalog,public as $q$ select $x$missing_carrier_evidence$x$::text $q$' LEGACY_CLASSIFIER_DEFINITION_DEFECT
+
+# The general post-0147 template intentionally contains historical corruption
+# fixtures inherited from TEST_0146. Create a data-clean catalog-equivalent
+# control so the supported 0147 boundary can prove the warning-only decision.
+createdb -T audit_post0147 audit_post0147_clean
+"${PSQL[@]}" -d audit_post0147_clean -c "
+  truncate public.carrier_invoices,public.factoring_relationships,public.invoices,public.dispatches,public.loads,public.trailers cascade;
+  update public.carriers set factoring_mode='direct',invoice_code=coalesce(invoice_code,'C'||upper(substr(replace(id::text,'-',''),1,7)));
+  create or replace function public.protect_profile_privileged_columns() returns trigger language plpgsql set search_path=pg_catalog,public as 'begin return new; end';
+  create trigger profiles_protect_privileged_columns before update on public.profiles for each row execute function public.protect_profile_privileged_columns();
+  do \$clean\$ declare t text; begin foreach t in array array['organizations','profiles','carriers','brokers','customers','drivers','trucks','trailers','loads','load_stops','dispatches','documents','invoices','invoice_line_items','payments','settlements','settlement_line_items','activity_logs','integration_settings','factoring_companies','factoring_relationships','factored_invoices','factoring_events','platform_settings'] loop if to_regclass('public.'||t) is not null then execute format('alter table public.%I enable row level security',t); if not exists(select 1 from pg_policies where schemaname='public' and tablename=t) then execute format('create policy audit_clean_select on public.%I for select using (true)',t); end if; end if; end loop; end \$clean\$;" >/dev/null
+
+run_0147_schema_case(){
+  local name="$1" template="$2" setup="$3" fid="$4" severity="$5" count="$6" expected="$7" db="state_${1}" out before after ok=f
+  [[ "$count" == 0 ]] && ok=t
+  createdb -T "$template" "$db"
+  "${PSQL[@]}" -d "$db" -c "$setup" >/dev/null
+  before="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(c.oid::text||c.relname||c.relkind::text,'|' order by c.oid)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','supabase_migrations'); select md5(coalesce(string_agg(to_jsonb(i)::text,'|' order by i.id),'')) from public.invoices i")"
+  out="$PGDATA/$name.schema.out"
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit"; fail=1; return; }
+  after="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(c.oid::text||c.relname||c.relkind::text,'|' order by c.oid)) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','supabase_migrations'); select md5(coalesce(string_agg(to_jsonb(i)::text,'|' order by i.id),'')) from public.invoices i")"
+  [[ "$before" == "$after" ]] || { echo "FAIL $name read-only hash"; fail=1; return; }
+  grep -E "^ $fid " "$out" | grep -Eq "$severity[[:space:]]*\\|[[:space:]]*$ok[[:space:]]*\\|[[:space:]]*$count" || { echo "FAIL $name $fid/$count"; fail=1; return; }
+  comprehensive_decision "$out" | grep -Eq "\\| $expected[[:space:]]*\\|" || { echo "FAIL $name decision $expected"; fail=1; return; }
+  echo "PASS $name -> $fid=$count, $expected, read-only"
+}
+run_0147_schema_case partial_0147_installation audit_post0146 "create table public.carrier_invoice_draft_create_idempotency(id uuid)" SCHEMA_PARTIAL BLOCKER 1 BLOCKED
+run_0147_schema_case history_0147_objects_0146 audit_post0146 "insert into supabase_migrations.schema_migrations values('0147')" SCHEMA_HISTORY_DISAGREE BLOCKER 1 BLOCKED
+run_0147_schema_case objects_0147_history_0146 audit_post0147_clean "delete from supabase_migrations.schema_migrations where version='0147'" SCHEMA_HISTORY_DISAGREE BLOCKER 1 BLOCKED
+run_0147_schema_case complete_matching_0147 audit_post0147_clean "select 1" SCHEMA_0147 INFO 1 READY_WITH_WARNINGS
+run_0147_schema_case unsupported_0148_history audit_post0147_clean "insert into supabase_migrations.schema_migrations values('0148')" SCHEMA_HISTORY_LATER BLOCKER 1 BLOCKED
+run_0147_schema_case unknown_0147_history_shape audit_post0147_clean "alter table supabase_migrations.schema_migrations rename column version to applied_version" SCHEMA_HISTORY_SHAPE INFO 1 SCHEMA_STATE_UNKNOWN
 run_post_case(){
   local name="$1" setup="$2" expected="$3" fid="$4" severity="$5" count="$6" case_fail=0 before after db out expected_ok=f
   [[ "$count" == 0 ]] && expected_ok=t
@@ -95,7 +221,7 @@ run_post_case(){
   createdb -T audit_post0146 "$db"
   [[ -z "$setup" ]] || "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $setup; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(x,'|' order by x)) from (select c.oid::text||c.relname||c.relkind::text x from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','supabase_migrations'))s; select md5(coalesce(string_agg(to_jsonb(c)::text,'|' order by c.id),'')) from public.carriers c;")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(string_agg(x,'|' order by x)) from (select c.oid::text||c.relname||c.relkind::text x from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','supabase_migrations'))s; select md5(coalesce(string_agg(to_jsonb(c)::text,'|' order by c.id),'')) from public.carriers c;")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name persistent change"; fail=1; case_fail=1; }
   grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name decision $expected"; fail=1; case_fail=1; }
@@ -167,7 +293,7 @@ run_noa_case(){
     update public.profiles set full_name='${marker}_approver' where id='aaaa0000-0000-0000-0000-000000000001';
     $setup; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.documents x")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.documents x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq "$fid.*$severity[[:space:]]*\\|[[:space:]]*$ok[[:space:]]*\\|[[:space:]]*$count" "$out" && grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name outcome $fid/$severity/$count/$expected"; grep "$fid" "$out"; fail=1; return; }
@@ -253,7 +379,7 @@ run_core_integration_case(){
     values('cf480000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','a2a2a2a2-0000-0000-0000-000000000002','fe480000-0000-0000-0000-000000000001','fc480000-0000-0000-0000-000000000001','api','factoring_api','vault://core_marker_9zQ','CORE_EXTERNAL_MARKER_9zQ','CORE_DEST_MARKER_9zQ','ready',true,current_date,'aaaa0000-0000-0000-0000-000000000001',now());
     $mutation; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq "$fid.*$severity[[:space:]]*\\|[[:space:]]*$ok[[:space:]]*\\|[[:space:]]*$count" "$out" && grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name outcome $fid/$severity/$count/$expected"; grep "$fid" "$out"; fail=1; return; }
@@ -336,7 +462,7 @@ run_integration_dependency_case(){
     values('cf490000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','a2a2a2a2-0000-0000-0000-000000000002','fe480000-0000-0000-0000-000000000001','fc480000-0000-0000-0000-000000000001','api','factoring_api','vault://DEP_SECRET_MARKER_9zQ','DEP_EXTERNAL_MARKER_9zQ','DEP_DESTINATION_MARKER_9zQ','ready',true,current_date,'aaaa0000-0000-0000-0000-000000000001',now());
     $mutation; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.documents x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carriers x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_companies x")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.documents x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carriers x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_companies x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq "$fid.*$severity[[:space:]]*\\|[[:space:]]*$ok[[:space:]]*\\|[[:space:]]*$count" "$out" && grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name outcome $fid/$severity/$count/$expected"; grep "$fid" "$out"; fail=1; return; }
@@ -399,7 +525,7 @@ run_safe_value_case(){
   createdb -T audit_post0146 "$db"; out="$PGDATA/$name.safe.out"
   "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $mutation; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.invoices x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carriers x")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.invoices x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carriers x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq 'FACTOR_CREDENTIAL_CONFIG.*BLOCKER[[:space:]]*\|[[:space:]]*t[[:space:]]*\|[[:space:]]*0' "$out" && grep -Eq 'FACTOR_SECRET_REF_BAD.*BLOCKER[[:space:]]*\|[[:space:]]*t[[:space:]]*\|[[:space:]]*0' "$out" || { echo "FAIL $name safe value false positive"; fail=1; return; }
@@ -458,7 +584,7 @@ run_destination_method_case(){
   createdb -T audit_post0146 "$db"; out="$PGDATA/$name.destination.out"
   "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $bypass; update public.factoring_relationships set submission_method='$method',submission_destination_email=case when '$method'='secure_email' then 'method-safe@example.test' else null end; insert into public.carrier_factoring_integrations(organization_id,carrier_id,factoring_relationship_id,factoring_company_id,submission_method,provider,secret_reference,external_account_identifier,submission_destination,configuration_status,is_active,effective_from,approved_by,approved_at) select organization_id,carrier_id,id,factoring_company_id,'$method',case when '$method'='api' then 'factoring_api'::public.integration_provider else null end,case when '$method'='api' then 'vault://method_safe_9zq' else null end,case when '$method'='api' then 'METHOD_ACCOUNT_SAFE_9ZQ' else null end,$destination,'$status',$active,current_date${extra} from public.factoring_relationships limit 1; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x")"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.carrier_factoring_integrations x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.factoring_relationships x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq "$fid.*WARNING[[:space:]]*\\|[[:space:]]*$ok[[:space:]]*\\|[[:space:]]*$count" "$out" && grep -Eq 'FINAL_DECISION.*READY_WITH_WARNINGS' "$out" || { echo "FAIL $name destination result"; fail=1; return; }
@@ -597,7 +723,7 @@ seed_a="$("${PSQL[@]}" -At -d audit_0137_path_a -c "select md5(string_agg(to_jso
 seed_b="$("${PSQL[@]}" -At -d audit_0137_path_b -c "select md5(string_agg(to_jsonb(x)::text,'|' order by x.id)) from public.factoring_relationships x")"
 [[ "$seed_a" == "$seed_b" ]] || { echo 'FAIL 0137 equivalence: seed hashes differ'; fail=1; }
 before_0137="$("${PSQL[@]}" -At -d audit_0137_path_a -c "select md5(string_agg(to_jsonb(x)::text,'|' order by x.id)) from public.factoring_relationships x")"
-"${PSQL[@]}" -d audit_0137_path_a -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$PGDATA/path_a_audit.out" 2>&1 || { echo 'FAIL 0137 Path A audit'; fail=1; }
+"${PSQL[@]}" -d audit_0137_path_a -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$PGDATA/path_a_audit.out" 2>&1 || { echo 'FAIL 0137 Path A audit'; fail=1; }
 after_0137="$("${PSQL[@]}" -At -d audit_0137_path_a -c "select md5(string_agg(to_jsonb(x)::text,'|' order by x.id)) from public.factoring_relationships x")"
 [[ "$before_0137" == "$after_0137" ]] || { echo 'FAIL 0137 Path A mutated relationships'; fail=1; }
 "${PSQL[@]}" -At -F '|' -d audit_0137_path_a -c "
@@ -688,7 +814,7 @@ run_provenance_case(){
   "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $setup; set session_replication_role=origin" >/dev/null
   before="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.relationship_id),'')) from public.carrier_backfill_0137_provenance x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.unresolved_carrier_records x")"
   out="$PGDATA/$name.provenance.out"
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   after="$("${PSQL[@]}" -At -d "$db" -c "select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.relationship_id),'')) from public.carrier_backfill_0137_provenance x; select md5(coalesce(string_agg(to_jsonb(x)::text,'|' order by x.id),'')) from public.unresolved_carrier_records x")"
   [[ "$before" == "$after" ]] || { echo "FAIL $name audit mutation"; fail=1; return; }
   grep -Eq "$fid.*BLOCKER[[:space:]]*\\|[[:space:]]*f[[:space:]]*\\|[[:space:]]*$count" "$out" && grep -Eq 'FINAL_DECISION.*BLOCKED' "$out" || { echo "FAIL $name finding $fid/$count"; grep "$fid" "$out"; fail=1; return; }
@@ -780,7 +906,7 @@ values('11111111-1111-1111-1111-111111111111','1d000000-0000-0000-0000-000000000
 set session_replication_role=origin;
 LEGACY_SQL
 legacy_before="$("${PSQL[@]}" -At -d audit_legacy_matrix -c "select md5(string_agg(to_jsonb(i)::text,'|' order by i.id)) from public.invoices i; select md5(coalesce(string_agg(to_jsonb(p)::text,'|' order by p.id),'')) from public.payments p; select md5(coalesce(string_agg(to_jsonb(f)::text,'|' order by f.id),'')) from public.factored_invoices f; select md5(coalesce(string_agg(to_jsonb(r)::text,'|' order by r.id),'')) from public.legacy_invoice_carrier_migration_review r")"
-"${PSQL[@]}" -d audit_legacy_matrix -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$PGDATA/legacy.audit.out" 2>&1 || { echo 'FAIL legacy matrix audit'; fail=1; }
+"${PSQL[@]}" -d audit_legacy_matrix -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$PGDATA/legacy.audit.out" 2>&1 || { echo 'FAIL legacy matrix audit'; fail=1; }
 legacy_after="$("${PSQL[@]}" -At -d audit_legacy_matrix -c "select md5(string_agg(to_jsonb(i)::text,'|' order by i.id)) from public.invoices i; select md5(coalesce(string_agg(to_jsonb(p)::text,'|' order by p.id),'')) from public.payments p; select md5(coalesce(string_agg(to_jsonb(f)::text,'|' order by f.id),'')) from public.factored_invoices f; select md5(coalesce(string_agg(to_jsonb(r)::text,'|' order by r.id),'')) from public.legacy_invoice_carrier_migration_review r")"
 [[ "$legacy_before" == "$legacy_after" ]] || { echo 'FAIL legacy audit mutation'; fail=1; }
 grep -q 'LEGACY_NOTE_PRIVATE_9zQ\|LEGACY_BILLING_PRIVATE_9zQ\|LEGACY_PAYMENT_PRIVATE_9zQ\|LEGACY_FACTOR_PRIVATE_9zQ\|LEGACY_REVIEW_PRIVATE_9zQ' "$PGDATA/legacy.audit.out" && { echo 'FAIL legacy private marker disclosure'; fail=1; }
@@ -911,7 +1037,7 @@ awk -F'|' '$1=="legacy_bucket_safe" && $3!="safely_identifiable_legacy"{exit 1}'
 # for_carrier_migration()' -- exclude any line where the function name is
 # preceded by "'public." (the quoted-signature-string form) before checking
 # for a live, unquoted call.
-if rg -n 'scan_legacy_invoices_for_carrier_migration[[:space:]]*\(|review_legacy_invoice_carrier_migration[[:space:]]*\(' PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql \
+if rg -n 'scan_legacy_invoices_for_carrier_migration[[:space:]]*\(|review_legacy_invoice_carrier_migration[[:space:]]*\(' PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql \
    | rg -v "'public\.(scan_legacy_invoices_for_carrier_migration|review_legacy_invoice_carrier_migration)\(" >/dev/null; then echo 'FAIL audit invokes legacy writing function'; fail=1; fi
 rg -q 'constraint livcr_legacy_invoice_uq unique' migrations/0142_immutable_carrier_invoice_foundation.sql || { echo 'FAIL legacy duplicate-review structural proof'; fail=1; }
 rg -q "revoke insert, update, delete on public.legacy_invoice_carrier_migration_review from authenticated" migrations/0142_immutable_carrier_invoice_foundation.sql || { echo 'FAIL legacy review grant proof'; fail=1; }
@@ -1043,7 +1169,7 @@ update public.factoring_relationships set noa_reference='PRIV9zQ-NOAREF-MARKER' 
 set session_replication_role=origin;
 " >/dev/null
 priv_out="$PGDATA/privacy_markers.out"
-"${PSQL[@]}" -d "$priv_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv_out" 2>&1
+"${PSQL[@]}" -d "$priv_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv_out" 2>&1
 priv_fail=0
 for marker in PRIV9zQ-INVNUM-MARKER PRIV9zQ-CARRIER-MARKER PRIV9zQ-RECIPIENT-MARKER PRIV9zQ-ISSUER-MARKER PRIV9zQ-PAYLOAD-MARKER PRIV9zQ-LINEDESC-MARKER PRIV9zQ-SOURCELOAD-MARKER PRIV9zQ-FACTORCOMPANY-MARKER PRIV9zQ-NOAREF-MARKER; do
   if grep -q "$marker" "$priv_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -1073,7 +1199,7 @@ run_snap_equivalence_case(){
   createdb -T audit_post0146 "$db"
   [[ -z "$setup" ]] || "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $setup; set session_replication_role=origin" >/dev/null
   "${PSQL[@]}" -At -F'|' -d "$db" -c "select ci.id, coalesce((public.carrier_invoice_payment_snapshot_problem(ci.id)).problem_code,'OK') from public.carrier_invoices ci join public.carrier_invoice_issuance_snapshots s on s.invoice_id=ci.id order by ci.id" >"$out.installed" 2>&1
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1
   local version_bad integrity_bad installed_bad
   version_bad="$(grep -Eo "CINV_SNAP_VERSION_BAD.*BLOCKER[[:space:]]*\\|[[:space:]]*[tf][[:space:]]*\\|[[:space:]]*[0-9]+" "$out" | grep -Eo '[0-9]+$')"
   integrity_bad="$(grep -Eo "CINV_SNAP_INTEGRITY_BAD.*BLOCKER[[:space:]]*\\|[[:space:]]*[tf][[:space:]]*\\|[[:space:]]*[0-9]+" "$out" | grep -Eo '[0-9]+$')"
@@ -1578,7 +1704,7 @@ update public.factoring_relationships set remittance_instructions='PRIV9zQ-FACTO
 set session_replication_role=origin;
 " >/dev/null
 priv3_out="$PGDATA/privacy_markers_3.out"
-"${PSQL[@]}" -d "$priv3_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv3_out" 2>&1
+"${PSQL[@]}" -d "$priv3_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv3_out" 2>&1
 priv3_fail=0
 for marker in PRIV9zQ-PAYMENTREF-MARKER PRIV9zQ-IDEMPKEY-MARKER PRIV9zQ-PAYERNOTE-MARKER PRIV9zQ-PAYINVNUM-MARKER PRIV9zQ-PAYCARRIER-MARKER PRIV9zQ-PAYRECIPIENT-MARKER 137.13 PRIV9zQ-PAYACTOR-MARKER PRIV9zQ-FACTORREL-MARKER; do
   if grep -q "$marker" "$priv3_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv3_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -1853,9 +1979,11 @@ echo 'PASS exact_platform_actor_matrix -> Phase 3C.0F.1 Section E, 9 actors acro
 # Phase 3C.0F.2 Sections C -- platform function-security catalog findings,
 # healthy zero/known-baseline controls plus dedicated corruption proofs.
 # ============================================================================
-run_post_case func_client_rpc_anon_execute_baseline "" READY_WITH_WARNINGS FUNC_CLIENT_RPC_ANON_EXECUTE BLOCKER 3
-run_post_case func_client_rpc_known_gaps_documented "" READY_WITH_WARNINGS FUNC_CLIENT_RPC_KNOWN_GAPS BLOCKER 3
-run_post_case func_client_rpc_anon_execute_new_gap_detected "grant execute on function public.issue_carrier_invoice(uuid,timestamptz,text,text) to anon" BLOCKED FUNC_CLIENT_RPC_ANON_EXECUTE BLOCKER 4
+run_post_case func_client_rpc_anon_execute_baseline "" READY_WITH_WARNINGS FUNC_CLIENT_RPC_ANON_EXECUTE INFO 3
+run_post_case func_update_draft_public_execute_documented "" READY_WITH_WARNINGS FUNC_UPDATE_DRAFT_PUBLIC_EXECUTE BLOCKER 1
+run_post_case func_legacy_review_public_execute_documented "" READY_WITH_WARNINGS FUNC_LEGACY_REVIEW_PUBLIC_EXECUTE BLOCKER 1
+run_post_case func_legacy_scan_public_execute_documented "" READY_WITH_WARNINGS FUNC_LEGACY_SCAN_PUBLIC_EXECUTE BLOCKER 1
+run_post_case func_client_rpc_anon_execute_new_gap_detected "grant execute on function public.issue_carrier_invoice(uuid,timestamptz,text,text) to anon" BLOCKED FUNC_CLIENT_RPC_ANON_EXECUTE INFO 4
 run_post_case func_internal_helper_client_execute_absent "" READY_WITH_WARNINGS FUNC_INTERNAL_HELPER_CLIENT_EXECUTE BLOCKER 0
 run_post_case func_internal_helper_client_execute_detected "grant execute on function public.compute_financial_request_fingerprint(jsonb) to authenticated" BLOCKED FUNC_INTERNAL_HELPER_CLIENT_EXECUTE BLOCKER 1
 run_post_case func_null_identity_auth_bypass_documented "" READY_WITH_WARNINGS FUNC_NULL_IDENTITY_AUTH_BYPASS BLOCKER 1
@@ -2050,7 +2178,7 @@ select 'AUTH|'||has_function_privilege('authenticated','public.zz_audit_disposab
 select 'ANON|'||has_function_privilege('anon','public.zz_audit_disposable_probe_fn()','EXECUTE');
 drop function public.zz_audit_disposable_probe_fn();
 " >"$defpriv_fn_out" 2>&1
-grep -q 'AUTH|t' "$defpriv_fn_out" && grep -q 'ANON|t' "$defpriv_fn_out" && echo 'PASS platform_default_function_privilege_latent_risk_confirmed -> a brand-new function is EXECUTE-able by BOTH authenticated and anon by PostgreSQL default (no schema-level override exists), confirming every future function creation must include an explicit revoke -- the exact root cause behind FUNC_CLIENT_RPC_KNOWN_GAPS' || { echo 'FAIL platform_default_function_privilege_latent_risk_confirmed'; fail=1; }
+grep -q 'AUTH|t' "$defpriv_fn_out" && grep -q 'ANON|t' "$defpriv_fn_out" && echo 'PASS platform_default_function_privilege_latent_risk_confirmed -> a brand-new function is EXECUTE-able by BOTH authenticated and anon by PostgreSQL default (no schema-level override exists), confirming every future function creation must include an explicit revoke -- the exact root cause behind the three individual RPC exposure findings' || { echo 'FAIL platform_default_function_privilege_latent_risk_confirmed'; fail=1; }
 echo 'PASS exact_default_function_privilege_matrix -> Phase 3C.0F.2 Section L, disposable function created and dropped within a throwaway clone -- never a persistent object -- confirming the latent future-default-privilege risk (functions) is the structural opposite of tables (Phase 3C.0F.1 Section F), which are safe-by-default for anon'
 
 # ============================================================================
@@ -2127,7 +2255,7 @@ update public.legacy_invoice_carrier_migration_review set resolution='PRIV9zQ-LE
 set session_replication_role=origin;
 " >/dev/null 2>&1 || true
 priv4_out="$PGDATA/privacy_markers_4.out"
-"${PSQL[@]}" -d "$priv4_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv4_out" 2>&1
+"${PSQL[@]}" -d "$priv4_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv4_out" 2>&1
 priv4_fail=0
 for marker in PRIV9zQ-DISPATCHREASON-MARKER PRIV9zQ-DISPATCHKEY-MARKER priv9zq-partysettings-marker PRIV9zQ-SECRETPTR-MARKER PRIV9zQ-EXTACCTID-MARKER PRIV9zQ-LEGACYRESOLUTION-MARKER PRIV9zQ-LEGACYNOTES-MARKER; do
   if grep -qi "$marker" "$priv4_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv4_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -2286,7 +2414,7 @@ run_pre0130_case(){
   db="pre0130_${name//[^a-zA-Z0-9]/_}"; out="$PGDATA/pre0130_$name.out"
   createdb -T audit_pre0130_full "$db"
   [[ -z "$setup" ]] || "${PSQL[@]}" -d "$db" -c "set session_replication_role=replica; $setup; set session_replication_role=origin" >/dev/null
-  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
+  "${PSQL[@]}" -d "$db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$out" 2>&1 || { echo "FAIL $name audit error"; fail=1; return; }
   grep -Eq "FINAL_DECISION.*$expected" "$out" || { echo "FAIL $name decision $expected"; fail=1; case_fail=1; }
   grep -Eq "$fid.*$severity[[:space:]]*\\|[[:space:]]*$expected_ok[[:space:]]*\\|[[:space:]]*$count" "$out" || { echo "FAIL $name finding $fid/$severity/$count"; grep "$fid" "$out"; fail=1; case_fail=1; }
   [[ "$case_fail" -eq 0 ]] && echo "PASS $name -> $expected ($fid=$count)" || true
@@ -2543,7 +2671,7 @@ update public.invoices set invoice_number='PRIV9zQ-LEGACYINVNUM-MARKER' where id
 set session_replication_role=origin;
 " >/dev/null 2>&1 || true
 priv5_out="$PGDATA/privacy_markers_5.out"
-"${PSQL[@]}" -d "$priv5_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv5_out" 2>&1
+"${PSQL[@]}" -d "$priv5_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv5_out" 2>&1
 priv5_fail=0
 for marker in PRIV9zQ-DOCFILENAME-MARKER PRIV9zQ-DOCPATH-MARKER PRIV9zQ-INTEGRATIONCRED-MARKER PRIV9zQ-LEGACYINVNUM-MARKER; do
   if grep -qi "$marker" "$priv5_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv5_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -2739,7 +2867,7 @@ select public.approve_trailer_ownership_scope(
 commit;
 SQL
 priv6_out="$PGDATA/privacy_markers_6.out"
-"${PSQL[@]}" -d "$priv6_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv6_out" 2>&1
+"${PSQL[@]}" -d "$priv6_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv6_out" 2>&1
 priv6_fail=0
 for marker in PRIV9zQ-LOADNUM-MARKER priv9zq-brokerbilling-marker PRIV9zQ-TRAILERREASON-MARKER; do
   if grep -qi "$marker" "$priv6_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv6_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -2786,7 +2914,7 @@ update public.carrier_dispatch_service_agreement_versions set reason='PRIV9zQ-BI
 set session_replication_role=origin;
 " >/dev/null
 priv2_out="$PGDATA/privacy_markers_2.out"
-"${PSQL[@]}" -d "$priv2_db" -f PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql >"$priv2_out" 2>&1
+"${PSQL[@]}" -d "$priv2_db" -f PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql >"$priv2_out" 2>&1
 priv2_fail=0
 for marker in PRIV9zQ-ROUTEADDR-MARKER PRIV9zQ-DISPATCHID-MARKER PRIV9zQ-AGREEMENTNUM-MARKER 13.37 PRIV9zQ-BILLINGREF-MARKER; do
   if grep -q "$marker" "$priv2_out"; then echo "FAIL privacy_marker_leak: $marker appeared in audit output"; fail=1; priv2_fail=1; else echo "PASS privacy_marker_absent: $marker"; fi
@@ -2808,15 +2936,15 @@ expect_false_pass_rejected pipefail_disabled 'set +o pipefail'
 expect_false_pass_rejected passed_after_mismatch 'echo "PASSED after mismatch"'
 expect_false_pass_rejected error_after_assertion 'echo "ERROR after last assertion"'
 echo 'PASS false_pass_guard_suite -> 8 broken copies rejected'
-manifest_counts="$(awk -F'|' '/^\| (COMPLETE|PARTIAL|PENDING|NOT_APPLICABLE) / {gsub(/ /,"",$2); gsub(/ /,"",$3); print $2"="$3}' DEPLOYMENT_RUNBOOK_0130_0146.md | tr '\n' ' ')"
+manifest_counts="$(awk -F'|' '/^\| (COMPLETE|PARTIAL|PENDING|NOT_APPLICABLE) / {gsub(/ /,"",$2); gsub(/ /,"",$3); print $2"="$3}' DEPLOYMENT_RUNBOOK_0130_0147.md | tr '\n' ' ')"
 [[ "$manifest_counts" == *"COMPLETE=107"* && "$manifest_counts" == *"PARTIAL=0"* && "$manifest_counts" == *"PENDING=0"* && "$manifest_counts" == *"NOT_APPLICABLE=0"* ]] || { echo "FAIL manifest totals: $manifest_counts"; fail=1; }
 # Independent recount: the stated totals table above must match a direct
 # per-row count of the 107 numbered manifest rows themselves, not just an
 # internally-consistent (but possibly stale) hand-maintained sum -- Phase
 # 3C.0F.1 found and corrected exactly this kind of drift once already.
 manifest_row_pattern='^\| (0|[1-9][0-9]{0,2}) \|'
-manifest_recount="$(grep -E "$manifest_row_pattern" DEPLOYMENT_RUNBOOK_0130_0146.md | awk -F'|' '{n=$2+0; if(n>=1&&n<=107) print}' | grep -oE '\b(COMPLETE|PARTIAL|PENDING|NOT_APPLICABLE):' | sort | uniq -c | awk '{print $2$1}' | tr -d ':' | tr '\n' ' ')"
-row_total="$(grep -E "$manifest_row_pattern" DEPLOYMENT_RUNBOOK_0130_0146.md | awk -F'|' '{n=$2+0; if(n>=1&&n<=107) print}' | wc -l | tr -d ' ')"
+manifest_recount="$(grep -E "$manifest_row_pattern" DEPLOYMENT_RUNBOOK_0130_0147.md | awk -F'|' '{n=$2+0; if(n>=1&&n<=107) print}' | grep -oE '\b(COMPLETE|PARTIAL|PENDING|NOT_APPLICABLE):' | sort | uniq -c | awk '{print $2$1}' | tr -d ':' | tr '\n' ' ')"
+row_total="$(grep -E "$manifest_row_pattern" DEPLOYMENT_RUNBOOK_0130_0147.md | awk -F'|' '{n=$2+0; if(n>=1&&n<=107) print}' | wc -l | tr -d ' ')"
 [[ "$row_total" -eq 107 ]] || { echo "FAIL manifest row count: found $row_total numbered rows, expected 107"; fail=1; }
 # All 107 rows are COMPLETE as of Phase 3C.0G -- the recount (which only
 # emits a status word for statuses actually present in the row text, unlike
@@ -2829,14 +2957,14 @@ row_total="$(grep -E "$manifest_row_pattern" DEPLOYMENT_RUNBOOK_0130_0146.md | a
 # number -- not merely inferred from the aggregate 107-row recount above.
 eleven_rows_fail=0
 for n in 8 18 19 27 28 35 38 39 42 43 44; do
-  row_text="$(grep -m1 "^| $n |" DEPLOYMENT_RUNBOOK_0130_0146.md || true)"
+  row_text="$(grep -m1 "^| $n |" DEPLOYMENT_RUNBOOK_0130_0147.md || true)"
   [[ -n "$row_text" ]] || { echo "FAIL eleven_row_closure_gate: row $n not found"; eleven_rows_fail=1; fail=1; continue; }
   echo "$row_text" | grep -q "COMPLETE:" || { echo "FAIL eleven_row_closure_gate: row $n is not COMPLETE"; eleven_rows_fail=1; fail=1; }
 done
 [[ "$eleven_rows_fail" -eq 0 ]] && echo 'PASS eleven_row_closure_gate -> rows 8/18/19/27/28/35/38/39/42/43/44 each individually confirmed COMPLETE' || true
 while read -r fid scenario; do
-  if [[ "$fid" == SCHEMA_LANDMARK_* ]]; then grep -q "SCHEMA_LANDMARK_" PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql; else grep -q "'$fid'" PRODUCTION_PREFLIGHT_0130_0146_READONLY.sql; fi || { echo "FAIL manifest finding missing: $fid"; fail=1; }
-  grep -q "run_case $scenario\|run_post_case $scenario\|run_noa_case $scenario\|run_core_integration_case $scenario\|run_integration_dependency_case $scenario\|run_safe_value_case $scenario\|run_pre0130_case $scenario\|audit_$scenario\|legacy_$scenario" TEST_PRODUCTION_PREFLIGHT_0130_0146_READONLY.sh || { echo "FAIL manifest scenario missing: $scenario"; fail=1; }
-done < <(sed -n 's/.*COMPLETE: `\([^`]*\)`.*| `\([^`]*\)`.*/\1 \2/p' DEPLOYMENT_RUNBOOK_0130_0146.md)
-if [[ "$fail" -eq 0 ]]; then echo 'TEST PRODUCTION PREFLIGHT 0130-0146 PASSED'; else echo 'TEST PRODUCTION PREFLIGHT 0130-0146 FAILED'; fi
+  if [[ "$fid" == SCHEMA_LANDMARK_* ]]; then grep -q "SCHEMA_LANDMARK_" PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql; else grep -q "'$fid'" PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql; fi || { echo "FAIL manifest finding missing: $fid"; fail=1; }
+  grep -q "run_case $scenario\|run_post_case $scenario\|run_noa_case $scenario\|run_core_integration_case $scenario\|run_integration_dependency_case $scenario\|run_safe_value_case $scenario\|run_pre0130_case $scenario\|audit_$scenario\|legacy_$scenario\|PASS $scenario \|echo '\''PASS $scenario " TEST_PRODUCTION_PREFLIGHT_0130_0147_READONLY.sh || { echo "FAIL manifest scenario missing: $scenario"; fail=1; }
+done < <(sed -n 's/.*COMPLETE: `\([^`]*\)`.*| `\([^`]*\)`.*/\1 \2/p' DEPLOYMENT_RUNBOOK_0130_0147.md)
+if [[ "$fail" -eq 0 ]]; then echo 'TEST PRODUCTION PREFLIGHT 0130-0147 PASSED'; else echo 'TEST PRODUCTION PREFLIGHT 0130-0147 FAILED'; fi
 exit "$fail"

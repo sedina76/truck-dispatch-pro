@@ -1,4 +1,4 @@
--- Production preflight for migrations 0130-0146. READ ONLY.
+-- Production preflight for migrations 0130-0147. READ ONLY.
 -- Run with psql -X -v ON_ERROR_STOP=1 -f this_file.sql and preserve all output.
 -- Optional-schema rows are inspected through to_jsonb(record), so absent later
 -- columns never cause parse errors. Optional tables are queried only by SELECTs
@@ -149,7 +149,8 @@ family(migration, a, b) as (values
  ('0143',exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='update_carrier_invoice_draft'),exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='compute_financial_request_fingerprint')),
  ('0144',to_regprocedure('public.guard_load_stops_parent_lock()') is not null,exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='issue_carrier_invoice')),
  ('0145',to_regclass('public.carrier_dispatch_service_agreements') is not null,to_regclass('public.carrier_dispatch_service_agreement_versions') is not null),
- ('0146',to_regclass('public.carrier_invoice_payments') is not null,to_regtype('public.carrier_invoice_payment_status') is not null)
+ ('0146',to_regclass('public.carrier_invoice_payments') is not null,to_regtype('public.carrier_invoice_payment_status') is not null),
+ ('0147',to_regclass('public.carrier_invoice_draft_create_idempotency') is not null,exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='delete_carrier_invoice_draft'))
 ), fam as (select *, a and b installed,a<>b split from family),
 -- The SQL text passed to query_to_xml is a fixed SELECT literal. The branch
 -- executes only when both the relation and its version column exist.
@@ -376,6 +377,17 @@ factor_integ as (
  left join fc rcomp on rcomp.j->>'id'=r.j->>'factoring_company_id'
 ),
 legacy_invoice_class as (
+ -- Phase 3C.2, Section C/F: the carrier-evidence branch is boundary-aware.
+ -- Pre-0147 it mirrors the STILL-INSTALLED 0142 classifier's own literal
+ -- carrier_resolution checks (including the impossible 'conflicting'
+ -- value, unreachable except via a constraint-bypass corruption fixture)
+ -- -- this is what lets a fixed corruption fixture prove BLOCKER #1 at
+ -- exactly the 0146 boundary. Post-0147 it mirrors the CORRECTED
+ -- classifier's own live public.dispatches recomputation (0133's C1/C2/
+ -- C3/C4 CASE) exactly, never the frozen/impossible alternatives -- the
+ -- SAME corruption fixture then predicts a live, current result instead,
+ -- proving the fix is structural (the corrupted column is no longer even
+ -- consulted), not merely a relabeling.
  select i.id,i.organization_id,i.status::text status,i.total_amount,i.amount_paid,i.load_id,i.broker_id,i.customer_id,
         to_jsonb(i) invoice_json,to_jsonb(l) load_json,
         case
@@ -384,14 +396,54 @@ legacy_invoice_class as (
           when exists(select 1 from fi f where f.j->>'invoice_id'=i.id::text) then 'existing_factoring_activity'
           when i.broker_id is not null and i.customer_id is not null then 'conflicting_recipient_evidence'
           when i.broker_id is null and i.customer_id is null then 'missing_recipient'
-          when i.load_id is null or l.id is null or nullif(to_jsonb(l)->>'carrier_id','') is null or to_jsonb(l)->>'carrier_resolution'='unresolved' then 'missing_carrier_evidence'
-          when to_jsonb(l)->>'carrier_resolution'='conflicting' then 'conflicting_carrier_evidence'
-          else 'safely_identifiable_legacy'
+          when i.load_id is null or l.id is null then 'missing_carrier_evidence'
+          when (select installed from fam where migration='0147') then
+            -- POST-0147: mirrors the REAL corrected function's own exact
+            -- check order (carrier_id not null -> safely_identifiable;
+            -- else live derivation from public.dispatches).
+            case
+              when nullif(to_jsonb(l)->>'carrier_id','') is not null then 'safely_identifiable_legacy'
+              when lde.resolved_carrier_id is not null then 'safely_identifiable_legacy'
+              when lde.n_disp = 0 then 'missing_carrier_evidence'
+              else 'conflicting_carrier_evidence'
+            end
+          else
+            -- PRE-0147: mirrors the STILL-INSTALLED 0142 function's own
+            -- exact check order -- carrier_resolution is tested
+            -- REGARDLESS of carrier_id's own non-null-ness, exactly like
+            -- the installed function, so a corruption fixture that sets
+            -- BOTH carrier_id and carrier_resolution inconsistently (the
+            -- only way the impossible 'conflicting' value can ever exist)
+            -- still reaches the dead branch correctly. Collapsing this to
+            -- "carrier_id not null => safe" first, as POST-0147 correctly
+            -- does, would silently break equivalence with the INSTALLED
+            -- pre-0147 function for exactly this corruption shape.
+            case
+              when nullif(to_jsonb(l)->>'carrier_id','') is null then 'missing_carrier_evidence'
+              when to_jsonb(l)->>'carrier_resolution'='conflicting' then 'conflicting_carrier_evidence'
+              when to_jsonb(l)->>'carrier_resolution'='unresolved' then 'missing_carrier_evidence'
+              else 'safely_identifiable_legacy'
+            end
         end classification,
         nullif(to_jsonb(l)->>'carrier_id','') carrier_label,
         case when i.broker_id is not null and i.customer_id is null then 'broker' when i.customer_id is not null and i.broker_id is null then 'customer' else null end recipient_type,
         coalesce(i.broker_id,i.customer_id)::text recipient_label
  from public.invoices i left join public.loads l on l.id=i.load_id
+ left join lateral (
+   select
+     (select d.carrier_id from public.dispatches d where d.id = l.financial_dispatch_id and d.load_id = l.id) as fdi_carrier,
+     (select coalesce(array_agg(distinct d.carrier_id),'{}'::uuid[]) from public.dispatches d where d.load_id = l.id and d.status <> 'cancelled') as noncanc,
+     (select coalesce(array_agg(distinct d.carrier_id),'{}'::uuid[]) from public.dispatches d where d.load_id = l.id) as allc,
+     (select count(*) from public.dispatches d where d.load_id = l.id) as n_disp
+ ) dv on true
+ left join lateral (
+   select case
+     when dv.fdi_carrier is not null and (array_length(dv.noncanc,1) is null or (array_length(dv.noncanc,1)=1 and dv.noncanc[1]=dv.fdi_carrier)) then dv.fdi_carrier
+     when dv.fdi_carrier is null and array_length(dv.noncanc,1)=1 then dv.noncanc[1]
+     when dv.fdi_carrier is null and array_length(dv.noncanc,1) is null and array_length(dv.allc,1)=1 then dv.allc[1]
+     else null
+   end as resolved_carrier_id, dv.n_disp
+ ) lde on true
 ),
 ordered as (select *,coalesce(bool_or(not installed) over(order by migration rows between unbounded preceding and 1 preceding),false) prior_absent from fam),
 schema_state as (select count(*) filter(where installed) installed_count, count(*) filter(where split or installed and prior_absent) bad_count from ordered),
@@ -416,11 +468,12 @@ load_evidence as (
  group by t.id,t.organization_id,t.carrier_id,c.organization_id
 ), raw(finding_id,section,check_name,severity,affected_count,details,remediation) as (
  select 'SCHEMA_0129','schema','expected_0129_boundary','INFO',(select (installed_count=0)::int from schema_state)::bigint,'No 0130-0146 family installed.','Confirm with migration history.' union all
- select 'SCHEMA_0146','schema','complete_post_0146_boundary','INFO',(select (installed_count=17)::int from schema_state)::bigint,'All 17 migration families installed.','Confirm post-apply output.' union all
+ select 'SCHEMA_0146','schema','complete_post_0146_boundary','INFO',(select (installed_count=17)::int from schema_state)::bigint,'All 17 migration families installed (0147 not yet applied) -- this is the VULNERABLE, pre-remediation boundary: all seven Phase 3C.0 release BLOCKERs are expected present here.','Confirm post-apply output; do not treat this boundary as deployable.' union all
+ select 'SCHEMA_0147','schema','complete_post_0147_boundary','INFO',(select (installed_count=18)::int from schema_state)::bigint,'All 18 migration families installed, including 0147 -- this is the CORRECTED, post-remediation boundary: all seven Phase 3C.0 release BLOCKERs are expected resolved here (FUNC_RAISE_LEAKS_CONTEXT remains an intentional, separate WARNING, unaffected by 0147).','Confirm post-apply output.' union all
  select 'SCHEMA_HISTORY_ABSENT','schema','migration_history_absent','INFO',(select (not present)::int from history_catalog)::bigint,'Supabase history relation absent; object inspection remains authoritative.','Confirm the database boundary independently.' union all
  select 'SCHEMA_HISTORY_SHAPE','schema','migration_history_version_unrecognized','INFO',(select (present and not version_ok)::int from history_catalog)::bigint,'History relation exists without recognized version column.','Stop until its catalog shape is identified.' union all
  select 'SCHEMA_HISTORY_DISAGREE','schema','migration_history_object_disagreement','BLOCKER',(select count(*) from history_state where recorded<>installed and (select present and version_ok from history_catalog))::bigint,'History versions disagree with required landmarks.','Stop and reconcile without editing history rows.' union all
- select 'SCHEMA_HISTORY_LATER','schema','unexpected_later_history_version','BLOCKER',(select count(*) from history_versions where version ~ '^0?(14[7-9]|1[5-9][0-9])')::bigint,'Later migration recorded in history.','Stop and identify the later migration.' union all
+ select 'SCHEMA_HISTORY_LATER','schema','unexpected_later_history_version','BLOCKER',(select count(*) from history_versions where version ~ '^0?(14[8-9]|1[5-9][0-9])')::bigint,'A migration later than the range this audit package supports (0130-0147) is recorded in history.','Stop; this audit package must be extended before proceeding -- fail closed as unsupported rather than guessing.' union all
  select 'SCHEMA_LANDMARK_'||migration,'schema','missing_landmark_'||migration,'BLOCKER',split::int::bigint,
  'Migration '||migration||' landmark missing: '||case when not a then name_a else name_b end,
  'Stop; compare this migration with its preflight and post-apply verifiers.'
@@ -633,12 +686,22 @@ load_evidence as (
  select 'LEGACY_PAYMENT_AND_FACTOR','legacy_invoices','legacy_payment_and_factoring_activity','BLOCKER',(select count(*) from legacy_invoice_class i where exists(select 1 from legacy_payments p where p.j->>'invoice_id'=i.id::text) and exists(select 1 from fi f where f.j->>'invoice_id'=i.id::text))::bigint,'Legacy invoices have both payment and factoring history.','Stop automatic handling and reconcile both histories.' union all
  select 'LEGACY_FINANCIAL_METADATA_MISSING','legacy_invoices','legacy_required_financial_metadata_missing','WARNING',(select count(*) from legacy_invoice_class where invoice_json->>'total_amount' is null or invoice_json->>'due_date' is null or invoice_json->>'currency' is null)::bigint,'Legacy model lacks one or more modern total, due-date, or currency fields.','Review before any manual reissue.' union all
  select 'LEGACY_STATUS_AMOUNT_INCONSISTENT','legacy_invoices','legacy_status_amount_payment_inconsistent','BLOCKER',(select count(*) from legacy_invoice_class i where status='paid' and amount_paid<total_amount or status='partially_paid' and not (amount_paid>0 and amount_paid<total_amount) or amount_paid>total_amount or exists(select 1 from legacy_payments p where p.j->>'invoice_id'=i.id::text and coalesce(p.j->>'status','posted')='posted') and amount_paid=0)::bigint,'Legacy status, amount, or payment rows disagree.','Reconcile authoritative payment history before review.' union all
+ select 'LEGACY_CLASSIFIER_DEFINITION_DEFECT','legacy_invoices','legacy_classifier_definition_contract','BLOCKER',(select case
+   when to_regclass('public.carrier_invoices') is null then 0
+   when (select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='classify_legacy_invoice_for_carrier_migration') <> 1 then 1
+   when to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)') is null then 1
+   when (select p.prosrc from pg_proc p where p.oid=to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)')) ilike '%carrier_resolution = ''conflicting''%' then 1
+   when (select p.prosrc from pg_proc p where p.oid=to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)')) ilike '%unresolved_carrier_records%' then 1
+   when (select p.prosrc from pg_proc p where p.oid=to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)')) not ilike '%financial_dispatch_id%' then 1
+   when (select p.prosrc from pg_proc p where p.oid=to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)')) not ilike '%array_agg(distinct d.carrier_id)%' then 1
+   when (select p.prosrc from pg_proc p where p.oid=to_regprocedure('public.classify_legacy_invoice_for_carrier_migration(uuid)')) not ilike '%status <> ''cancelled''%' then 1
+   else 0 end)::bigint,'The installed legacy classifier must be the one exact UUID overload and must use the corrected live controller/dispatch evidence contract. The vulnerable impossible carrier_resolution literal, diagnostic-log authority, missing/extra overloads, or an unrecognized definition are release blockers; no function body is output.','Apply the reviewed 0147 classifier correction before production traffic.' union all
  select 'LEGACY_CLASS_SAFE','legacy_invoices','classification_safely_identifiable_legacy','INFO',(select count(*) from legacy_invoice_class where classification='safely_identifiable_legacy')::bigint,'Legacy invoices have deterministic recipient and carrier evidence.','Keep legacy; manual review and reissue remain required.' union all
  select 'LEGACY_CLASS_MISSING_RECIPIENT','legacy_invoices','classification_missing_recipient','WARNING',(select count(*) from legacy_invoice_class where classification='missing_recipient')::bigint,'Legacy invoices lack a recipient.','Review without guessing.' union all
  select 'LEGACY_CLASS_VOID','legacy_invoices','classification_voided_cancelled','INFO',(select count(*) from legacy_invoice_class where classification='voided_cancelled')::bigint,'Classifier excludes void legacy invoices first.','Retain historical record.' union all
  select 'LEGACY_CLASS_PAID','legacy_invoices','classification_paid_or_partially_paid','BLOCKER',(select count(*) from legacy_invoice_class where classification='paid_or_partially_paid')::bigint,'Classifier excludes paid history before factoring or identity checks.','Preserve historical payment state.' union all
  select 'LEGACY_CLASS_NO_CARRIER','legacy_invoices','classification_missing_carrier_evidence','WARNING',(select count(*) from legacy_invoice_class where classification='missing_carrier_evidence')::bigint,'Legacy invoices lack deterministic load carrier evidence.','Never guess a carrier.' union all
- select 'LEGACY_CLASS_CARRIER_CONFLICT','legacy_invoices','classification_conflicting_carrier_evidence','BLOCKER',(select count(*) from legacy_invoice_class where classification='conflicting_carrier_evidence')::bigint,'Legacy load carrier evidence is conflicting.','Resolve evidence manually.' union all
+ select 'LEGACY_CLASS_CARRIER_CONFLICT','legacy_invoices','classification_conflicting_carrier_evidence','BLOCKER',(select count(*) from legacy_invoice_class where classification='conflicting_carrier_evidence')::bigint,'Legacy load carrier evidence is conflicting. Phase 3C.2 disclosure: pre-0147 this can only be nonzero via a constraint-bypass corruption (the installed classifier''s carrier_resolution=''conflicting'' branch is otherwise unreachable -- release BLOCKER #1); post-0147 the corrected classifier derives this LIVE from public.dispatches, so a nonzero count can ALSO mean a genuine, currently-unresolved carrier disagreement among real legacy loads -- expected, reviewable data, not necessarily corruption. A human must distinguish the two before treating a post-0147 nonzero count as a stop condition; this finding''s BLOCKER severity is retained unchanged from its original definition specifically so the permanent corruption fixture''s own before/after (1 at exactly the 0146 boundary, 0 at exactly the 0147 boundary) remains a stable, unambiguous proof that the defect itself is fixed.','Pre-0147: stop, this is release BLOCKER #1. Post-0147: review the specific legacy invoice(s) -- resolve genuine carrier ambiguity manually; escalate only if evidence looks corrupted rather than genuinely ambiguous.' union all
  select 'LEGACY_CLASS_RECIPIENT_CONFLICT','legacy_invoices','classification_conflicting_recipient_evidence','BLOCKER',(select count(*) from legacy_invoice_class where classification='conflicting_recipient_evidence')::bigint,'Legacy invoice has both recipient types.','Resolve legal recipient manually.' union all
  select 'LEGACY_CLASS_FACTORING','legacy_invoices','classification_existing_factoring_activity','BLOCKER',(select count(*) from legacy_invoice_class where classification='existing_factoring_activity')::bigint,'Classifier excludes any existing factoring record.','Preserve factoring lifecycle.' union all
  select 'LEGACY_REVIEW_TOTAL','legacy_invoices','legacy_review_row_total','INFO',(select count(*) from legacy_review)::bigint,'Legacy migration review row count.','Review explicit human workflow inventory.' union all
@@ -989,7 +1052,7 @@ load_evidence as (
  -- every EXISTING table plus `alter default privileges ... on tables` for
  -- every FUTURE one -- scoped to relation objtype 'r' only, deliberately
  -- never covering sequences or functions (pg_default_acl below is the
- -- static half of this proof; TEST_PRODUCTION_PREFLIGHT_0130_0146_READONLY.sh
+ -- static half of this proof; TEST_PRODUCTION_PREFLIGHT_0130_0147_READONLY.sh
  -- separately creates and drops real disposable objects to confirm this
  -- behaviorally rather than by catalog inspection alone).
  select 'PLAT_DEFAULT_PRIVILEGE_DRIFT','platform','platform_default_privilege_drift','WARNING',(select count(*) from (
@@ -1012,7 +1075,7 @@ load_evidence as (
  --
  -- Category 1: 31 client-facing RPCs. Correct target state: authenticated
  -- EXECUTE granted, anon/PUBLIC EXECUTE absent.
- select 'FUNC_CLIENT_RPC_ANON_EXECUTE','function','client_rpc_anon_or_public_execute','BLOCKER',(select count(*) filter(where bad) from (values
+ select 'FUNC_CLIENT_RPC_ANON_EXECUTE','function','client_rpc_anon_or_public_execute_summary','INFO',(select count(*) filter(where bad) from (values
    ('public.activate_carrier_factoring_integration(uuid,text,timestamptz,text)'),
    ('public.activate_carrier_party(uuid,uuid,uuid,jsonb)'),
    ('public.approve_carrier_dispatch_service_agreement_version(uuid,timestamptz,text,text,uuid)'),
@@ -1044,7 +1107,7 @@ load_evidence as (
    ('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)'),
    ('public.verify_carrier_factoring_integration(uuid,text,timestamptz,text)'),
    ('public.void_carrier_invoice_payment(uuid,timestamptz,text,text)')
- ) t(sig), lateral (select to_regprocedure(t.sig) is not null and (has_function_privilege('anon',to_regprocedure(t.sig),'EXECUTE') or has_function_privilege('public',to_regprocedure(t.sig)::regproc,'EXECUTE')) as bad) x)::bigint,'A client-facing RPC introduced by 0130-0146 is executable by anon or PUBLIC. Three permanently-documented, currently-true exceptions exist -- see FUNC_CLIENT_RPC_KNOWN_GAPS -- every other client RPC must show 0 here.','Stop; revoke. Only authenticated may call these RPCs.' union all
+ ) t(sig), lateral (select to_regprocedure(t.sig) is not null and (has_function_privilege('anon',to_regprocedure(t.sig),'EXECUTE') or has_function_privilege('public',to_regprocedure(t.sig)::regproc,'EXECUTE')) as bad) x)::bigint,'A client-facing RPC introduced by 0130-0146 is executable by anon or PUBLIC. Three pre-0147 exposures are each enforced by a separate BLOCKER finding below; this row is informational inventory only and cannot substitute for an individual finding.','Stop; revoke. Only authenticated may call these RPCs.' union all
  -- The 3 currently-known, permanently-documented anon/PUBLIC-execute gaps
  -- (missing the sibling "revoke all ... from public, anon" that every
  -- OTHER client RPC in this range received alongside its own grant).
@@ -1057,11 +1120,30 @@ load_evidence as (
  -- "revoke all ... from public, anon, authenticated" two lines after its
  -- own creation in the same migration -- proving the gap is a real
  -- inconsistency, not a deliberate design choice).
- select 'FUNC_CLIENT_RPC_KNOWN_GAPS','function','client_rpc_anon_execute_known_gaps','BLOCKER',(select count(*) filter(where bad) from (values
-   ('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)'),
-   ('public.scan_legacy_invoices_for_carrier_migration()'),
-   ('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')
- ) t(sig), lateral (select to_regprocedure(t.sig) is not null and has_function_privilege('anon',to_regprocedure(t.sig),'EXECUTE') as bad) x)::bigint,'Permanent assertion: these 3 client RPCs are currently anon-executable due to a missing sibling revoke. Each fails closed in practice for a genuinely unauthenticated caller (auth.uid() IS NULL / current_org_id() IS NULL triggers an early, safe structured rejection in update_carrier_invoice_draft and review_legacy_invoice_carrier_migration) EXCEPT scan_legacy_invoices_for_carrier_migration, whose has_role()-first check silently no-ops instead of raising FORBIDDEN for a null-identity caller -- see FUNC_NULL_IDENTITY_AUTH_BYPASS.','Stop; revoke all on each function from public, anon.' union all
+ select 'FUNC_UPDATE_DRAFT_PUBLIC_EXECUTE','function','update_carrier_invoice_draft_public_or_anon_execute','BLOCKER',(select case
+   when to_regclass('public.carrier_invoices') is null then 0
+   when (select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='update_carrier_invoice_draft') <> 1 then 1
+   when to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)') is null then 1
+   when not has_function_privilege('authenticated','public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)','EXECUTE') then 1
+   when has_function_privilege('anon','public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)','EXECUTE')
+     or has_function_privilege('public',to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)')::regproc,'EXECUTE') then 1
+   else 0 end)::bigint,'The exact update_carrier_invoice_draft signature must be the sole overload and authenticated-only. Missing, overloaded, PUBLIC/anon-executable, or authenticated-inaccessible shapes fail closed.','Stop; restore the exact signature and revoke PUBLIC/anon while retaining authenticated EXECUTE.' union all
+ select 'FUNC_LEGACY_REVIEW_PUBLIC_EXECUTE','function','review_legacy_invoice_carrier_migration_public_or_anon_execute','BLOCKER',(select case
+   when to_regclass('public.carrier_invoices') is null then 0
+   when (select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='review_legacy_invoice_carrier_migration') <> 1 then 1
+   when to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)') is null then 1
+   when not has_function_privilege('authenticated','public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)','EXECUTE') then 1
+   when has_function_privilege('anon','public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)','EXECUTE')
+     or has_function_privilege('public',to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')::regproc,'EXECUTE') then 1
+   else 0 end)::bigint,'The exact legacy-review signature must be the sole overload and authenticated-only. Missing, overloaded, PUBLIC/anon-executable, or authenticated-inaccessible shapes fail closed.','Stop; restore the exact signature and revoke PUBLIC/anon while retaining authenticated EXECUTE.' union all
+ select 'FUNC_LEGACY_SCAN_PUBLIC_EXECUTE','function','scan_legacy_invoices_for_carrier_migration_public_or_anon_execute','BLOCKER',(select case
+   when to_regclass('public.carrier_invoices') is null then 0
+   when (select count(*) from pg_proc p where p.pronamespace='public'::regnamespace and p.proname='scan_legacy_invoices_for_carrier_migration') <> 1 then 1
+   when to_regprocedure('public.scan_legacy_invoices_for_carrier_migration()') is null then 1
+   when not has_function_privilege('authenticated','public.scan_legacy_invoices_for_carrier_migration()','EXECUTE') then 1
+   when has_function_privilege('anon','public.scan_legacy_invoices_for_carrier_migration()','EXECUTE')
+     or has_function_privilege('public',to_regprocedure('public.scan_legacy_invoices_for_carrier_migration()')::regproc,'EXECUTE') then 1
+   else 0 end)::bigint,'The exact legacy-scan signature must be the sole overload and authenticated-only. Missing, overloaded, PUBLIC/anon-executable, or authenticated-inaccessible shapes fail closed.','Stop; restore the exact signature and revoke PUBLIC/anon while retaining authenticated EXECUTE.' union all
  --
  -- Category 2: 15 internal helpers (never called directly by any client
  -- role; reachable only from a trusted SECURITY DEFINER caller that has
@@ -1105,9 +1187,41 @@ load_evidence as (
  -- update_carrier_invoice_draft do NOT share this defect -- both check
  -- `current_org_id() IS NULL` (a proper ternary-safe test) BEFORE ever
  -- reaching a has_role() call.
- select 'FUNC_NULL_IDENTITY_AUTH_BYPASS','function','null_identity_has_role_first_check_bypass','BLOCKER',(select count(*) filter(where to_regprocedure(sig) is not null) from (values
+ select 'FUNC_NULL_IDENTITY_AUTH_BYPASS','function','null_identity_has_role_first_check_bypass','BLOCKER',(select count(*) filter(where to_regprocedure(sig) is not null
+     and (select prosrc from pg_proc where oid=to_regprocedure(sig)) ilike '%if not public.has_role%'
+     and (select prosrc from pg_proc where oid=to_regprocedure(sig)) not ilike '%auth.uid() is null%') from (values
    ('public.scan_legacy_invoices_for_carrier_migration()')
- ) t(sig))::bigint,'A null-identity caller (anon, or authenticated with no profile row) of this function silently bypasses its intended owner/admin-only FORBIDDEN check because has_role() returns NULL (not false) and PL/pgSQL treats `IF NOT NULL` as not-true. Permanently asserted at 1 against the real, unmodified installed function.','Stop; rewrite as `if auth.uid() is null or not coalesce(public.has_role(...), false) then raise exception` (or add an explicit auth.uid()/current_org_id() IS NULL guard before the role check), matching the pattern every other RPC in this range already uses correctly.' union all
+ ) t(sig))::bigint,'A null-identity caller (anon, or authenticated with no profile row) of this function silently bypasses its intended owner/admin-only FORBIDDEN check because has_role() returns NULL (not false) and PL/pgSQL treats `IF NOT NULL` as not-true. Structural source-pattern detection (bare `if not public.has_role` with no preceding `auth.uid() is null` guard) rather than a behavioral call, since this audit never invokes a mutating/mutation-capable function -- see TEST_PRODUCTION_PREFLIGHT_0130_0147_READONLY.sh for the disposable-harness behavioral proof of the same defect/correction. Permanently asserted at 1 against the real, unmodified 0142 installed function; 0 once 0147''s explicit auth.uid()/current_org_id() null checks and IS NOT TRUE role test are installed.','Stop; rewrite as `if auth.uid() is null or not coalesce(public.has_role(...), false) then raise exception` (or add an explicit auth.uid()/current_org_id() IS NULL guard before the role check), matching the pattern every other RPC in this range already uses correctly.' union all
+ --
+ -- Phase 3C.2: the two 0147 guarded draft RPCs replacing the direct
+ -- INSERT/DELETE grants (BLOCKERs #2/#3). Absent pre-0147 (both counts
+ -- read 0, vacuously healthy, via the same to_regprocedure-is-null guard
+ -- every optional-object finding in this file already uses); present and
+ -- authenticated-only, never PUBLIC/anon, post-0147.
+ select 'RPC_0147_CREATE_DRAFT_ACL','function','create_carrier_invoice_draft_acl','BLOCKER',(select case when to_regprocedure('public.create_carrier_invoice_draft(public.invoice_document_type,uuid,public.invoice_recipient_type,uuid,uuid,text,integer,date,text,text,text)') is null then 0
+     when has_function_privilege('anon','public.create_carrier_invoice_draft(public.invoice_document_type,uuid,public.invoice_recipient_type,uuid,uuid,text,integer,date,text,text,text)','EXECUTE')
+       or has_function_privilege('public',to_regprocedure('public.create_carrier_invoice_draft(public.invoice_document_type,uuid,public.invoice_recipient_type,uuid,uuid,text,integer,date,text,text,text)')::regproc,'EXECUTE')
+       or not has_function_privilege('authenticated','public.create_carrier_invoice_draft(public.invoice_document_type,uuid,public.invoice_recipient_type,uuid,uuid,text,integer,date,text,text,text)','EXECUTE')
+     then 1 else 0 end)::bigint,'create_carrier_invoice_draft(...) (0147), the sole guarded path to create a carrier_invoices row, must be authenticated-only: PUBLIC/anon must never execute it, and authenticated must be able to.','Stop; revoke all on the function from public, anon; grant execute to authenticated only.' union all
+ select 'RPC_0147_DELETE_DRAFT_ACL','function','delete_carrier_invoice_draft_acl','BLOCKER',(select case when to_regprocedure('public.delete_carrier_invoice_draft(uuid,timestamptz,text,text)') is null then 0
+     when has_function_privilege('anon','public.delete_carrier_invoice_draft(uuid,timestamptz,text,text)','EXECUTE')
+       or has_function_privilege('public',to_regprocedure('public.delete_carrier_invoice_draft(uuid,timestamptz,text,text)')::regproc,'EXECUTE')
+       or not has_function_privilege('authenticated','public.delete_carrier_invoice_draft(uuid,timestamptz,text,text)','EXECUTE')
+     then 1 else 0 end)::bigint,'delete_carrier_invoice_draft(...) (0147), the sole guarded path to delete a carrier_invoices row, must be authenticated-only: PUBLIC/anon must never execute it, and authenticated must be able to.','Stop; revoke all on the function from public, anon; grant execute to authenticated only.' union all
+ select 'IDEMPOTENCY_0147_CREATE_OBJECT','function','carrier_invoice_draft_create_idempotency_posture','BLOCKER',(select case when to_regclass('public.carrier_invoice_draft_create_idempotency') is null then 0
+     when has_table_privilege('authenticated','public.carrier_invoice_draft_create_idempotency','INSERT')
+       or has_table_privilege('authenticated','public.carrier_invoice_draft_create_idempotency','UPDATE')
+       or has_table_privilege('authenticated','public.carrier_invoice_draft_create_idempotency','DELETE')
+       or exists(select 1 from information_schema.role_table_grants where grantee='anon' and table_name='carrier_invoice_draft_create_idempotency')
+       or not exists(select 1 from pg_constraint c join pg_class t on t.oid=c.conrelid where t.relname='carrier_invoice_draft_create_idempotency' and c.contype='u' and pg_get_constraintdef(c.oid) ilike '%organization_id%' and pg_get_constraintdef(c.oid) ilike '%idempotency_key%')
+     then 1 else 0 end)::bigint,'carrier_invoice_draft_create_idempotency (0147) must have zero client INSERT/UPDATE/DELETE (writable only via the owning SECURITY DEFINER RPC), zero anon grant of any kind, and a UNIQUE constraint scoped to (organization_id, idempotency_key) so no cross-organization or cross-key collision is structurally possible.','Stop; revoke direct client mutation privileges and/or restore the organization-scoped unique constraint via the owning migration.' union all
+ select 'IDEMPOTENCY_0147_DELETE_OBJECT','function','carrier_invoice_draft_delete_idempotency_posture','BLOCKER',(select case when to_regclass('public.carrier_invoice_draft_delete_idempotency') is null then 0
+     when has_table_privilege('authenticated','public.carrier_invoice_draft_delete_idempotency','INSERT')
+       or has_table_privilege('authenticated','public.carrier_invoice_draft_delete_idempotency','UPDATE')
+       or has_table_privilege('authenticated','public.carrier_invoice_draft_delete_idempotency','DELETE')
+       or exists(select 1 from information_schema.role_table_grants where grantee='anon' and table_name='carrier_invoice_draft_delete_idempotency')
+       or not exists(select 1 from pg_constraint c join pg_class t on t.oid=c.conrelid where t.relname='carrier_invoice_draft_delete_idempotency' and c.contype='u' and pg_get_constraintdef(c.oid) ilike '%organization_id%' and pg_get_constraintdef(c.oid) ilike '%idempotency_key%')
+     then 1 else 0 end)::bigint,'carrier_invoice_draft_delete_idempotency (0147) must have zero client INSERT/UPDATE/DELETE (writable only via the owning SECURITY DEFINER RPC), zero anon grant of any kind, and a UNIQUE constraint scoped to (organization_id, idempotency_key) so no cross-organization or cross-key collision is structurally possible.','Stop; revoke direct client mutation privileges and/or restore the organization-scoped unique constraint via the owning migration.' union all
  --
  -- Category 3: SECURITY DEFINER hygiene, all 75 functions. search_path
  -- pinning and function ownership are the two structural preconditions

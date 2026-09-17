@@ -76,6 +76,7 @@ tests=(
   "backward|TEST_STATUS_MATRIX_BACKWARD_CORRECTIONS.sql|t_backward|TEST STATUS MATRIX BACKWARD CORRECTIONS PASSED"
   "0145|TEST_0145_carrier_dispatch_service_agreements_and_issuance.sql|t_0145|TEST 0145 PASSED"
   "0146|TEST_0146_carrier_invoice_payments_and_balance_rollups.sql|t_0146|TEST 0146 PASSED"
+  "0147|TEST_0147_production_readiness_blocker_remediation.sql|t_0147|TEST 0147 PASSED"
 )
 for row in "${tests[@]}"; do
   IFS='|' read -r id f db banner <<<"$row"
