@@ -36,6 +36,14 @@ const HEADING_BY_CODE: Record<string, string> = {
   EXPECTED_VERSION_REQUIRED: "Please reload this page",
   LOCK_TIMEOUT: "This dispatch is busy",
   CARRIER_CHANGE_REJECTED: "Carrier can't be changed here",
+  // guard_dispatch_carrier_scope() (0132) conditions translated by
+  // CARRIER_SCOPE_GUARD_MESSAGES in errors.ts. LOAD_NOT_FOUND and
+  // CARRIER_MISMATCH reuse the headings already defined above for those
+  // same app codes (TDLNF / GUARD_ORG_PATTERNS, RRCAR/TSCAR) -- one heading
+  // per code, regardless of which layer detected it.
+  CARRIER_UNRESOLVED: "Carrier not resolved",
+  MULTIPLE_CARRIERS: "Multiple carriers on this load",
+  TRAILER_UNRESOLVED: "Trailer ownership not resolved",
   UNKNOWN: "Couldn't save this dispatch",
 };
 

@@ -82,6 +82,48 @@ const GUARD_ORG_PATTERNS = [
   /belongs to a different carrier/i,
 ];
 
+// public.guard_dispatch_carrier_scope() (0132, BEFORE INSERT/UPDATE trigger
+// on public.dispatches) RAISE EXCEPTIONs -- like GUARD_ORG_PATTERNS above,
+// this is DB-trigger text carrying a plain Postgres SQLSTATE (23503/23514),
+// not one of this app's own TDxxx/TSxxx/RRxxx codes, so rpcDispatchConflict()
+// (conflicts.ts) never recognises it and it lands here as a raw PgLikeError.
+// Deliberately matched by exact message SHAPE, never by SQLSTATE: 23503 and
+// 23514 are also raised by unrelated FK/check-constraint violations
+// elsewhere in the schema, and mapping the bare SQLSTATE would misclassify
+// those as one of these five specific, well-understood conditions. Each
+// `test` anchors on the STABLE wording either side of the uuid/array content
+// 0132 interpolates with `%` -- see 0132_load_carrier_and_trailer_scope.sql
+// lines 492, 528, 538, 546, 568 for the five exact source RAISE EXCEPTIONs.
+const CARRIER_SCOPE_GUARD_MESSAGES: { test: RegExp; code: string; message: string }[] = [
+  {
+    test: /^dispatch load .+ does not exist\.$/i,
+    code: "LOAD_NOT_FOUND",
+    message: "That load could not be found. It may have been removed. Reload the page and try again.",
+  },
+  {
+    test: /has an unresolved carrier \(see unresolved_carrier_records\) -- no dispatch may be created or reactivated on it until the carrier is resolved\.$/i,
+    code: "CARRIER_UNRESOLVED",
+    message: "This load's carrier has not been resolved yet. An owner or admin must resolve the carrier before a dispatch can be created for it.",
+  },
+  {
+    test: /already has multiple conflicting non-cancelled dispatch carriers \(.+\) -- cannot add\/reactivate dispatch .+ until this is manually resolved\.$/i,
+    code: "MULTIPLE_CARRIERS",
+    message: "This load has more than one conflicting carrier on record and can't be dispatched until that's resolved. Contact an owner or admin.",
+  },
+  {
+    test: /^dispatch carrier .+ does not match load .+ carrier .+ -- a conflicting carrier can never coexist with an existing carrier\/live-dispatch assignment on the same load\.$/i,
+    code: "CARRIER_MISMATCH",
+    message:
+      "This load is already committed to a different carrier and can't be reassigned to the carrier selected here -- cancelling a previous dispatch does not release that carrier. Use the load's carrier-reassignment workflow, or contact an owner/admin, to change it.",
+  },
+  {
+    test: /^trailer .+ has unresolved ownership; an owner\/admin must classify it as carrier or organization_shared before it can be dispatched\.$/i,
+    code: "TRAILER_UNRESOLVED",
+    message:
+      "This trailer's ownership hasn't been classified yet. An owner or admin must classify it as carrier-owned or organization-shared before it can be dispatched.",
+  },
+];
+
 type PgLikeError = { code?: string; message?: string };
 
 function isPgLikeError(err: unknown): err is PgLikeError {
@@ -129,6 +171,12 @@ export function translateDispatchError(err: unknown): DispatchActionState {
     }
     if (err.message && GUARD_ORG_PATTERNS.some((re) => re.test(err.message!))) {
       return { error: "This driver, truck, or trailer isn't valid for the selected carrier. Choose a driver/truck/trailer that belongs to the same carrier.", code: "CARRIER_MISMATCH" };
+    }
+    if (err.message) {
+      const guardMatch = CARRIER_SCOPE_GUARD_MESSAGES.find((g) => g.test.test(err.message!));
+      if (guardMatch) {
+        return { error: guardMatch.message, code: guardMatch.code };
+      }
     }
   }
 
