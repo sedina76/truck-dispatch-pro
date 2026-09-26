@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Star, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DocumentLinkButton } from "@/components/drivers/document-link-button";
+import { getCarrierDocumentSignedUrl } from "@/app/(app)/carriers/carrier-document-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
@@ -612,6 +614,7 @@ function ManageRelationshipsDialog({
                 <RelationshipCard
                   key={r.id}
                   relationship={r}
+                  companyName={company.name}
                   verifiedNoaDocuments={verifiedNoaDocuments.filter((doc) => doc.entity_id === r.carrier_id)}
                   carrier={carrierById.get(r.carrier_id) ?? null}
                   onEdit={() => onEditRelationship(r)}
@@ -639,6 +642,7 @@ function ManageRelationshipsDialog({
 
 function RelationshipCard({
   relationship,
+  companyName,
   verifiedNoaDocuments,
   carrier,
   onEdit,
@@ -646,6 +650,7 @@ function RelationshipCard({
   canEdit,
 }: {
   relationship: FactoringRelationshipRow;
+  companyName: string;
   verifiedNoaDocuments: VerifiedNoaDocument[];
   carrier: CarrierOption | null;
   onEdit: () => void;
@@ -727,6 +732,7 @@ function RelationshipCard({
       {approveOpen && (
         <NoaApprovalDialog
           relationship={relationship}
+          companyName={companyName}
           carrier={carrier}
           documents={verifiedNoaDocuments}
           onClose={() => setApproveOpen(false)}
@@ -736,8 +742,9 @@ function RelationshipCard({
   );
 }
 
-function NoaApprovalDialog({ relationship, carrier, documents, onClose }: {
+function NoaApprovalDialog({ relationship, companyName, carrier, documents, onClose }: {
   relationship: FactoringRelationshipRow;
+  companyName: string;
   carrier: CarrierOption | null;
   documents: VerifiedNoaDocument[];
   onClose: () => void;
@@ -753,9 +760,12 @@ function NoaApprovalDialog({ relationship, carrier, documents, onClose }: {
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Review Notice of Assignment</DialogTitle>
-          <DialogDescription>Confirm the signed document and factor for {carrier?.legal_name ?? "this carrier"} before recording approval. This changes the relationship's approved NOA.</DialogDescription>
+          <DialogDescription>Review the signed document before recording approval. This changes the relationship's approved NOA.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
+          <p><strong>Carrier:</strong> {carrier?.legal_name ?? "Unknown carrier"}<br />
+            <strong>Factor:</strong> {companyName}<br />
+            <strong>Relationship:</strong> {relationship.relationship_name || "Unnamed relationship"}</p>
           {relationship.noa_approved && <p>Currently approved: {relationship.noa_reference} (effective {relationship.noa_effective_date}). Select a new document only when replacing this approval.</p>}
           <p>Upload and verify a Notice of Assignment on the <a className="text-primary underline" href={`/carriers/${relationship.carrier_id}`}>carrier documents page</a>, then return here.</p>
           {documents.length === 0 ? (
@@ -767,6 +777,9 @@ function NoaApprovalDialog({ relationship, carrier, documents, onClose }: {
                 {documents.map((doc) => <option key={doc.id} value={doc.id}>{doc.file_name} ({doc.document_type.replaceAll("_", " ")})</option>)}
               </select>
             </label>
+          )}
+          {documentId && (
+            <DocumentLinkButton label="View selected NOA" getUrl={getCarrierDocumentSignedUrl.bind(null, documentId, false)} />
           )}
           <label className={labelCls}>NOA reference or version
             <input className={inputCls} value={reference} onChange={(event) => setReference(event.target.value)} />
