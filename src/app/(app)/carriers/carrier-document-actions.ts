@@ -176,12 +176,14 @@ export async function deleteCarrierDocument(documentId: string, carrierId: strin
     throw new Error("This document is protected and cannot be deleted here.");
   }
 
-  const [{ data: w9Ref }, { data: policyRef }] = await Promise.all([
+  const [{ data: w9Ref }, { data: policyRef }, { data: noaRef, error: noaLookupError }] = await Promise.all([
     supabase.from("carrier_w9s").select("id").eq("registered_document_id", documentId).maybeSingle(),
     supabase.from("insurance_policies").select("id").eq("document_id", documentId).maybeSingle(),
+    supabase.from("factoring_relationships").select("id").eq("noa_document_id", documentId).limit(1).maybeSingle(),
   ]);
-  if (w9Ref || policyRef) {
-    throw new Error("This document is linked to a compliance record and cannot be deleted here.");
+  if (noaLookupError) throw new Error("Could not check whether this document is linked to a factoring approval.");
+  if (w9Ref || policyRef || noaRef) {
+    throw new Error("This document is linked to an approval or compliance record and cannot be deleted here.");
   }
 
   const { error } = await supabase.from("documents").delete().eq("id", documentId);

@@ -459,6 +459,54 @@ export async function setDefaultFactoringRelationship(relationshipId: string): P
   return { ok: true };
 }
 
+// Approval is a separate owner/admin decision. The document must already be
+// uploaded and verified on the relationship's own carrier; the RPC checks
+// those facts again under its own organization and role checks.
+export async function approveFactoringRelationshipNoa(
+  relationshipId: string,
+  documentId: string,
+  reference: string,
+  effectiveDate: string
+): Promise<FactoringActionResult> {
+  const auth = await requireOwnerAdminFactoringAccess();
+  if ("error" in auth) return { ok: false, error: auth.error };
+  if (!reference.trim()) return { ok: false, error: "Enter the NOA reference or version." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !Number.isFinite(Date.parse(`${effectiveDate}T00:00:00Z`))) {
+    return { ok: false, error: "Enter a valid NOA effective date." };
+  }
+  if (!documentId) return { ok: false, error: "Select a verified NOA document." };
+
+  const supabase = await createClient();
+  const { data: relationship } = await supabase.from("factoring_relationships")
+    .select("id, carrier_id")
+    .eq("id", relationshipId)
+    .eq("organization_id", auth.organizationId)
+    .maybeSingle();
+  if (!relationship?.carrier_id) return { ok: false, error: "Factoring relationship not available." };
+
+  const { data: document } = await supabase.from("documents")
+    .select("id")
+    .eq("id", documentId)
+    .eq("organization_id", auth.organizationId)
+    .eq("entity_type", "carrier")
+    .eq("entity_id", relationship.carrier_id)
+    .eq("is_verified", true)
+    .in("document_type", ["notice_of_assignment", "factoring_notice"])
+    .maybeSingle();
+  if (!document) return { ok: false, error: "Select a verified NOA document for this carrier." };
+
+  const resolved = await resolveStructuredRpc(supabase.rpc("approve_factoring_relationship_noa", {
+    p_relationship_id: relationshipId,
+    p_noa_reference: reference.trim(),
+    p_noa_effective_date: effectiveDate,
+    p_noa_template_text: null,
+    p_noa_document_id: documentId,
+  }));
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  revalidatePath(PATH);
+  return { ok: true };
+}
+
 // Deactivating the CURRENT default is blocked outright (spec section 9 /
 // 17's own required message) rather than silently auto-clearing
 // is_default alongside is_active -- 0071's

@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import type { OrgRole } from "@/lib/auth/require-role";
-import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow } from "@/lib/factoring/types";
+import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, VerifiedNoaDocument } from "@/lib/factoring/types";
 import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS, deriveEffectiveState } from "@/lib/factoring/types";
 import {
   createFactoringCompany,
@@ -20,6 +20,7 @@ import {
   setDefaultFactoringRelationship,
   setFactoringRelationshipActive,
   setCarrierFactoringPolicy,
+  approveFactoringRelationshipNoa,
   type FactoringActionResult,
 } from "./actions";
 
@@ -60,6 +61,7 @@ function fmtPct(n: number) {
 export function FactoringSettingsClient({
   companies,
   relationships,
+  verifiedNoaDocuments,
   carriers,
   carrierScopingApplied,
   readinessByCarrierId,
@@ -68,6 +70,7 @@ export function FactoringSettingsClient({
 }: {
   companies: FactoringCompanyRow[];
   relationships: FactoringRelationshipRow[];
+  verifiedNoaDocuments: VerifiedNoaDocument[];
   carriers: CarrierOption[];
   carrierScopingApplied: boolean;
   readinessByCarrierId: Record<string, CarrierFactoringReadiness>;
@@ -172,6 +175,7 @@ export function FactoringSettingsClient({
         <ManageRelationshipsDialog
           company={manageCompany}
           relationships={relationshipsByCompany.get(manageCompany.id) ?? []}
+          verifiedNoaDocuments={verifiedNoaDocuments}
           carriers={carriers}
           carrierById={carrierById}
           onClose={() => setManageCompany(null)}
@@ -560,6 +564,7 @@ function CompanyFormDialog({ mode, company, onClose }: { mode: "create" | "edit"
 function ManageRelationshipsDialog({
   company,
   relationships,
+  verifiedNoaDocuments,
   carriers,
   carrierById,
   onClose,
@@ -569,6 +574,7 @@ function ManageRelationshipsDialog({
 }: {
   company: FactoringCompanyRow;
   relationships: FactoringRelationshipRow[];
+  verifiedNoaDocuments: VerifiedNoaDocument[];
   carriers: CarrierOption[];
   carrierById: Map<string, CarrierOption>;
   onClose: () => void;
@@ -606,6 +612,7 @@ function ManageRelationshipsDialog({
                 <RelationshipCard
                   key={r.id}
                   relationship={r}
+                  verifiedNoaDocuments={verifiedNoaDocuments.filter((doc) => doc.entity_id === r.carrier_id)}
                   carrier={carrierById.get(r.carrier_id) ?? null}
                   onEdit={() => onEditRelationship(r)}
                   canManage={canManage}
@@ -632,18 +639,21 @@ function ManageRelationshipsDialog({
 
 function RelationshipCard({
   relationship,
+  verifiedNoaDocuments,
   carrier,
   onEdit,
   canManage,
   canEdit,
 }: {
   relationship: FactoringRelationshipRow;
+  verifiedNoaDocuments: VerifiedNoaDocument[];
   carrier: CarrierOption | null;
   onEdit: () => void;
   canManage: boolean;
   canEdit: boolean;
 }) {
   const { run, pendingKey, error } = useAction();
+  const [approveOpen, setApproveOpen] = useState(false);
   const state = deriveEffectiveState(relationship);
   const feeTimingLabel = FEE_TIMING_OPTIONS.find((o) => o.value === relationship.fee_timing)?.label ?? relationship.fee_timing;
   const recourseLabel = RECOURSE_TYPE_OPTIONS.find((o) => o.value === relationship.recourse_type)?.label ?? relationship.recourse_type;
@@ -678,11 +688,19 @@ function RelationshipCard({
               {relationship.effective_to ? ` – ${relationship.effective_to}` : " (open-ended)"}
             </span>
           </div>
+          <p className="mt-1 text-xs">
+            NOA: {relationship.noa_approved ? `Approved (${relationship.noa_reference ?? "reference unavailable"})` : "Not approved"}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {canEdit && (
             <Button type="button" size="sm" variant="outline" onClick={onEdit}>
               Edit
+            </Button>
+          )}
+          {canManage && (
+            <Button type="button" size="sm" variant="outline" onClick={() => setApproveOpen(true)}>
+              {relationship.noa_approved ? "Review NOA" : "Approve NOA"}
             </Button>
           )}
           {canManage && relationship.is_active && !relationship.is_default && (
@@ -706,7 +724,73 @@ function RelationshipCard({
         </div>
       </div>
       {error && <p className="mt-2 text-xs text-danger">{error}</p>}
+      {approveOpen && (
+        <NoaApprovalDialog
+          relationship={relationship}
+          carrier={carrier}
+          documents={verifiedNoaDocuments}
+          onClose={() => setApproveOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function NoaApprovalDialog({ relationship, carrier, documents, onClose }: {
+  relationship: FactoringRelationshipRow;
+  carrier: CarrierOption | null;
+  documents: VerifiedNoaDocument[];
+  onClose: () => void;
+}) {
+  const { run, pendingKey, error } = useAction();
+  const [documentId, setDocumentId] = useState("");
+  const [reference, setReference] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Review Notice of Assignment</DialogTitle>
+          <DialogDescription>Confirm the signed document and factor for {carrier?.legal_name ?? "this carrier"} before recording approval. This changes the relationship's approved NOA.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          {relationship.noa_approved && <p>Currently approved: {relationship.noa_reference} (effective {relationship.noa_effective_date}). Select a new document only when replacing this approval.</p>}
+          <p>Upload and verify a Notice of Assignment on the <a className="text-primary underline" href={`/carriers/${relationship.carrier_id}`}>carrier documents page</a>, then return here.</p>
+          {documents.length === 0 ? (
+            <p role="status" className="text-danger">No verified NOA document exists for this carrier.</p>
+          ) : (
+            <label className={labelCls}>Verified carrier NOA document
+              <select className={inputCls} value={documentId} onChange={(event) => setDocumentId(event.target.value)}>
+                <option value="">Select document</option>
+                {documents.map((doc) => <option key={doc.id} value={doc.id}>{doc.file_name} ({doc.document_type.replaceAll("_", " ")})</option>)}
+              </select>
+            </label>
+          )}
+          <label className={labelCls}>NOA reference or version
+            <input className={inputCls} value={reference} onChange={(event) => setReference(event.target.value)} />
+          </label>
+          <label className={labelCls}>Effective date
+            <input className={inputCls} type="date" value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} />
+          </label>
+          <label className="flex items-start gap-2 text-xs">
+            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+            I reviewed this document and confirm it is the approved NOA for this carrier and factoring relationship.
+          </label>
+          {error && <p role="alert" className="text-danger">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={!confirmed || !documentId || !reference.trim() || !effectiveDate || !!pendingKey}
+            onClick={async () => {
+              if (await run("approve", () => approveFactoringRelationshipNoa(relationship.id, documentId, reference, effectiveDate))) onClose();
+            }}>
+            {pendingKey ? "Recording..." : "Record NOA approval"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

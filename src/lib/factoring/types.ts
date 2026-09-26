@@ -98,8 +98,14 @@ export type FactoringRelationshipRow = {
   is_active: boolean;
   effective_from: string;
   effective_to: string | null;
+  noa_approved: boolean;
+  noa_reference: string | null;
+  noa_effective_date: string | null;
+  noa_document_id: string | null;
   created_at: string;
 };
+
+export type VerifiedNoaDocument = { id: string; entity_id: string; file_name: string; document_type: string };
 
 // Derived UI-only lifecycle label (spec Phase 2H.3 section 10) -- NEVER a
 // stored/DB status. is_active remains the one real enable/disable control;

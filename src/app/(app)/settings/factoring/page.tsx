@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { SectionHeading } from "@/components/ui/section-heading";
 import type { OrgRole } from "@/lib/auth/require-role";
-import type { CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow } from "@/lib/factoring/types";
+import type { CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, VerifiedNoaDocument } from "@/lib/factoring/types";
 import { FactoringSettingsClient } from "./factoring-settings-client";
 
 // Graceful pre-migration behavior, same as settings/email/page.tsx -- a
@@ -88,6 +88,18 @@ export default async function FactoringSettingsPage() {
 
   const companies = (companiesRes.data ?? []) as FactoringCompanyRow[];
   const relationships = (relationshipsRes.data ?? []) as FactoringRelationshipRow[];
+  const carrierIds = carriers.map((carrier) => carrier.id);
+  const { data: noaRows } = carrierIds.length
+    ? await supabase.from("documents")
+        .select("id, entity_id, file_name, document_type")
+        .eq("organization_id", orgId)
+        .eq("entity_type", "carrier")
+        .eq("is_verified", true)
+        .in("entity_id", carrierIds)
+        .in("document_type", ["notice_of_assignment", "factoring_notice"])
+        .order("created_at", { ascending: false })
+    : { data: [] };
+  const verifiedNoaDocuments = (noaRows ?? []) as VerifiedNoaDocument[];
 
   // Phase 3B.1.4 (Section H): "unauthorized mutation buttons are not
   // shown" -- the client needs the viewer's own role to hide them, never
@@ -102,6 +114,7 @@ export default async function FactoringSettingsPage() {
       <FactoringSettingsClient
         companies={companies}
         relationships={relationships}
+        verifiedNoaDocuments={verifiedNoaDocuments}
         carriers={carriers}
         carrierScopingApplied={carrierScopingApplied}
         readinessByCarrierId={Object.fromEntries(readinessByCarrierId)}
