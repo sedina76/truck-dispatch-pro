@@ -77,7 +77,7 @@ export default async function NewInvoicePage({
           "invoices!left(id)"
       )
       .in("status", INVOICEABLE_LOAD_STATUSES)
-      .is("invoices.id", null)
+      .is("invoices", null)
       .order("created_at", { ascending: false })
       .limit(100),
     supabase.from("brokers").select("id, company_name").order("company_name"),
