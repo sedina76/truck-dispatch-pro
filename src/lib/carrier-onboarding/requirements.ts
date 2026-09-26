@@ -23,6 +23,7 @@ export const DOCUMENT_TYPE_LABEL: Record<string, string> = {
   insurance_certificate: "Certificate of Insurance",
   motor_carrier_authority: "Operating Authority",
   voided_check: "Voided Check",
+  notice_of_assignment: "Notice of Assignment (NOA)",
   cdl: "Driver/Owner ID",
   other: "Other",
 };
@@ -36,7 +37,7 @@ const DEFAULT_REQUIREMENTS: RequirementItem[] = [
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getEffectiveOnboardingRequirements(supabase: any, organizationId: string): Promise<RequirementItem[]> {
+export async function getEffectiveOnboardingRequirements(supabase: any, organizationId: string, hasFactoring = false): Promise<RequirementItem[]> {
   const { data } = await supabase
     .from("carrier_onboarding_requirements")
     .select("document_type, requirement, display_order, custom_label, instructions, requires_expiry_date, is_active")
@@ -52,9 +53,7 @@ export async function getEffectiveOnboardingRequirements(supabase: any, organiza
     requires_expiry_date: boolean;
   }[];
 
-  if (rows.length === 0) return DEFAULT_REQUIREMENTS;
-
-  return rows
+  const configured = rows.length === 0 ? DEFAULT_REQUIREMENTS : rows
     .filter((r) => r.requirement !== "excluded")
     .map((r) => ({
       documentType: r.document_type,
@@ -63,4 +62,11 @@ export async function getEffectiveOnboardingRequirements(supabase: any, organiza
       requiresExpiryDate: r.requires_expiry_date,
       instructions: r.instructions,
     }));
+
+  if (!hasFactoring) return configured;
+  // A factoring carrier must supply its NOA even when an organization has
+  // replaced the default checklist or marked this item optional/excluded.
+  const noa = configured.find((r) => r.documentType === "notice_of_assignment");
+  if (noa) return configured.map((r) => r.documentType === "notice_of_assignment" ? { ...r, requirement: "required" as const } : r);
+  return [...configured, { documentType: "notice_of_assignment", label: DOCUMENT_TYPE_LABEL.notice_of_assignment, requirement: "required", requiresExpiryDate: false, instructions: "Upload the notice issued by your factoring company. Our team will review it before approving your factoring setup." }];
 }

@@ -218,7 +218,9 @@ export async function getDocumentChecklist(): Promise<ChecklistItem[]> {
   const identity = await requireCarrierPageIdentity();
   const supabase = createServiceRoleClient();
 
-  const requirements = await getEffectiveOnboardingRequirements(supabase, identity.organizationId);
+  const { data: application } = await supabase.from("carrier_onboarding_applications").select("has_factoring").eq("id", identity.applicationId).eq("organization_id", identity.organizationId).single();
+  if (!application) throw new Error("Application not found.");
+  const requirements = await getEffectiveOnboardingRequirements(supabase, identity.organizationId, application.has_factoring === true);
   const { data: docs } = await supabase
     .from("documents")
     .select("id, document_type, file_name, is_verified, rejected_at, rejection_reason, created_at")
@@ -254,6 +256,10 @@ export async function uploadOnboardingDocument(documentType: string, formData: F
   if (!validation.ok) return { ok: false, error: validation.error };
 
   const supabase = createServiceRoleClient();
+  const { data: application } = await supabase.from("carrier_onboarding_applications").select("has_factoring, status").eq("id", identity.applicationId).eq("organization_id", identity.organizationId).single();
+  if (!application || !["draft", "needs_correction"].includes(application.status)) return { ok: false, error: "This application is not accepting uploads." };
+  const requirements = await getEffectiveOnboardingRequirements(supabase, identity.organizationId, application.has_factoring === true);
+  if (!requirements.some((r) => r.documentType === documentType)) return { ok: false, error: "This document is not on the onboarding checklist." };
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
   const storagePath = `${identity.organizationId}/${identity.applicationId}/${Date.now()}_${safeName}`;
 
@@ -499,7 +505,7 @@ export async function submitApplication(): Promise<{ ok: true } | { ok: false; e
 
   const { data: application } = await supabase
     .from("carrier_onboarding_applications")
-    .select("id, status, legal_name, contact_name, email, phone")
+    .select("id, status, legal_name, contact_name, email, phone, has_factoring")
     .eq("id", identity.applicationId)
     .single();
   if (!application) return { ok: false, error: "Application not found." };
@@ -510,7 +516,7 @@ export async function submitApplication(): Promise<{ ok: true } | { ok: false; e
     return { ok: false, error: "Please complete Company Information before submitting." };
   }
 
-  const requirements = await getEffectiveOnboardingRequirements(supabase, identity.organizationId);
+  const requirements = await getEffectiveOnboardingRequirements(supabase, identity.organizationId, application.has_factoring === true);
   const requiredTypes = requirements.filter((r) => r.requirement === "required").map((r) => r.documentType);
   if (requiredTypes.length > 0) {
     const { data: docs } = await supabase
