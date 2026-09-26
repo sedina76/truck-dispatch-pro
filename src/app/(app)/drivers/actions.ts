@@ -180,18 +180,37 @@ export async function revealDriverPii(
   return data as string | null;
 }
 
-export async function setDriverPortalPin(driverId: string, formData: FormData) {
-  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+export async function setDriverPortalPin(
+  driverId: string,
+  formData: FormData
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  await requireOperationalAccess();
   const supabase = await createClient();
-  const phone = String(formData.get("portal_phone") || "");
+  const phone = String(formData.get("portal_phone") || "").trim();
   const pin = String(formData.get("portal_pin") || "");
+
   const { error } = await supabase.rpc("set_driver_portal_pin", {
     p_driver_id: driverId,
     p_phone: phone,
     p_pin: pin,
   });
-  if (error) throw new Error(error.message);
+
+  if (error) {
+    const duplicatePhone =
+      error.code === "23505" &&
+      (error.message.includes("driver_portal_credentials_phone_key") ||
+        error.details?.includes("driver_portal_credentials_phone_key"));
+
+    return {
+      ok: false,
+      error: duplicatePhone
+        ? "This phone number is already assigned to another driver's portal."
+        : "Unable to update driver portal access. Please try again.",
+    };
+  }
+
   revalidatePath(`/drivers/${driverId}`);
+  return { ok: true };
 }
 
 export async function revokeDriverPortalAccess(driverId: string) {

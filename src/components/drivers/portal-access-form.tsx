@@ -17,13 +17,17 @@ export function PortalAccessForm({
   isActive: boolean;
   currentPhone: string | null;
   lastLoginAt: string | null;
-  onSetPin: (driverId: string, formData: FormData) => Promise<void>;
+  onSetPin: (
+    driverId: string,
+    formData: FormData
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onRevoke: (driverId: string) => Promise<void>;
 }) {
   const [phone, setPhone] = useState(currentPhone ?? "");
   const [pin, setPin] = useState("");
   const [pending, startTransition] = useTransition();
   const [saved, setSaved] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   return (
     <div className="space-y-3">
@@ -41,8 +45,15 @@ export function PortalAccessForm({
           const formData = new FormData();
           formData.set("portal_phone", phone.trim());
           formData.set("portal_pin", pin.trim());
+          setErrorMessage(null);
           startTransition(async () => {
-            await onSetPin(driverId, formData);
+            const result = await onSetPin(driverId, formData);
+
+            if (!result.ok) {
+              setErrorMessage(result.error);
+              return;
+            }
+
             setPin("");
             setSaved(true);
             setTimeout(() => setSaved(false), 2500);
@@ -89,6 +100,12 @@ export function PortalAccessForm({
           </Button>
         )}
       </form>
+
+      {errorMessage && (
+        <p role="alert" className="text-xs text-destructive">
+          {errorMessage}
+        </p>
+      )}
     </div>
   );
 }
