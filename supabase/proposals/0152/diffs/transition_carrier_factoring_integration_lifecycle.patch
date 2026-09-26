@@ -1,0 +1,37 @@
+--- baseline (transition_carrier_factoring_integration_lifecycle)
++++ 0152 (transition_carrier_factoring_integration_lifecycle)
+@@ -12,4 +12,5 @@
+   v_precheck jsonb;
+   v_cached public.factoring_integration_lifecycle_idempotency%rowtype;
++  v_fp text;
+   v_relationship_id uuid;
+   v_carrier record;
+@@ -91,7 +92,19 @@
+   -- concurrent identical-key request that serialized behind this one
+   -- will see the FIRST call's committed cache row here, not race it.
++  -- 0152: request binding. The organization-scoped target lookup and the owner/admin gate above already precede this read.
++  v_fp := public.compute_financial_request_fingerprint(jsonb_build_object(
++      'operation', 'transition_carrier_factoring_integration_lifecycle',
++      'schema_version', 1,
++      'organization_id', v_org,
++      'integration_id', p_integration_id,
++      'action', p_action,
++      'reason', nullif(btrim(coalesce(p_reason, '')), '')
++    ));
+   select * into v_cached from public.factoring_integration_lifecycle_idempotency
+     where action = p_action and target_id = p_integration_id and idempotency_key = p_idempotency_key;
+   if found then
++    if v_cached.request_fingerprint is distinct from v_fp then
++      return jsonb_build_object('success', false, 'code', 'IDEMPOTENCY_KEY_REUSED', 'message', 'This idempotency key was already used for a different request.');
++    end if;
+     return v_cached.result || jsonb_build_object('idempotent_replay', true);
+   end if;
+@@ -157,6 +170,6 @@
+     'carrier_id', v_integration.carrier_id, 'configuration_status', v_next_state, 'updated_at', v_integration.updated_at);
+ 
+-  insert into public.factoring_integration_lifecycle_idempotency (organization_id, action, target_id, idempotency_key, result)
+-  values (v_org, p_action, p_integration_id, p_idempotency_key, v_result);
++  insert into public.factoring_integration_lifecycle_idempotency (organization_id, action, target_id, idempotency_key, result, request_fingerprint)
++  values (v_org, p_action, p_integration_id, p_idempotency_key, v_result, v_fp);
+ 
+   return v_result;

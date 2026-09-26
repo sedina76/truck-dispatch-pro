@@ -1,0 +1,20 @@
+--- baseline (update_carrier_invoice_draft)
++++ 0152 (update_carrier_invoice_draft)
+@@ -206,4 +206,17 @@
+   where organization_id = v_org and operation = v_operation and idempotency_key = p_idempotency_key;
+   if v_cached_result is not null then
++    -- 0152: a replay requires CURRENT authorization exactly as performing the edit does (role, and the fields this role may edit).
++    if public.has_role(array['owner', 'admin']::public.org_role[]) then
++      v_role_keys := array['notes', 'due_date', 'payment_terms_days', 'broker_id', 'customer_id', 'currency'];
++    elsif public.has_role(array['accountant']::public.org_role[]) then
++      v_role_keys := array['notes', 'due_date', 'payment_terms_days', 'currency'];
++    elsif public.has_role(array['dispatcher']::public.org_role[]) then
++      v_role_keys := array['notes'];
++    else
++      return jsonb_build_object('success', false, 'code', 'FORBIDDEN', 'message', 'You do not have permission to edit this invoice.');
++    end if;
++    if not (v_patch_keys <@ v_role_keys) then
++      return jsonb_build_object('success', false, 'code', 'FORBIDDEN', 'message', 'One or more fields in this patch are not permitted for your role.');
++    end if;
+     if v_cached_fingerprint <> v_fingerprint then
+       return jsonb_build_object('success', false, 'code', 'IDEMPOTENCY_KEY_REUSED', 'message', 'This idempotency key was already used for a different request.');

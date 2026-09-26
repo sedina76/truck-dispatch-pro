@@ -1,0 +1,42 @@
+--- baseline (review_legacy_invoice_carrier_migration)
++++ 0152 (review_legacy_invoice_carrier_migration)
+@@ -15,4 +15,5 @@
+   v_row record;
+   v_cached jsonb;
++  v_cached_review uuid;
+   v_result jsonb;
+ begin
+@@ -24,10 +25,4 @@
+   if v_org is null then
+     return jsonb_build_object('success', false, 'code', 'NO_ORGANIZATION', 'message', 'No organization on this account.');
+-  end if;
+-
+-  select result into v_cached from public.legacy_invoice_review_idempotency
+-  where organization_id = v_org and idempotency_key = p_idempotency_key;
+-  if v_cached is not null then
+-    return v_cached;
+   end if;
+ 
+@@ -44,5 +39,5 @@
+   -- the second waits for the first's transaction to commit (or roll
+   -- back) before evaluating its own updated_at comparison.
+-  select id, organization_id, legacy_invoice_id, updated_at into v_row
++  select id, organization_id, legacy_invoice_id, updated_at, resolution, review_notes into v_row
+   from public.legacy_invoice_carrier_migration_review
+   where id = p_review_id
+@@ -58,4 +53,15 @@
+     return jsonb_build_object('success', false, 'code', 'NOT_FOUND', 'message', 'Review record not found.');
+   end if;
++  -- 0152: replay decision AFTER the role gate, the row lock and the organization-verified target check. Bound to the review row itself:
++  -- the key must have been used for THIS review, with the same resolution and notes (the row still holds the originals).
++  select result, review_id into v_cached, v_cached_review from public.legacy_invoice_review_idempotency
++  where organization_id = v_org and idempotency_key = p_idempotency_key;
++  if v_cached is not null then
++    if v_cached_review is distinct from p_review_id or v_row.resolution is distinct from btrim(p_resolution) or v_row.review_notes is distinct from p_notes then
++      return jsonb_build_object('success', false, 'code', 'IDEMPOTENCY_KEY_REUSED', 'message', 'This idempotency key was already used for a different request.');
++    end if;
++    return v_cached;
++  end if;
++
+   if v_row.updated_at <> p_expected_updated_at then
+     return jsonb_build_object('success', false, 'code', 'STALE_RECORD', 'message', 'This review record has changed since you loaded it. Reload and try again.');

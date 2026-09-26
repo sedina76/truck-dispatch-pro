@@ -1,0 +1,29 @@
+# Promotion plan (PLAN ONLY -- nothing has been moved into `supabase/migrations/`)
+
+**Gate status:** PostgreSQL 17.6 gate PASSED (see README). Still open before anything below may be executed: approval of this plan, of the maintenance-freeze design (`MAINTENANCE_FREEZE_DESIGN.md`, whose v1 database mechanism FAILED the hosted test and is replaced by the v2 trigger design in `freeze/ROOT_CAUSE_AND_REDESIGN.md`; v2 PASSED a hosted non-production test with pg_cron absent -- `freeze/HOSTED_TEST_RESULT_V2.md` -- and the pg_cron path is NOT HOSTED-TESTED), of the review gate (**either** the independent PostgreSQL/Supabase DBA/security review (`INDEPENDENT_REVIEW_PACKET.md`) -- recommended -- **or** a signed, unexpired Owner risk acceptance (`OWNER_RISK_ACCEPTANCE.md`), which is not independent approval and waives only that gate), of the closure of every blocker in `ADVERSARIAL_REVIEW.md` and of written Owner approval. **No production execution is authorized by anything in this directory** and of the application commit.
+
+## Ordering
+`0130 .. 0147` (one at a time, existing verifiers) -> **0149** -> **0150** (human stop: candidate review) -> **0151** -> **0152** -> **0154** (F-05) -> **0155** (F-01) -> ~~0156~~ (superseded, NOT promotable: legacy invoices are excluded by Owner decision) -> **0157** (F-08, carrier-invoice issuance / reissue / factoring, installs DISABLED; Owner's choice; object names normalized at promotion with `0157/normalize_names.py`, D-57f). There is deliberately **no 0148** and **no 0153** in the sequence: proposal 0148 must be renumbered to 0153 (unused) or to 0158 or higher, never 0154-0157.
+
+## Proposed file mapping (byte-identical copies; verify against `PROMOTION_MANIFEST.txt`)
+| Step | Source (proposal) | Becomes (`supabase/`) | Pre-apply verifier | Post-apply verifier | Emergency rollback |
+|---|---|---|---|---|---|
+| 0149 | `proposals/0149/proposed_0149.sql` | `migrations/0149_dispatch_lifecycle_enum_array_repair.sql` | `VERIFY_0149_PREFLIGHT.sql` <- `proposals/0149/preflight.sql` | `VERIFY_0149_POST_APPLY.sql` <- `post_apply.sql` | `ROLLBACK_0149_dispatch_lifecycle_enum_array_repair.sql` <- `rollback.sql` |
+| 0150 | `proposals/0150/proposed_0150.sql` | `migrations/0150_normalize_zero_evidence_unresolved_loads.sql` | `VERIFY_0150_PREFLIGHT.sql` <- `preflight.sql`, plus the human review `REVIEW_0150_CANDIDATES_READONLY.sql` <- `candidate_review.sql` | `VERIFY_0150_POST_APPLY.sql` <- `post_apply.sql` | `ROLLBACK_0150_normalize_zero_evidence_unresolved_loads.sql` <- `rollback.sql` |
+| 0151 | `proposals/0151/proposed_0151.sql` | `migrations/0151_transition_replay_authorization.sql` | `VERIFY_0151_PREFLIGHT.sql` <- `preflight.sql` | `VERIFY_0151_POST_APPLY.sql` <- `post_apply.sql` | `ROLLBACK_0151_transition_replay_authorization.sql` <- `rollback.sql` |
+| 0152 | `proposals/0152/proposed_0152.sql` | `migrations/0152_idempotency_replay_hardening.sql` | `VERIFY_0152_PREFLIGHT.sql` <- `preflight.sql` | `VERIFY_0152_POST_APPLY.sql` <- `post_apply.sql` | `ROLLBACK_0152_idempotency_replay_hardening.sql` <- `rollback.sql` |
+
+Harnesses (`tests.py`, `fixture*.sql`, `regression.sql`, `matrix.sql`, `probe_safe_0144_0147.sql`, `build.py`, `integrity.py`, `AUDIT.md`, `PG17_COMPATIBILITY.md`, runbook) stay under `supabase/proposals/` (or move to a `supabase/tests/` folder by a separate decision); they are never applied to a real database.
+
+## 0150 is special -- the repository copy must stay fail-closed
+`proposed_0150.sql` contains **no** count and **no** digest (`v_expected_count := null`, `v_expected_digest := null`) and aborts in Phase 1 until both are supplied. Promote it byte-identical (so the file is inert if anything ever runs it unedited).
+The two literals are typed **only into the copy pasted into the SQL Editor during the maintenance window**, after the human review of `candidate_review.sql` run after 0133. Never commit a filled copy; never write a guessed value anywhere.
+
+## Numbering
+* The unrelated proposal currently numbered **0148** (`supabase/proposals/0148/`) **must be renumbered to 0153 or higher before it is ever promoted** (its schema/backfill work cannot be applied "behind" 0152). Not renamed in this round.
+* Gaps: the repository has no Supabase CLI configuration (`supabase/config.toml` absent), no CI migration step and no automated `db push`/`db reset` (migrations are applied by hand through the SQL Editor per the runbooks), and 0001-0147 are contiguous today. A missing 0148 therefore affects no tooling here. If the Supabase CLI is ever adopted, it orders by version and tolerates gaps, but it **rejects a migration whose version is lower than one already applied** -- which is exactly why 0148 must not be back-filled later and must be renumbered >= 0153. Documentation and runbooks that say "strictly ascending, no gaps" (`DEPLOYMENT_RUNBOOK_0130_0147.md`) must be amended to mention the intentional 0148 gap when these files are promoted.
+* `PRODUCTION_PREFLIGHT_0130_0147_READONLY.sql` and the runbook landmark tables cover 0130-0147 only; 0149-0152 carry their own preflight/post-apply files (no changes needed there).
+
+## Files intended for the eventual commit
+App (already implemented, uncommitted): `src/app/(app)/dispatch/actions.ts`, `src/app/(app)/settings/factoring/actions.ts`, `src/components/dispatch/cancel-dispatch-form.tsx`, `src/components/dispatch/dispatch-conflict-alert.tsx`, `src/lib/dispatch/conflicts.ts`, `src/lib/factoring/rpc-result.ts`, `src/lib/dispatch/cancel.ts` (new), `src/lib/dispatch/cancel.test.mjs` (new), `src/lib/dispatch/idempotency-codes.test.mjs` (new).
+SQL (only after approval): the four migrations, eight verifier/rollback files and the 0150 review query in the mapping above; the proposals directory or its promoted subset. `supabase/VERIFY_LD100035_CARRIER_SCOPE_READONLY.sql` is a separate read-only diagnostic (decide separately whether to keep it).

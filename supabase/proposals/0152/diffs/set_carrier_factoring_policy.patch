@@ -1,0 +1,65 @@
+--- baseline (set_carrier_factoring_policy)
++++ 0152 (set_carrier_factoring_policy)
+@@ -16,4 +16,7 @@
+   v_carrier record;
+   v_cached jsonb;
++  v_cached_fp text;
++  v_fp text;
++  v_carrier_org uuid;
+   v_open_activity int;
+   v_readiness jsonb;
+@@ -33,8 +36,25 @@
+   end if;
+ 
++  -- 0152: the target carrier must belong to the caller's organization (else the SAME FPDNF a missing carrier gets) BEFORE the ledger is read.
++  select organization_id into v_carrier_org from public.carriers where id = p_carrier_id;
++  if v_carrier_org is null or v_carrier_org <> v_org then
++    raise exception 'set_carrier_factoring_policy: carrier not found.' using errcode = 'FPDNF';
++  end if;
++  v_fp := public.compute_financial_request_fingerprint(jsonb_build_object(
++      'operation', 'set_carrier_factoring_policy',
++      'schema_version', 1,
++      'organization_id', v_org,
++      'carrier_id', p_carrier_id,
++      'mode', p_mode,
++      'reason', nullif(btrim(coalesce(p_reason, '')), '')
++    ));
+   if p_idempotency_key is not null then
+-    select result into v_cached from public.factoring_policy_idempotency
+-      where carrier_id = p_carrier_id and idempotency_key = p_idempotency_key;
++    select result, request_fingerprint into v_cached, v_cached_fp from public.factoring_policy_idempotency
++      where carrier_id = p_carrier_id and idempotency_key = p_idempotency_key and organization_id = v_org;
+     if found then
++      -- (pre-lock) request-bound; fails CLOSED: a NULL or different fingerprint is never replayed (the column is NOT NULL, this is defence in depth).
++      if v_cached_fp is distinct from v_fp then
++        raise exception 'set_carrier_factoring_policy: this idempotency key was already used for a different request.' using errcode = 'FPIDK';
++      end if;
+       return v_cached || jsonb_build_object('idempotent_replay', true);
+     end if;
+@@ -45,4 +65,17 @@
+   select id, organization_id, factoring_mode, updated_at into v_carrier
+   from public.carriers where id = p_carrier_id for update;
++
++  -- 0152: re-check the ledger UNDER the advisory + row locks so a concurrent duplicate replays the winner's committed result.
++  if p_idempotency_key is not null then
++    select result, request_fingerprint into v_cached, v_cached_fp from public.factoring_policy_idempotency
++      where carrier_id = p_carrier_id and idempotency_key = p_idempotency_key and organization_id = v_org;
++    if found then
++      -- (post-lock) request-bound; fails CLOSED: a NULL or different fingerprint is never replayed (the column is NOT NULL, this is defence in depth).
++      if v_cached_fp is distinct from v_fp then
++        raise exception 'set_carrier_factoring_policy: this idempotency key was already used for a different request.' using errcode = 'FPIDK';
++      end if;
++      return v_cached || jsonb_build_object('idempotent_replay', true);
++    end if;
++  end if;
+ 
+   if v_carrier.id is null or v_carrier.organization_id <> v_org then
+@@ -110,6 +143,6 @@
+ 
+   if p_idempotency_key is not null then
+-    insert into public.factoring_policy_idempotency (organization_id, carrier_id, idempotency_key, result)
+-    values (v_org, p_carrier_id, p_idempotency_key, v_readiness)
++    insert into public.factoring_policy_idempotency (organization_id, carrier_id, idempotency_key, result, request_fingerprint)
++    values (v_org, p_carrier_id, p_idempotency_key, v_readiness, v_fp)
+     on conflict (carrier_id, idempotency_key) do nothing;
+   end if;
