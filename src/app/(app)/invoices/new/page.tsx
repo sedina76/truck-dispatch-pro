@@ -77,7 +77,6 @@ export default async function NewInvoicePage({
           "invoices!left(id)"
       )
       .in("status", INVOICEABLE_LOAD_STATUSES)
-      .is("invoices", null)
       .order("created_at", { ascending: false })
       .limit(100),
     supabase.from("brokers").select("id, company_name").order("company_name"),
@@ -99,8 +98,11 @@ export default async function NewInvoicePage({
   // combined embeds (two singular relations plus a one-to-many) -- cast
   // once, immediately, to the shape this route actually reads, same as
   // this file's own `loadRow` cast further down for its single-load query.
-  const candidateLoadRows = (candidateLoads ?? []) as unknown as CandidateLoadRow[];
-
+const candidateLoadRows = (
+  (candidateLoads ?? []) as unknown as (CandidateLoadRow & {
+    invoices: { id: string }[] | null;
+  })[]
+).filter((load) => !load.invoices?.length);
   // No load selected: existing fully-manual workflow, unchanged, just with
   // the load picker added above it (spec 3's "If no load is selected,
   // allow the existing manual billing-party workflow").
