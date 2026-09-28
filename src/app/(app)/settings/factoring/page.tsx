@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import Link from "next/link";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { SectionHeading } from "@/components/ui/section-heading";
 import type { OrgRole } from "@/lib/auth/require-role";
@@ -99,6 +100,7 @@ export default async function FactoringSettingsPage() {
   return (
     <div className="space-y-6">
       <SectionHeading title="Factoring" description="Configure factoring companies and commercial terms used when invoices are submitted for funding." />
+      {currentRole === "owner" || currentRole === "admin" ? <Link className="text-sm underline" href="/settings/factoring/legacy-reviews">Review historical factoring relationships</Link> : null}
       <FactoringSettingsClient
         companies={companies}
         relationships={relationships}
