@@ -606,6 +606,33 @@ export async function createMyW9Draft(): Promise<{ ok: true; id: string } | { ok
   return { ok: true, id: data as string };
 }
 
+// A failed certified W-9 is immutable. Give the carrier a new attempt,
+// preserving the failed row and its audit trail. An older draft may already
+// exist, but the portal shows the latest row, so create a fresh one here.
+export async function restartMyW9AfterFailure(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const identity = await getCarrierActionIdentity();
+  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  const supabase = createServiceRoleClient();
+  const { data: latest, error: readError } = await supabase.from("carrier_w9s")
+    .select("id, status")
+    .eq("organization_id", identity.organizationId)
+    .eq("onboarding_application_id", identity.applicationId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (readError || !latest || latest.status !== "failed") {
+    return { ok: false, error: "The W-9 state changed. Refresh the page and try again." };
+  }
+  const { error } = await supabase.rpc("create_carrier_w9_draft", {
+    p_organization_id: identity.organizationId,
+    p_onboarding_application_id: identity.applicationId,
+    p_carrier_id: null,
+  });
+  if (error) return { ok: false, error: "Could not start a new W-9. Please try again." };
+  revalidatePath("/carrier-onboarding/w9");
+  return { ok: true };
+}
+
 export async function saveMyW9Draft(
   w9Id: string,
   input: {
