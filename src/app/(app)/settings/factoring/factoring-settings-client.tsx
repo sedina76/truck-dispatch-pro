@@ -760,7 +760,7 @@ function NoaApprovalDialog({ relationship, companyName, carrier, documents, onCl
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Review Notice of Assignment</DialogTitle>
-          <DialogDescription>Review the signed document before recording approval. This changes the relationship's approved NOA.</DialogDescription>
+          <DialogDescription>Review the signed document before recording approval. This changes the relationship&apos;s approved NOA.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
           <p><strong>Carrier:</strong> {carrier?.legal_name ?? "Unknown carrier"}<br />

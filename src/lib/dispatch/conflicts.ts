@@ -178,7 +178,11 @@ export type RpcLikeError =
   | null
   | undefined;
 
-const RPC_CODE_MAP: Record<string, { appCode: string; field: ConflictResource | null }> = {
+// The idempotency-key-reuse message is FIXED: the database's own text (function name, wording) never reaches the UI.
+export const IDEMPOTENCY_KEY_REUSED_MESSAGE =
+  "This request was already submitted with different details. Please review your changes and try again.";
+
+const RPC_CODE_MAP: Record<string, { appCode: string; field: ConflictResource | null; fixedMessage?: string }> = {
   TDDUP: { appCode: LOAD_ALREADY_DISPATCHED_CODE, field: null }, // load already has an active dispatch (or an unresolved 0054 race)
   TDDRV: { appCode: CONFLICT_CODE.driver, field: "driver" },
   TDTRK: { appCode: CONFLICT_CODE.truck, field: "truck" },
@@ -207,6 +211,8 @@ const RPC_CODE_MAP: Record<string, { appCode: string; field: ConflictResource | 
   RRTRL: { appCode: CONFLICT_CODE.trailer, field: "trailer" }, // wrong carrier, unresolved, inactive, or already active elsewhere
   RRRSN: { appCode: "REASON_REQUIRED", field: null }, // replacing an already-assigned resource requires a reason
   RRINV: { appCode: "DISPATCH_TERMINAL", field: null }, // dispatch is cancelled/delivered/completed
+  // 0152: the idempotency key was already used for a DIFFERENT request (driver/truck/trailer/reason)
+  RRIDK: { appCode: "IDEMPOTENCY_KEY_REUSED", field: null, fixedMessage: IDEMPOTENCY_KEY_REUSED_MESSAGE },
 };
 
 export type RpcDispatchConflict = {
@@ -225,7 +231,7 @@ export function rpcDispatchConflict(err: RpcLikeError): RpcDispatchConflict | nu
   const detail = (err?.details ?? "").trim();
   const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(detail);
   return {
-    message: (err?.message ?? "").trim() || "Could not save this dispatch. Please try again.",
+    message: mapped.fixedMessage ?? ((err?.message ?? "").trim() || "Could not save this dispatch. Please try again."),
     code: mapped.appCode,
     field: mapped.field,
     conflictDispatchId: isUuid ? detail : null,

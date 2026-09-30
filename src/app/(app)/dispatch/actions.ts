@@ -8,6 +8,7 @@ import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { DispatchConflictError, translateDispatchError, type DispatchActionState } from "@/lib/dispatch/errors";
 import { buildReassignmentIdempotencyKey } from "@/lib/dispatch/reassignment-idempotency";
+import { cancelDispatchErrorMessage, cancelIdempotencyKey } from "@/lib/dispatch/cancel";
 import {
   ACTIVE_DISPATCH_STATUSES,
   classifyAssignmentConflict,
@@ -558,16 +559,21 @@ export async function cancelDispatch(id: string, formData: FormData) {
   // load_id only for revalidation of the load page afterward (read-only).
   const { data: dispatch } = await supabase.from("dispatches").select("load_id").eq("id", id).maybeSingle();
 
-  // 0129: one atomic transaction -- idempotent when already cancelled,
-  // refuses delivered/completed, sets status + reason note + cancelled_at,
-  // returns the load to booked only when no OTHER active dispatch holds it
-  // and it hasn't moved past delivery, and logs. Financial history
-  // (financial_dispatch_id / dispatch_financials / notes) is left intact.
-  const { error } = await supabase.rpc("cancel_dispatch", { p_dispatch_id: id, p_reason: reason });
-  if (error) {
-    const c = rpcDispatchConflict(error);
-    throw new Error(c?.message ?? error.message ?? "Could not cancel this dispatch.");
-  }
+  // Blocker F1: 0135 revoked direct UPDATE on public.dispatches from `authenticated`, and
+  // cancel_dispatch() (0129) is SECURITY INVOKER, so a direct rpc("cancel_dispatch") is refused
+  // (42501). transition_dispatch_status() (0134, SECURITY DEFINER) is the authorised path: it
+  // enforces org + role (owner/admin/dispatcher), locks load-then-dispatch, delegates to
+  // cancel_dispatch() (one atomic transaction -- idempotent when already cancelled, refuses
+  // delivered/completed, stores the reason note + cancelled_at, returns the load to booked only
+  // when no OTHER active dispatch holds it, writes exactly one audit event) and replays the
+  // original result for a repeated idempotency key. Financial history is left intact.
+  const { error } = await supabase.rpc("transition_dispatch_status", {
+    p_dispatch_id: id,
+    p_new_status: "cancelled",
+    p_reason: reason,
+    p_idempotency_key: cancelIdempotencyKey(formData.get("idempotency_key")),
+  });
+  if (error) throw new Error(cancelDispatchErrorMessage(error));
 
   revalidatePath("/dispatch/board");
   revalidatePath(`/dispatch/${id}`);

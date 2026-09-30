@@ -47,11 +47,15 @@ export function mapStructuredRpcFailure(data: StructuredRpcResult | null | undef
 // `error` is transport/Postgres-exception level (a raised `raise
 // exception`, e.g. FPAUT/FPROL/SFDNF/...); `data` is the RPC's own
 // structured jsonb return value.
+// FPIDK (0152): set_carrier_factoring_policy raises it when an idempotency key is reused with a different request. The database's own
+// text (function name, wording) is never shown -- a fixed, safe message replaces it.
+export const FPIDK_MESSAGE = "This request was already submitted with different details. Please review your changes and try again.";
+
 export function resolveStructuredRpcResult<T extends StructuredRpcResult>(
   data: T | null | undefined,
-  error: { message: string } | null | undefined
+  error: { message: string; code?: string | null } | null | undefined
 ): { ok: true; data: T } | { ok: false; error: string } {
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: error.code === "FPIDK" ? FPIDK_MESSAGE : error.message };
   if (!data || data.success !== true) return { ok: false, error: mapStructuredRpcFailure(data) };
   return { ok: true, data };
 }

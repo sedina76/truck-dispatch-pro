@@ -172,7 +172,7 @@ function friendlyDbError(error: { code?: string; message: string }, context: "co
 // check `error` alone.
 // ---------------------------------------------------------------------------
 async function resolveStructuredRpc<T extends StructuredRpcResult>(
-  call: PromiseLike<{ data: T | null; error: { message: string } | null }>
+  call: PromiseLike<{ data: T | null; error: { message: string; code?: string | null } | null }>
 ): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   const { data, error } = await call;
   return resolveStructuredRpcResult(data, error);

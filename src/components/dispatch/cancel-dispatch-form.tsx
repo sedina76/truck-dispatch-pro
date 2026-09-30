@@ -23,6 +23,9 @@ function CancelSubmitButton() {
 // would silently lose its dispatch reference.
 export function CancelDispatchForm({ action }: { action: (formData: FormData) => Promise<void> }) {
   const [reason, setReason] = useState("");
+  // One idempotency key per form instance: a retry (double-click, network retry, resubmit after an
+  // error) reuses it, so the server replays the original outcome instead of cancelling twice.
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
 
   return (
     <form
@@ -42,6 +45,7 @@ export function CancelDispatchForm({ action }: { action: (formData: FormData) =>
         placeholder="Reason (optional)"
         className="h-8 w-48 rounded-sm border border-desktop-border bg-card px-2.5 text-[12.5px] outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20"
       />
+      <input type="hidden" name="idempotency_key" value={idempotencyKey} />
       <CancelSubmitButton />
     </form>
   );
