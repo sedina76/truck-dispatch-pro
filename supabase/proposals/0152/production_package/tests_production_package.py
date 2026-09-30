@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 from datetime import date, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -263,7 +263,11 @@ class Mock(BaseHTTPRequestHandler):
 
 def probe_tests():
     print("== 4. production probe: refusals and behaviour against a LOCAL MOCK only ==")
-    srv = HTTPServer(("127.0.0.1", 0), Mock)
+    class ConcurrentMockServer(ThreadingHTTPServer):
+        request_queue_size = 128
+        daemon_threads = True
+
+    srv = ConcurrentMockServer(("127.0.0.1", 0), Mock)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
     REF = "abcdefghijklmnopqrst"

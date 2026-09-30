@@ -21,8 +21,11 @@ create function public.ops_freeze_probe_write() returns bigint language sql secu
   $$ insert into public.ops_freeze_probe_items (note) values ('rpc') returning id $$;
 revoke all on function public.ops_freeze_probe_write() from public;
 grant execute on function public.ops_freeze_probe_write() to anon, authenticated, service_role;
-create function public.ops_freeze_probe_diag() returns jsonb language sql volatile security invoker set search_path = pg_catalog, public as
-  $$ select jsonb_build_object('pid', pg_backend_pid(), 'backend_start', (select a.backend_start from pg_stat_activity a where a.pid = pg_backend_pid())) $$;
+-- The API switches away from the authenticator login role. Read only the
+-- CURRENT backend's identity as the operator; no monitoring grants to callers.
+create function public.ops_freeze_probe_diag() returns jsonb language sql volatile security definer set search_path = pg_catalog, pg_temp as
+  $$ select pg_catalog.jsonb_build_object('pid', pg_catalog.pg_backend_pid(), 'backend_start',
+       (select a.backend_start from pg_catalog.pg_stat_activity a where a.pid = pg_catalog.pg_backend_pid())) $$;
 revoke all on function public.ops_freeze_probe_diag() from public;
 grant execute on function public.ops_freeze_probe_diag() to anon, authenticated, service_role;
 insert into public.ops_freeze_probe_items (note) values ('seed');

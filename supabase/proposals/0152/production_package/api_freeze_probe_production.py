@@ -24,6 +24,8 @@ For a dedicated nonproduction F-30 database with no verified app deployment, the
 'PROBE F30 DATABASE ONLY <ref>'. It records app_maintenance_mode=NOT_TESTED and returns
 F30_DATABASE_FREEZE_PROVEN on success. It never replaces the production maintenance confirmation."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import importlib.util
 from pathlib import Path
 import json
@@ -183,16 +185,27 @@ def main():
             say(f"{ev['role_model_summary']}: all 14 named identities passed every assertion; the null-identity REST case was NOT_PROVEN this run "
                 "(see F30_NULL_IDENTITY_NOT_PROVEN above). This is NOT full proof of the role model.")
     backends = set()
+    diagnostic_failures = []
 
-    def diag(tag, key, bearer):
-        s, b = request(base, "POST", f"/rest/v1/rpc/{RPC_DIAG}", key, bearer, {})
+    def record_diag(tag, s, b):
         try:
+            if s != 200:
+                raise ValueError("diagnostic HTTP status")
             j = json.loads(b)
-            j = j[0] if isinstance(j, list) and j else j
-            backends.add((int(j["pid"]), str(j["backend_start"])))
+            j = j[0] if isinstance(j, list) and len(j) == 1 else j
+            if (not isinstance(j, dict) or type(j.get("pid")) is not int
+                    or j["pid"] <= 0 or not isinstance(j.get("backend_start"), str)
+                    or not j["backend_start"].strip()):
+                raise ValueError("invalid backend identity")
+            backends.add((j["pid"], j["backend_start"]))
             ev["backends"].append({"role": tag, "pid": int(j["pid"]), "backend_start": str(j["backend_start"])})
         except Exception:
-            pass
+            diagnostic_failures.append(s)
+            say(f"BACKEND_DIAGNOSTIC_FAILED: role={tag} HTTP={s}; response body omitted")
+
+    def diag(tag, key, bearer):
+        status, body = request(base, "POST", f"/rest/v1/rpc/{RPC_DIAG}", key, bearer, {})
+        record_diag(tag, status, body)
 
     tests = []
     for n, k, b in roles:
@@ -232,9 +245,36 @@ def main():
                 return finish(ev, a, "FREEZE_BREACH", 3)
             fail += verdict == "FAIL"
             inconclusive += verdict == "INCONCLUSIVE"
+    # A sequential client may reuse one idle connection forever. Sample only
+    # the read-only diagnostic, AFTER write checks, with at most 12 workers.
+    # Evidence is merged by the main thread. A breach returns above before this
+    # batch starts; no concurrent writes are ever submitted.
+    if a.phase == "frozen" and not (fail or inconclusive or incomplete or diagnostic_failures):
+        batch = roles * 4
+        barrier = Barrier(len(batch))
+
+        def sample(identity):
+            tag, key, bearer = identity
+            barrier.wait(timeout=10)
+            status, body = request(base, "POST", f"/rest/v1/rpc/{RPC_DIAG}", key, bearer, {})
+            return tag, status, body
+
+        say("Sampling 12 concurrent read-only backend diagnostics (4 per API role).")
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            futures = [pool.submit(sample, identity) for identity in batch]
+            for future in futures:
+                try:
+                    tag, status, body = future.result(timeout=35)
+                    record_diag(tag, status, body)
+                except Exception:
+                    diagnostic_failures.append(0)
+                    say("BACKEND_DIAGNOSTIC_FAILED: concurrent sample; response body omitted")
+
     say(f"distinct backends observed: {len(backends)}")
     ev["distinct_backends"] = len(backends)
     reasons = []
+    if diagnostic_failures:
+        reasons.append(f"{len(diagnostic_failures)} backend diagnostic(s) failed")
     if a.phase == "frozen":
         if a.label == "new" and not a.compare_pids:
             reasons.append("label 'new' requires --compare-pids (the pooled evidence file)")
@@ -249,7 +289,7 @@ def main():
             except Exception:
                 reasons.append("could not read --compare-pids file")
         if len(backends) < 2:
-            reasons.append("fewer than 2 distinct backends observed (inconclusive coverage; raise --burst or install the diag function)")
+            reasons.append("fewer than 2 distinct backends observed (inconclusive coverage after concurrent read-only sampling)")
         if incomplete:
             reasons.append("a role could not be tested")
         if inconclusive:
@@ -264,7 +304,7 @@ def main():
             return finish(ev, a, "F30_DATABASE_FREEZE_PROVEN", 0)
         say(f"FREEZE_PROVEN for label '{a.label}' (anon, service_role, authenticated: every write blocked with the marker; reads work).")
         return finish(ev, a, "FREEZE_PROVEN", 0)
-    if fail or incomplete:
+    if fail or incomplete or diagnostic_failures:
         say("NOT OK: " + ("a role could not be tested; " if incomplete else "") + f"{fail} expectation(s) failed")
         return finish(ev, a, f"{a.phase.upper()}_FAILED", 2)
     say("All tests behaved as expected: writes succeed.")
