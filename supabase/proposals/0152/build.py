@@ -306,6 +306,29 @@ def md5expr(sig):
     return f"(select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\\n]*', '', 'g')), '\\s+', '', 'g')) from pg_proc where oid = to_regprocedure({q(sig)}))"
 
 
+def legacy_retirements_ok(after=False):
+    fp = " and t.request_fingerprint = 'legacy-unbound:0152-retirement-v1'" if after else ""
+    return f"""(
+      (select count(*) from public.factoring_integration_lifecycle_idempotency) = 2
+      and (select count(distinct t.target_id) from public.factoring_integration_lifecycle_idempotency t) = 2
+      and not exists (
+        select 1 from public.factoring_integration_lifecycle_idempotency t
+        left join public.factoring_relationships legacy_rel on legacy_rel.id = t.target_id
+        where not coalesce(
+          t.action = 'deactivate_relationship'
+          and ((t.target_id = 'fc926ea0-f11c-40fa-941b-afb89aae19de'::uuid
+                and t.created_at = '2026-09-29 02:31:43.081649+00'::timestamptz)
+            or (t.target_id = 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608'::uuid
+                and t.created_at = '2026-09-29 02:40:54.444648+00'::timestamptz))
+          and legacy_rel.organization_id = t.organization_id
+          and legacy_rel.is_active = false
+          and t.result->'success' = 'true'::jsonb
+          and t.result->>'relationship_id' = t.target_id::text
+          and btrim(t.idempotency_key) <> ''{fp}, false)
+      )
+    )"""
+
+
 def proposed():
     B = blocks()
     fn_sql = "\n\n".join(B[n][2] for n, _, _ in FUNCS)
@@ -323,8 +346,10 @@ def proposed():
 --   update_carrier_invoice_draft (0143).  transition_dispatch_status is repaired by proposal 0151 (not repeated here).
 -- SCHEMA (necessary, minimal): one NOT NULL column  request_fingerprint text  on factoring_policy_idempotency (0139) and
 --   factoring_integration_lifecycle_idempotency (0141) -- neither ledger stores the request, so request binding is otherwise impossible.
---   ZERO-ROW INVARIANT: both ledgers are introduced by 0139/0141 in the same maintenance window and must still be EMPTY here; the migration takes
---   ACCESS EXCLUSIVE locks on both, re-counts under the locks and ABORTS WITHOUT CHANGES if either holds a row (no fingerprint is ever fabricated).
+--   Policy ledger must be EMPTY. Lifecycle ledger may be empty or contain ONLY the two reviewed retirement receipts.
+--   They retain every original field and receive a non-hash legacy marker, never a fabricated request fingerprint.
+--   That marker can NEVER equal a newly computed sha256 fingerprint; every attempt to replay an old key is refused.
+--   ACCESS EXCLUSIVE locks protect both ledgers; relationship SHARE locks protect the reviewed inactive targets.
 --   (0135's ledger already stores driver/truck/trailer/reason; 0142's review row and 0143's ledger already bind; no other table changes.)
 -- PRIVILEGES: EXECUTE revoked from service_role (and public/anon/authenticated) on three internal-only SECURITY DEFINER helpers. The owner keeps
 --   implicit EXECUTE, so the approved callers (which share the owner) keep working. Supabase grants EXECUTE on new functions to service_role by default.
@@ -367,13 +392,15 @@ begin
              and table_name in ('factoring_policy_idempotency', 'factoring_integration_lifecycle_idempotency')) then
     raise exception '0152 precondition: request_fingerprint already exists -- already applied? STOP.';
   end if;
-  -- ZERO-ROW INVARIANT, checked UNDER exclusive locks (no concurrent writer can slip a row in before the ALTERs commit). Independent of preflight.sql.
+  -- Recheck legacy receipts under locks. The lifecycle RPCs lock relationship then ledger: keep that order.
+  lock table public.factoring_relationships in share mode;
   lock table public.factoring_policy_idempotency, public.factoring_integration_lifecycle_idempotency in access exclusive mode;   -- fixed order: policy ledger, then lifecycle ledger
   if (select count(*) from public.factoring_policy_idempotency) <> 0 then
     raise exception '0152 precondition: factoring_policy_idempotency is NOT empty (% row(s)); fingerprints cannot be derived for existing rows and a NULL fingerprint must never replay. STOP -- nothing was changed.', (select count(*) from public.factoring_policy_idempotency);
   end if;
-  if (select count(*) from public.factoring_integration_lifecycle_idempotency) <> 0 then
-    raise exception '0152 precondition: factoring_integration_lifecycle_idempotency is NOT empty (% row(s)); fingerprints cannot be derived for existing rows and a NULL fingerprint must never replay. STOP -- nothing was changed.', (select count(*) from public.factoring_integration_lifecycle_idempotency);
+  if (select count(*) from public.factoring_integration_lifecycle_idempotency) <> 0
+     and not {legacy_retirements_ok()} then
+    raise exception '0152 precondition: factoring_integration_lifecycle_idempotency is NOT empty and does not match the two reviewed retirement receipts (% row(s)). STOP -- nothing was changed.', (select count(*) from public.factoring_integration_lifecycle_idempotency);
   end if;
   foreach v_md5 in array array[{helpers}] loop
     if to_regprocedure(v_md5) is null then raise exception '0152 precondition: helper % missing. STOP.', v_md5; end if;
@@ -394,11 +421,12 @@ $mig$;
 
 -- ======================= PHASE 2 -- SCHEMA (NOT NULL columns), FUNCTIONS, PRIVILEGES =====
 alter table public.factoring_policy_idempotency add column request_fingerprint text not null;
-alter table public.factoring_integration_lifecycle_idempotency add column request_fingerprint text not null;
+alter table public.factoring_integration_lifecycle_idempotency add column request_fingerprint text not null default 'legacy-unbound:0152-retirement-v1';
+alter table public.factoring_integration_lifecycle_idempotency alter column request_fingerprint drop default;
 comment on column public.factoring_policy_idempotency.request_fingerprint is
   '0152: sha256 request fingerprint (operation, organization, carrier, mode, reason; NOT the expected_updated_at concurrency token -- 0139 deliberately replays across a stale token). NOT NULL: 0152 applies only while this ledger is empty. A replay whose fingerprint differs is refused (FPIDK).';
 comment on column public.factoring_integration_lifecycle_idempotency.request_fingerprint is
-  '0152: sha256 request fingerprint (operation, organization, target, every material parameter, reason; NOT the expected_updated_at concurrency token, which replay deliberately ignores). NOT NULL: 0152 applies only while this ledger is empty. A replay whose fingerprint differs is refused (IDEMPOTENCY_KEY_REUSED).';
+  '0152: sha256 request fingerprint (operation, organization, target, every material parameter, reason; NOT the expected_updated_at concurrency token, which replay deliberately ignores). NOT NULL, no default after migration. The two reviewed historical retirement receipts have the literal legacy-unbound:0152-retirement-v1 marker, not a fingerprint. Their old keys can never replay; new operations require real sha256 fingerprints. A mismatch is refused (IDEMPOTENCY_KEY_REUSED).';
 
 {fn_sql}
 
@@ -447,6 +475,10 @@ begin
      and table_name in ('factoring_policy_idempotency', 'factoring_integration_lifecycle_idempotency');
   if v_bad <> 2 then raise exception '0152 postcondition: request_fingerprint columns missing.'; end if;
 
+  if exists (select 1 from public.factoring_integration_lifecycle_idempotency where request_fingerprint = 'legacy-unbound:0152-retirement-v1')
+     and not {legacy_retirements_ok(True)} then
+    raise exception '0152 postcondition: legacy retirement markers do not match the reviewed receipts.';
+  end if;
   select * into m from _mig0152_misc;
   if (select count(*) from public.factoring_policy_idempotency) <> m.n_pol or (select md5(coalesce(string_agg((to_jsonb(t) - 'request_fingerprint')::text, '|' order by t.carrier_id, t.idempotency_key), '')) from public.factoring_policy_idempotency t) <> m.pol_md5
      or (select count(*) from public.factoring_integration_lifecycle_idempotency) <> m.n_life or (select md5(coalesce(string_agg((to_jsonb(t) - 'request_fingerprint')::text, '|' order by t.action, t.target_id, t.idempotency_key), '')) from public.factoring_integration_lifecycle_idempotency t) <> m.life_md5
@@ -530,8 +562,8 @@ with rows as (
   union all select 500, 'LEDGER', 'dispatch_resource_reassignments rows', 'INFO', (select count(*) from public.dispatch_resource_reassignments)::text
   union all select 501, 'LEDGER', 'factoring_policy_idempotency is EMPTY (zero-row invariant; fingerprints cannot be derived for existing rows)',
          case when (select count(*) from public.factoring_policy_idempotency) = 0 then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_policy_idempotency)::text || ' row(s)'
-  union all select 502, 'LEDGER', 'factoring_integration_lifecycle_idempotency is EMPTY (zero-row invariant; fingerprints cannot be derived for existing rows)',
-         case when (select count(*) from public.factoring_integration_lifecycle_idempotency) = 0 then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_integration_lifecycle_idempotency)::text || ' row(s)'
+  union all select 502, 'LEDGER', 'factoring_integration_lifecycle_idempotency is EMPTY or exactly the two reviewed retirement receipts (legacy keys will not replay)',
+         case when (select count(*) from public.factoring_integration_lifecycle_idempotency) = 0 or {legacy_retirements_ok()} then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_integration_lifecycle_idempotency)::text || ' row(s)'
   union all select 503, 'LEDGER', 'legacy_invoice_review_idempotency rows', 'INFO', (select count(*) from public.legacy_invoice_review_idempotency)::text
   union all select 504, 'LEDGER', 'carrier_invoice_lifecycle_idempotency rows', 'INFO', (select count(*) from public.carrier_invoice_lifecycle_idempotency)::text
   union all select 510, 'LEDGER', 'reassignment ledger rows whose organization differs from their dispatch''s (would stop replaying; must be 0)',
@@ -555,6 +587,16 @@ with rows as (
                      and table_name in ('factoring_policy_idempotency', 'factoring_integration_lifecycle_idempotency')) = 2 then 'PASS' else 'FAIL' end, 'catalog'
   union all select 111, 'SCHEMA', 'no ledger row has a NULL fingerprint (impossible by the NOT NULL constraint; must be 0)',
          case when (select count(*) from public.factoring_policy_idempotency where request_fingerprint is null) + (select count(*) from public.factoring_integration_lifecycle_idempotency where request_fingerprint is null) = 0 then 'PASS' else 'FAIL' end, 'ledgers'
+  union all select 112, 'SCHEMA', 'new lifecycle fingerprints are sha256; legacy marker occurs only on the two reviewed receipts',
+         case when not exists (
+           select 1 from public.factoring_integration_lifecycle_idempotency t
+           where request_fingerprint !~ '^[0-9a-f]{{64}}$'
+             and not (request_fingerprint = 'legacy-unbound:0152-retirement-v1'
+               and action = 'deactivate_relationship'
+               and ((target_id = 'fc926ea0-f11c-40fa-941b-afb89aae19de'::uuid and created_at = '2026-09-29 02:31:43.081649+00'::timestamptz)
+                 or (target_id = 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608'::uuid and created_at = '2026-09-29 02:40:54.444648+00'::timestamptz))))
+           then 'PASS' else 'FAIL' end, 'legacy marker is not a request hash'
+
 {func_rows("new", 200)}
 {helper_rows(400, True)}
 ),

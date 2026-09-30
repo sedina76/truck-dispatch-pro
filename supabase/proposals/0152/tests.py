@@ -100,11 +100,12 @@ def static_checks():
     rest = strip(re.sub(r"create or replace function.*?\$fn\$;|create or replace function.*?\$function\$;|create or replace function.*?\$\$;", "", prop, flags=re.S)).replace("on commit drop", "")
     for n, sig, _ in build.FUNCS:
         rest = rest.replace(strip(B[n][2]), "")
+    rest = rest.replace("drop default", "")  # only the temporary legacy-marker default is removed
     stmts = sorted(set(re.findall(r"\b(alter table|comment on column|revoke all on function|grant|insert|update|delete|drop|create or replace function|create temp table)\b", rest, re.I)))
     check("proposed_0152.sql outside the eight blocks: only LOCK TABLE, ALTER TABLE (add NOT NULL column), COMMENT ON COLUMN, REVOKE and temp snapshot tables",
           set(s.lower() for s in stmts) <= {"alter table", "comment on column", "revoke all on function", "create temp table"}, str(stmts))
     check("proposed_0152.sql: exactly 2 ADD COLUMN (text NOT NULL) and 3 helper REVOKEs incl. service_role, no GRANT",
-          len(re.findall(r"add column request_fingerprint text not null;", prop)) == 2 and len(re.findall(r"revoke all on function public\._?\w+\(.*?\) from public, anon, authenticated, service_role;", prop)) == 3
+          len(re.findall(r"add column request_fingerprint text not null(?: default 'legacy-unbound:0152-retirement-v1')?;", prop)) == 2 and len(re.findall(r"revoke all on function public\._?\w+\(.*?\) from public, anon, authenticated, service_role;", prop)) == 3
           and "grant execute" not in prop)
     strict = re.compile(r"\b(insert|update|delete|merge|truncate|create|alter|drop|grant|revoke|comment|copy|call|do|begin|commit|rollback|savepoint|set|reset|lock|listen|notify|"
                         r"vacuum|reindex|analyze|execute|prepare|declare|fetch|refresh|cluster|import|security)\b", re.I)
@@ -185,6 +186,75 @@ def helper_probe(env, db, role):
     return out
 
 
+def legacy_retirement_revision_tests(c, env, base):
+    """Uses ONLY the disposable cluster and synthetic copies of the two reviewed IDs."""
+    print("== scoped legacy retirement preservation / replay refusal ==")
+    db = 'td0149_legacy_retirements'
+    ids = ['fc926ea0-f11c-40fa-941b-afb89aae19de', 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608']
+    times = ['2026-09-29 02:31:43.081649+00', '2026-09-29 02:40:54.444648+00']
+    def rpc_scalar(sql):
+        rc, rows, err = env.q(db, sql, ro=False)
+        assert rc == 0, err
+        return rows[0][0] if rows else None
+
+    seed = "select set_config('test.current_uid', td0149_t.id('u_owner1')::text, false);\n"
+    for i, (rid, timestamp) in enumerate(zip(ids, times)):
+        seed += f"""
+insert into public.factoring_relationships
+select (jsonb_populate_record(null::public.factoring_relationships,
+  to_jsonb(r) || jsonb_build_object('id', '{rid}', 'is_active', false, 'is_default', false))).*
+from public.factoring_relationships r where r.id = td0149_t.id('rel_dea1');
+insert into public.factoring_integration_lifecycle_idempotency
+ (organization_id, action, target_id, idempotency_key, result, created_at)
+values (td0149_t.id('o1'), 'deactivate_relationship', '{rid}', 'legacy-retirement-{i}',
+ jsonb_build_object('success', true, 'relationship_id', '{rid}', 'carrier_id', td0149_t.id('ca')), '{timestamp}');
+"""
+    fixture = (HERE / 'fixture_0152.sql').read_text().split('\\set ON_ERROR_STOP on\n', 1)[1]
+    c.createdb(db, template=base)
+    check('legacy test fixture creates reviewed synthetic retirement receipts', env.run(db, env.guard + '\n' + fixture + seed, guard=True).returncode == 0)
+    template = 'td0149_legacy_template'
+    c.createdb(template, template=db)
+    before = env.scalar(db, "select jsonb_agg(to_jsonb(t) order by target_id)::text from public.factoring_integration_lifecycle_idempotency t")
+    check('revised preflight accepts the exact two inactive successful retirement receipts', env.verify(db, None, (HERE / 'preflight.sql').read_text())['ok'])
+    r = env.run(db, (HERE / 'proposed_0152.sql').read_text())
+    check('revised migration applies with the two reviewed legacy receipts', r.returncode == 0, r.stderr)
+    after = env.scalar(db, "select jsonb_agg(to_jsonb(t) - 'request_fingerprint' order by target_id)::text from public.factoring_integration_lifecycle_idempotency t")
+    check('every original receipt field remains byte-for-byte equal as jsonb', before == after)
+    check('both receipts get a non-hash legacy marker', env.scalar(db, "select count(*) from public.factoring_integration_lifecycle_idempotency where request_fingerprint = 'legacy-unbound:0152-retirement-v1'") == '2')
+    check('post-apply accepts the two preserved legacy receipts', env.verify(db, None, (HERE / 'post_apply.sql').read_text())['ok'])
+    for who in ('u_owner1', 'u_admin1'):
+        for reason in ('original unknown', 'different reason'):
+            res = rpc_scalar(f"select public.deactivate_factoring_relationship('{ids[0]}', '{reason}', now(), 'legacy-retirement-0', false)->>'code' from (select set_config('test.current_uid', td0149_t.id('{who}')::text, false)) actor")
+            check(f'legacy replay is refused for {who} / {reason}', res == 'IDEMPOTENCY_KEY_REUSED', str(res))
+    check('legacy replay attempts change no receipt field', before == env.scalar(db, "select jsonb_agg(to_jsonb(t) - 'request_fingerprint' order by target_id)::text from public.factoring_integration_lifecycle_idempotency t"))
+    fresh_target = uid('rel_dea1')
+    t0 = env.scalar(db, f"select updated_at::text from public.factoring_relationships where id = '{fresh_target}'")
+    result = rpc_scalar(f"select public.deactivate_factoring_relationship('{fresh_target}', 'new explicit decision', '{t0}', 'new-retirement-key', false)->>'success' from (select set_config('test.current_uid', td0149_t.id('u_owner1')::text, false)) actor")
+    check('new key follows the normal authorized operation', result == 'true', str(result))
+    check('new operation has a real sha256 fingerprint', env.scalar(db, "select request_fingerprint ~ '^[0-9a-f]{64}$' from public.factoring_integration_lifecycle_idempotency where idempotency_key = 'new-retirement-key'") == 't')
+    check('post-apply accepts legacy receipts plus fresh fingerprinted operations', env.verify(db, None, (HERE / 'post_apply.sql').read_text())['ok'])
+    c.dropdb(db)
+    mutations = {
+        'changed timestamp': "update public.factoring_integration_lifecycle_idempotency set created_at=now()",
+        'wrong action': "update public.factoring_integration_lifecycle_idempotency set action='configure'",
+        'missing receipt': f"delete from public.factoring_integration_lifecycle_idempotency where target_id='{ids[0]}'",
+        'failed receipt': "update public.factoring_integration_lifecycle_idempotency set result=result || '{\"success\":false}'",
+        'wrong result target': "update public.factoring_integration_lifecycle_idempotency set result=result || '{\"relationship_id\":\"wrong\"}'",
+        'active relationship': f"update public.factoring_relationships set is_active=true where id='{ids[0]}'",
+        'wrong organization': "update public.factoring_integration_lifecycle_idempotency set organization_id=td0149_t.id('o2')",
+        'extra receipt': "insert into public.factoring_integration_lifecycle_idempotency select organization_id,action,target_id,'extra-key',result,created_at from public.factoring_integration_lifecycle_idempotency limit 1",
+    }
+    for label, mutation in mutations.items():
+        c.createdb(db, template=template)
+        check(f'negative fixture: {label}', env.run(db, "select set_config('test.current_uid', td0149_t.id('u_owner1')::text, false);" + mutation).returncode == 0)
+        cat, digest = env.catalog(db), env.digest(db)
+        check(f'preflight refuses {label}', not env.verify(db, None, (HERE / 'preflight.sql').read_text())['ok'])
+        r = env.run(db, (HERE / 'proposed_0152.sql').read_text())
+        check(f'migration independently refuses {label} without changes', r.returncode != 0 and env.catalog(db) == cat and env.digest(db) == digest, r.stderr[-300:])
+        c.dropdb(db)
+    c.dropdb(template)
+
+
 def live(c):
     env = Env0152(c)
     print("== build: 0130..0147 -> 0149 -> 0150 -> 0151 (with Supabase-style default function privileges) ==")
@@ -198,6 +268,8 @@ def live(c):
     r = env.run(base, (P0151 / "proposed_0151.sql").read_text())
     check("0151 applies", r.returncode == 0 and "0151 complete" in r.stderr, r.stderr[-300:])
     check("post_apply 0150 and 0151 pass", env.verify(base, None, (P0150 / "post_apply.sql").read_text())["ok"] and env.verify(base, None, (P0151 / "post_apply.sql").read_text())["ok"])
+
+    legacy_retirement_revision_tests(c, env, base)
 
     # ---- PHASE 1: ACL audit of every idempotent function (default privileges emulated)
     print("== audit: EXECUTE privileges of every idempotent RPC / helper ==")
@@ -298,7 +370,10 @@ def live(c):
     import subprocess as _sp
     check("the migration takes the two ledger locks in ONE statement in a fixed documented order (policy ledger, then lifecycle ledger) with a bounded lock_timeout",
           re.search(r"lock table public\.factoring_policy_idempotency, public\.factoring_integration_lifecycle_idempotency in access exclusive mode;", prop_sql) is not None
-          and prop_sql.count("lock table") == 1 and "set local lock_timeout = '15s';" in prop_sql and "LOCK ORDER (fixed, documented" in prop_sql)
+          and prop_sql.count("lock table") == 2
+          and "lock table public.factoring_relationships in share mode;" in prop_sql
+          and prop_sql.index("lock table public.factoring_relationships in share mode;")
+              < prop_sql.index("lock table public.factoring_policy_idempotency,") and "set local lock_timeout = '15s';" in prop_sql and "LOCK ORDER (fixed, documented" in prop_sql)
     lk_src = "td0149_r_lock_src"
     c.createdb(lk_src, template=base)
     env.run(lk_src, env.guard + "\n" + (HERE / "fixture_0152.sql").read_text().split("\\set ON_ERROR_STOP on\n", 1)[1], guard=True)

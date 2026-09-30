@@ -75,8 +75,26 @@ with rows as (
   union all select 500, 'LEDGER', 'dispatch_resource_reassignments rows', 'INFO', (select count(*) from public.dispatch_resource_reassignments)::text
   union all select 501, 'LEDGER', 'factoring_policy_idempotency is EMPTY (zero-row invariant; fingerprints cannot be derived for existing rows)',
          case when (select count(*) from public.factoring_policy_idempotency) = 0 then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_policy_idempotency)::text || ' row(s)'
-  union all select 502, 'LEDGER', 'factoring_integration_lifecycle_idempotency is EMPTY (zero-row invariant; fingerprints cannot be derived for existing rows)',
-         case when (select count(*) from public.factoring_integration_lifecycle_idempotency) = 0 then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_integration_lifecycle_idempotency)::text || ' row(s)'
+  union all select 502, 'LEDGER', 'factoring_integration_lifecycle_idempotency is EMPTY or exactly the two reviewed retirement receipts (legacy keys will not replay)',
+         case when (select count(*) from public.factoring_integration_lifecycle_idempotency) = 0 or (
+      (select count(*) from public.factoring_integration_lifecycle_idempotency) = 2
+      and (select count(distinct t.target_id) from public.factoring_integration_lifecycle_idempotency t) = 2
+      and not exists (
+        select 1 from public.factoring_integration_lifecycle_idempotency t
+        left join public.factoring_relationships legacy_rel on legacy_rel.id = t.target_id
+        where not coalesce(
+          t.action = 'deactivate_relationship'
+          and ((t.target_id = 'fc926ea0-f11c-40fa-941b-afb89aae19de'::uuid
+                and t.created_at = '2026-09-29 02:31:43.081649+00'::timestamptz)
+            or (t.target_id = 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608'::uuid
+                and t.created_at = '2026-09-29 02:40:54.444648+00'::timestamptz))
+          and legacy_rel.organization_id = t.organization_id
+          and legacy_rel.is_active = false
+          and t.result->'success' = 'true'::jsonb
+          and t.result->>'relationship_id' = t.target_id::text
+          and btrim(t.idempotency_key) <> '', false)
+      )
+    ) then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_integration_lifecycle_idempotency)::text || ' row(s)'
   union all select 503, 'LEDGER', 'legacy_invoice_review_idempotency rows', 'INFO', (select count(*) from public.legacy_invoice_review_idempotency)::text
   union all select 504, 'LEDGER', 'carrier_invoice_lifecycle_idempotency rows', 'INFO', (select count(*) from public.carrier_invoice_lifecycle_idempotency)::text
   union all select 510, 'LEDGER', 'reassignment ledger rows whose organization differs from their dispatch''s (would stop replaying; must be 0)',

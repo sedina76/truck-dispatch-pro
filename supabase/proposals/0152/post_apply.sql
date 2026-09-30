@@ -14,6 +14,16 @@ with rows as (
                      and table_name in ('factoring_policy_idempotency', 'factoring_integration_lifecycle_idempotency')) = 2 then 'PASS' else 'FAIL' end, 'catalog'
   union all select 111, 'SCHEMA', 'no ledger row has a NULL fingerprint (impossible by the NOT NULL constraint; must be 0)',
          case when (select count(*) from public.factoring_policy_idempotency where request_fingerprint is null) + (select count(*) from public.factoring_integration_lifecycle_idempotency where request_fingerprint is null) = 0 then 'PASS' else 'FAIL' end, 'ledgers'
+  union all select 112, 'SCHEMA', 'new lifecycle fingerprints are sha256; legacy marker occurs only on the two reviewed receipts',
+         case when not exists (
+           select 1 from public.factoring_integration_lifecycle_idempotency t
+           where request_fingerprint !~ '^[0-9a-f]{64}$'
+             and not (request_fingerprint = 'legacy-unbound:0152-retirement-v1'
+               and action = 'deactivate_relationship'
+               and ((target_id = 'fc926ea0-f11c-40fa-941b-afb89aae19de'::uuid and created_at = '2026-09-29 02:31:43.081649+00'::timestamptz)
+                 or (target_id = 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608'::uuid and created_at = '2026-09-29 02:40:54.444648+00'::timestamptz))))
+           then 'PASS' else 'FAIL' end, 'legacy marker is not a request hash'
+
   union all select 200, 'FUNCTION', 'reassign_dispatch_resources: body is the reviewed 0152 definition',
          case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')) = '25feafae360e205e44c89cac6b8af6aa' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')), 'MISSING')
   union all select 201, 'FUNCTION', 'reassign_dispatch_resources: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
