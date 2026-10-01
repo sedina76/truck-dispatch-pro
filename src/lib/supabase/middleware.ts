@@ -26,6 +26,14 @@ const PUBLIC_PATHS = [
   // authenticated. Its route handlers, portal layout, and server actions
   // validate the invitation or carrier_onboarding_session after middleware.
   "/carrier-onboarding",
+  // Same for driver onboarding (Phase 2Q.2): the emailed invitation link
+  // (/driver-onboarding/<token>) is opened by a driver with NO staff
+  // account. It was missing here, so the "Start driver onboarding" link
+  // 307-redirected every not-signed-in driver to the staff /login page.
+  // Its token route, (portal) layout and every server action validate the
+  // driver_onboarding session themselves (requireIdentity /
+  // getDriverOnboardingSession) after middleware.
+  "/driver-onboarding",
   // Phase 2F: Resend's webhook POST carries no Supabase session cookie at
   // all -- it authenticates via its own Svix signature (see
   // src/app/api/webhooks/resend/route.ts), never a logged-in user. Found
