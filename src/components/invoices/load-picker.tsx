@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ChevronsUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "@/components/ui/command";
+import { Command, CommandInput, CommandList, CommandItem, CommandGroup } from "@/components/ui/command";
 
 // "Select Load first" (spec section 3): selecting a load re-requests
 // /invoices/new?load_id=X, which re-renders the page as a Server Component
@@ -37,13 +37,25 @@ export type InvoiceLoadCandidate = {
   deliveredAt: string | null;
 };
 
+// A delivered load that already has an invoice (normally the one created
+// automatically on delivery). Shown only when it matches a search, under
+// "Already invoiced", and opens that invoice instead of starting a new one.
+export type AlreadyInvoicedLoad = {
+  loadId: string;
+  load_number: string;
+  partyName: string | null;
+  invoiceId: string;
+  invoiceNumber: string;
+  invoiceStatus: string;
+};
+
 // ~6 rows visible before scrolling, per spec -- one named constant so the
 // visual row height and the popover's max-height can never silently drift
 // out of sync with each other.
 const ROW_HEIGHT_REM = 2.75;
 const VISIBLE_ROWS = 6;
 
-export function LoadPicker({ loads }: { loads: InvoiceLoadCandidate[] }) {
+export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoadCandidate[]; alreadyInvoiced?: AlreadyInvoicedLoad[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -58,6 +70,21 @@ export function LoadPicker({ loads }: { loads: InvoiceLoadCandidate[] }) {
     if (!q) return loads;
     return loads.filter((l) => l.load_number.toLowerCase().includes(q) || (l.partyName ?? "").toLowerCase().includes(q));
   }, [loads, query]);
+
+  // Only while searching -- the default list stays "loads you can invoice".
+  const invoicedMatches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return alreadyInvoiced
+      .filter((l) => l.load_number.toLowerCase().includes(q) || (l.partyName ?? "").toLowerCase().includes(q) || l.invoiceNumber.toLowerCase().includes(q))
+      .slice(0, 20);
+  }, [alreadyInvoiced, query]);
+
+  function openInvoice(invoiceId: string) {
+    setOpen(false);
+    setQuery("");
+    router.push(`/invoices/${invoiceId}`);
+  }
 
   function selectLoad(id: string) {
     setOpen(false);
@@ -120,7 +147,15 @@ export function LoadPicker({ loads }: { loads: InvoiceLoadCandidate[] }) {
               <span className="w-32 shrink-0 text-right">Delivery</span>
             </div>
             <CommandList style={{ maxHeight: `${ROW_HEIGHT_REM * VISIBLE_ROWS}rem` }}>
-              <CommandEmpty>{loads.length === 0 ? "No delivered loads without an invoice are on file." : "No eligible loads match your search."}</CommandEmpty>
+              {filtered.length === 0 && invoicedMatches.length === 0 && (
+                <div className="py-6 text-center text-sm text-muted-foreground">
+                  {query.trim()
+                    ? "No delivered load matches your search."
+                    : loads.length === 0
+                      ? "Every delivered load already has an invoice -- search a load # to open its invoice."
+                      : "No eligible loads match your search."}
+                </div>
+              )}
               {filtered.map((l) => (
                 <CommandItem
                   key={l.id}
@@ -137,13 +172,33 @@ export function LoadPicker({ loads }: { loads: InvoiceLoadCandidate[] }) {
                   </span>
                 </CommandItem>
               ))}
+              {invoicedMatches.length > 0 && (
+                <CommandGroup heading="Already invoiced -- open the existing invoice">
+                  {invoicedMatches.map((l) => (
+                    <CommandItem
+                      key={l.loadId}
+                      value={`invoiced-${l.loadId}`}
+                      onSelect={() => openInvoice(l.invoiceId)}
+                      className="flex items-center gap-3"
+                      style={{ minHeight: `${ROW_HEIGHT_REM}rem` }}
+                    >
+                      <span className="w-20 shrink-0 truncate font-medium">{l.load_number}</span>
+                      <span className="min-w-0 flex-1 truncate text-muted-foreground">{l.partyName ?? "No broker/customer"}</span>
+                      <span className="shrink-0 text-right text-xs font-medium text-primary">
+                        {l.invoiceNumber}
+                        <span className="ml-1 font-normal capitalize text-muted-foreground">({l.invoiceStatus.replace(/_/g, " ")})</span>
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
             </CommandList>
           </Command>
         </PopoverContent>
       </Popover>
       <p className="text-[11px] text-muted-foreground">
-        Only delivered (or later) loads without an existing invoice are listed. Picking a load fills in its billing party, rate, and payment terms
-        below.
+        Delivered loads without an invoice are listed. Loads are invoiced automatically on delivery -- search a load # to jump to its existing
+        invoice. Picking an un-invoiced load fills in its billing party, rate, and payment terms below.
       </p>
     </div>
   );

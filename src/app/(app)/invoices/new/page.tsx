@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
-import { LoadPicker, type InvoiceLoadCandidate } from "@/components/invoices/load-picker";
+import { LoadPicker, type InvoiceLoadCandidate, type AlreadyInvoicedLoad } from "@/components/invoices/load-picker";
 import { INVOICEABLE_LOAD_STATUSES, resolveBillingPartyDisplay, suggestedDueDate } from "@/lib/billing/party";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { createInvoice } from "../actions";
@@ -74,11 +74,16 @@ export default async function NewInvoicePage({
         "id, load_number, broker_id, customer_id, " +
           "brokers(company_name), customers(company_name), " +
           "load_stops(stop_type, stop_sequence, arrived_at, scheduled_at), " +
-          "invoices!left(id)"
+          "invoices!left(id, invoice_number, status)"
       )
       .in("status", INVOICEABLE_LOAD_STATUSES)
       .order("created_at", { ascending: false })
-      .limit(100),
+      // Loads are auto-invoiced on delivery (0022), so most delivered loads
+      // already have an invoice. The old limit(100) was applied BEFORE
+      // those were filtered out, so an older un-invoiced load could be
+      // silently missing from the picker; the window is now wide enough
+      // that the filter below works on the real pool.
+      .limit(1000),
     supabase.from("brokers").select("id, company_name").order("company_name"),
     supabase.from("customers").select("id, company_name").order("company_name"),
     // Atomic, year-scoped, per-organization counter (0065_billing_readiness.sql)
@@ -98,11 +103,22 @@ export default async function NewInvoicePage({
   // combined embeds (two singular relations plus a one-to-many) -- cast
   // once, immediately, to the shape this route actually reads, same as
   // this file's own `loadRow` cast further down for its single-load query.
-const candidateLoadRows = (
-  (candidateLoads ?? []) as unknown as (CandidateLoadRow & {
-    invoices: { id: string }[] | null;
-  })[]
-).filter((load) => !load.invoices?.length);
+  const allEligibleRows = (candidateLoads ?? []) as unknown as (CandidateLoadRow & {
+    invoices: { id: string; invoice_number: string; status: string }[] | null;
+  })[];
+  const candidateLoadRows = allEligibleRows.filter((load) => !load.invoices?.length);
+  // Delivered loads that already have an invoice (usually the one created
+  // automatically on delivery). They can't get a second invoice
+  // (invoices_load_id_unique_idx), but searching for one in the picker
+  // must not look like the load "doesn't exist" -- the picker lists them
+  // separately, linking to their existing invoice.
+  const alreadyInvoiced: AlreadyInvoicedLoad[] = allEligibleRows
+    .filter((load) => load.invoices?.length)
+    .map((load) => {
+      const inv = load.invoices![0];
+      const partyName = load.broker_id ? (load.brokers?.company_name ?? null) : load.customer_id ? (load.customers?.company_name ?? null) : null;
+      return { loadId: load.id, load_number: load.load_number, partyName, invoiceId: inv.id, invoiceNumber: inv.invoice_number, invoiceStatus: inv.status };
+    });
   // No load selected: existing fully-manual workflow, unchanged, just with
   // the load picker added above it (spec 3's "If no load is selected,
   // allow the existing manual billing-party workflow").
@@ -119,7 +135,7 @@ const candidateLoadRows = (
       <div className="space-y-3">
         <DesktopPanel>
           <DesktopPanelBody>
-            <LoadPicker loads={pickerLoads} />
+            <LoadPicker loads={pickerLoads} alreadyInvoiced={alreadyInvoiced} />
           </DesktopPanelBody>
         </DesktopPanel>
 
