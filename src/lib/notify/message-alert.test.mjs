@@ -53,10 +53,33 @@ test("staff app: every page of the app watches for driver messages (dispatch rol
 
 test("driver portal: the bottom nav chimes on every screen for new dispatch messages", () => {
   const nav = src("../../components/driver-portal/bottom-nav.tsx");
-  assert.match(nav, /getMyUnreadMessageStatus\(\)/);
-  assert.match(nav, /decideMessageAlert\(chimeBaseline\.current, status\)/);
-  assert.match(nav, /if \(decision\.chime\) playMessageChime\(\)/);
+  assert.match(nav, /getMyPortalAlerts\(\)/);
+  assert.match(nav, /decideMessageAlert\(chimeBaseline\.current, messages\)/);
+  assert.match(nav, /else if \(message\.chime\) playMessageChime\(\)/);
   const actions = src("../../app/driver-portal/actions.ts");
   assert.match(actions, /export async function getMyUnreadMessageStatus[\s\S]*?\.eq\("sender_type", "staff"\)/);
   assert.match(src("../../app/driver-portal/messages/page.tsx"), /<MessageSoundToggle/);
+});
+
+test("driver portal: a rejected POD plays its own, different alert and shows a fix-it banner", () => {
+  const nav = src("../../components/driver-portal/bottom-nav.tsx");
+  assert.match(nav, /decideMessageAlert\(rejectBaseline\.current, \{ count: rejected \? 1 : 0, latestAt: rejected\?\.rejectedAt \?\? null \}\)/);
+  assert.match(nav, /if \(reject\.chime\) playRejectedAlert\(\);/);
+  assert.match(nav, /Proof of Delivery rejected/);
+  assert.match(nav, /href="\/driver-portal\/documents"/);
+  const actions = src("../../app/driver-portal/actions.ts");
+  // only while the LATEST POD is rejected -- a re-upload clears it
+  assert.match(actions, /getLatestDocument\(supabase, "load", dispatch\.load_id, "pod"\)/);
+  assert.match(actions, /pod && pod\.rejected_at && !pod\.is_verified/);
+  const chime = src("./message-chime.ts");
+  assert.match(chime, /export function playRejectedAlert/);
+});
+
+test("a new rejection alerts once; the same rejection doesn't repeat; a re-rejection alerts again", () => {
+  const T0 = "2026-10-01T15:00:00.000Z";
+  const T1 = "2026-10-01T15:30:00.000Z";
+  assert.deepEqual(decideMessageAlert(null, { count: 1, latestAt: T0 }), { chime: true, baseline: T0 });
+  assert.deepEqual(decideMessageAlert(T0, { count: 1, latestAt: T0 }), { chime: false, baseline: T0 });
+  assert.deepEqual(decideMessageAlert(T0, { count: 0, latestAt: null }), { chime: false, baseline: T0 });
+  assert.deepEqual(decideMessageAlert(T0, { count: 1, latestAt: T1 }), { chime: true, baseline: T1 });
 });

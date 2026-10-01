@@ -52,30 +52,51 @@ export function setMessageSoundEnabled(on: boolean) {
   }
 }
 
-// Two quick rising notes ("peep-peep"), ~0.35s total, moderate volume.
-export function playMessageChime(opts?: { force?: boolean }) {
+type Note = { freq: number; start: number; dur: number; type: OscillatorType; peak: number };
+
+function playNotes(notes: Note[], opts?: { force?: boolean }) {
   if (!opts?.force && !isMessageSoundEnabled()) return;
   const a = audio();
   if (!a) return;
   try {
     if (a.state === "suspended") a.resume().catch(() => {});
     const now = a.currentTime;
-    [
-      { freq: 880, start: 0 },
-      { freq: 1320, start: 0.16 },
-    ].forEach(({ freq, start }) => {
+    for (const { freq, start, dur, type, peak } of notes) {
       const osc = a.createOscillator();
       const gain = a.createGain();
-      osc.type = "sine";
+      osc.type = type;
       osc.frequency.value = freq;
       gain.gain.setValueAtTime(0.0001, now + start);
-      gain.gain.exponentialRampToValueAtTime(0.25, now + start + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + 0.15);
+      gain.gain.exponentialRampToValueAtTime(peak, now + start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
       osc.connect(gain).connect(a.destination);
       osc.start(now + start);
-      osc.stop(now + start + 0.17);
-    });
+      osc.stop(now + start + dur + 0.02);
+    }
   } catch {
     // never let a sound problem surface to the user
   }
+}
+
+// New message: two quick RISING notes ("peep-peep"), ~0.35s, friendly.
+export function playMessageChime(opts?: { force?: boolean }) {
+  playNotes(
+    [
+      { freq: 880, start: 0, dur: 0.15, type: "sine", peak: 0.25 },
+      { freq: 1320, start: 0.16, dur: 0.15, type: "sine", peak: 0.25 },
+    ],
+    opts
+  );
+}
+
+// Document rejected: three FALLING, buzzier notes, played twice (~1.3s) --
+// deliberately unlike the message chime so a driver knows without looking
+// that something needs fixing. Same on/off switch as the message chime.
+export function playRejectedAlert(opts?: { force?: boolean }) {
+  const pass = (t: number): Note[] => [
+    { freq: 784, start: t, dur: 0.16, type: "triangle", peak: 0.32 },
+    { freq: 587, start: t + 0.18, dur: 0.16, type: "triangle", peak: 0.32 },
+    { freq: 392, start: t + 0.36, dur: 0.28, type: "triangle", peak: 0.32 },
+  ];
+  playNotes([...pass(0), ...pass(0.72)], opts);
 }

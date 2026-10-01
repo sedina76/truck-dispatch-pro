@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
+import { getLatestDocument } from "@/lib/documents/latest-document";
 import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
@@ -580,6 +581,30 @@ export async function getMyUnreadMessageStatus(): Promise<{ count: number; lates
     return { count: 0, latestAt: null };
   }
   return { count: count ?? 0, latestAt: (data ?? [])[0]?.created_at ?? null };
+}
+
+export type MyPortalAlerts = {
+  messages: { count: number; latestAt: string | null };
+  // The current trip's POD, when dispatch has rejected it and the driver
+  // hasn't uploaded a replacement yet ("most recent row wins", same rule
+  // as the Docs screen via getLatestDocument).
+  rejectedPod: { reason: string | null; rejectedAt: string } | null;
+};
+
+// One poll for the bottom nav: unread dispatch messages + a rejected POD.
+// Each drives its own sound (message chime vs. rejection alert).
+export async function getMyPortalAlerts(): Promise<MyPortalAlerts> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return { messages: { count: 0, latestAt: null }, rejectedPod: null };
+
+  const [messages, pod] = await Promise.all([
+    getMyUnreadMessageStatus(),
+    getLatestDocument(supabase, "load", dispatch.load_id, "pod").catch(() => null),
+  ]);
+  const rejectedPod = pod && pod.rejected_at && !pod.is_verified ? { reason: pod.rejection_reason, rejectedAt: pod.rejected_at } : null;
+  return { messages, rejectedPod };
 }
 
 export async function markMyMessagesRead(dispatchId: string) {
