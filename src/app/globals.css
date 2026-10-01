@@ -254,3 +254,16 @@
     background: white !important;
   }
 }
+
+/* Number fields change only when typed: no spinner arrows (they step money
+   values by a cent per click). Arrow keys / scroll are blocked by
+   components/ui/number-wheel-guard.tsx. */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
