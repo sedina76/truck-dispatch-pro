@@ -1,8 +1,7 @@
-# Weekly dependency update pull requests. Minor/patch updates arrive grouped
-# in one PR; major versions (which can need code changes) arrive separately.
-# Security updates are opened as soon as an advisory is published, if
-# "Dependabot security updates" is enabled in the repo's Settings -> Code
-# security.
+# Weekly dependency update pull requests -- minor and patch updates only,
+# grouped into ONE pull request per week. Major versions (e.g. TypeScript 5
+# -> 7, Next 15 -> 16) can need code changes, so Dependabot does not propose
+# them automatically; they are upgraded deliberately, one at a time.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -10,7 +9,10 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -18,3 +20,6 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
