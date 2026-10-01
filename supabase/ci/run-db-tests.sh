@@ -114,6 +114,12 @@ run_suite "TEST_0160_existing_stuck_invoice" run_fresh_db_test TEST_0160_existin
 run_suite "TEST_0161_without_fix_must_fail" expect_failure run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql
 run_suite "TEST_0161_signed_out_function_access" run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql migrations/0161_signed_out_function_access_hardening.sql
 
+# Encryption key rotation (maintenance/ROTATE_ENCRYPTION_KEYS.sql): aborts
+# cleanly on an undecryptable value; otherwise every value decrypts to the
+# same text with the new keys and the old keys decrypt nothing.
+run_suite "TEST_ROTATE_ENCRYPTION_KEYS" run_fresh_db_test TEST_ROTATE_ENCRYPTION_KEYS.sql
+run_suite "ROTATE_KEYS_PREVIEW_READONLY" run_fresh_db_test maintenance/ROTATE_KEYS_PREVIEW_READONLY.sql
+
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
   echo "ALL DATABASE TESTS PASSED"
