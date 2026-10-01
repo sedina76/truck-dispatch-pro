@@ -335,6 +335,13 @@ else
   fi
 fi
 
+# C3 legitimately leaves relD either active (deactivation rejected because
+# relD was still the default) or inactive (default moved to relC first, so the
+# deactivation was allowed). C4 and C8 below both target relD and assume it is
+# active, so restore that precondition deterministically. Without this reset
+# the suite failed intermittently whenever C3 took the "succeeded" path.
+Q "update public.factoring_relationships set is_active = true where id = 'fe0d0000-0000-0000-0000-000000000004' and not is_active;" >/dev/null
+
 # ============================================================================
 # C4: Policy change (carrier -> direct) vs default change for the SAME
 # carrier -- disjoint advisory-lock keys and disjoint locked tables

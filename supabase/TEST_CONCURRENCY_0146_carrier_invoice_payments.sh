@@ -342,11 +342,26 @@ P8R=$!
 P8V=$!
 set +e; wait "$P8R"; wait "$P8V"; set -e
 assert_no_deadlock_text "$T/s8r.err" "$T/s8v.err"; assert_no_new_deadlocks "8"
-grep -q '"code": "PAYMENT_RECORDED"' "$T/s8r.out" || { echo "!! FAIL (8 record): $(cat "$T/s8r.out")"; FAIL=1; }
+# The void must always succeed (it carries the payment's own updated_at,
+# which the concurrent record never touches).
 grep -q '"code": "PAYMENT_VOIDED"' "$T/s8v.out" || { echo "!! FAIL (8 void): $(cat "$T/s8v.out")"; FAIL=1; }
+# The record carries the INVOICE's updated_at, which the void bumps. So there
+# are exactly two correct serializations, and the test must accept both:
+#   record commits first -> PAYMENT_RECORDED, void then succeeds -> paid 200.00
+#   void commits first   -> record is refused STALE_RECORD (optimistic
+#                           concurrency working as designed)  -> paid 0.00
+# Anything else (a lost update, a wrong total, a raw error) is a real failure.
 FINAL8="$(Q "select amount_paid from public.carrier_invoices where id='$INV8';")"
-[ "$FINAL8" = "200.00" ] || { echo "!! FAIL (8): expected amount_paid=200.00 (300 voided + 200 new), got $FINAL8"; FAIL=1; }
-echo "-> OK: record vs void, concurrently -- both succeeded, correctly serialized on the invoice lock (final amount_paid=$FINAL8)."
+if grep -q '"code": "PAYMENT_RECORDED"' "$T/s8r.out"; then
+  [ "$FINAL8" = "200.00" ] || { echo "!! FAIL (8): record won, expected amount_paid=200.00 (300 voided + 200 new), got $FINAL8"; FAIL=1; }
+  S8_ORDER="record first"
+elif grep -q '"code": "STALE_RECORD"' "$T/s8r.out"; then
+  [ "$FINAL8" = "0.00" ] || { echo "!! FAIL (8): record refused as STALE_RECORD, expected amount_paid=0.00 (300 voided, 200 never recorded), got $FINAL8"; FAIL=1; }
+  S8_ORDER="void first, record refused STALE_RECORD"
+else
+  echo "!! FAIL (8 record): neither PAYMENT_RECORDED nor STALE_RECORD: $(cat "$T/s8r.out")"; FAIL=1; S8_ORDER="unexpected"
+fi
+echo "-> OK: record vs void, concurrently -- correctly serialized on the invoice lock ($S8_ORDER; final amount_paid=$FINAL8)."
 
 echo
 echo "########################################################################"
