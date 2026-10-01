@@ -1,0 +1,70 @@
+--- baseline (reassign_dispatch_resources)
++++ 0152 (reassign_dispatch_resources)
+@@ -42,4 +42,8 @@
+   v_result jsonb;
+   v_cached jsonb;
++  v_c_driver uuid;
++  v_c_truck uuid;
++  v_c_trailer uuid;
++  v_c_reason text;
+   c_active constant public.dispatch_status[] := array[
+     'assigned','accepted','en_route_to_pickup','at_pickup','loaded',
+@@ -64,21 +68,25 @@
+   end if;
+ 
+-  -- Idempotency short-circuit -- BEFORE any lock, any validation, any
+-  -- write. A retried call with the SAME (dispatch_id, idempotency_key)
+-  -- pair replays the ORIGINAL cached result verbatim.
+-  if p_idempotency_key is not null then
+-    select result into v_cached
+-    from public.dispatch_resource_reassignments
+-    where dispatch_id = p_dispatch_id and idempotency_key = p_idempotency_key;
+-    if found then
+-      return v_cached || jsonb_build_object('idempotent_replay', true);
+-    end if;
+-  end if;
+-
+-  -- Resolve dispatch -> load_id WITHOUT locking yet.
++  -- 0152: the target dispatch is resolved and verified to belong to the caller's organization (else the SAME RRDNF a missing dispatch
++  -- gets) BEFORE the ledger is read. The role gate above already precedes this point.
+   select organization_id, load_id into v_dispatch_org, v_load_id
+   from public.dispatches where id = p_dispatch_id;
+   if v_dispatch_org is null or v_dispatch_org <> v_org then
+     raise exception 'reassign_dispatch_resources: dispatch % not found.', p_dispatch_id using errcode = 'RRDNF';
++  end if;
++
++  -- Idempotency short-circuit -- AFTER authorization, BEFORE any lock, validation or write; organization-scoped and request-bound.
++  if p_idempotency_key is not null then
++    select r.result, r.new_driver_id, r.new_truck_id, r.new_trailer_id, r.reason
++      into v_cached, v_c_driver, v_c_truck, v_c_trailer, v_c_reason
++    from public.dispatch_resource_reassignments r
++    where r.dispatch_id = p_dispatch_id and r.idempotency_key = p_idempotency_key and r.organization_id = v_org;
++    if found then
++      -- (pre-lock) the key is bound to the ORIGINAL request (driver, truck, trailer, reason as recorded in the ledger row).
++      if (v_c_driver, v_c_truck, v_c_trailer, v_c_reason) is distinct from (p_driver_id, p_truck_id, p_trailer_id, p_reason) then
++        raise exception 'reassign_dispatch_resources: this idempotency key was already used for a different request.' using errcode = 'RRIDK';
++      end if;
++      return v_cached || jsonb_build_object('idempotent_replay', true);
++    end if;
+   end if;
+ 
+@@ -98,4 +106,19 @@
+     into v_dispatch_status, v_dispatch_carrier, v_old_driver, v_old_truck, v_old_trailer, v_current_updated_at
+   from public.dispatches where id = p_dispatch_id for update;
++
++  -- 0152: re-check the ledger UNDER the load+dispatch locks so a concurrent duplicate replays the winner's committed result.
++  if p_idempotency_key is not null then
++    select r.result, r.new_driver_id, r.new_truck_id, r.new_trailer_id, r.reason
++      into v_cached, v_c_driver, v_c_truck, v_c_trailer, v_c_reason
++    from public.dispatch_resource_reassignments r
++    where r.dispatch_id = p_dispatch_id and r.idempotency_key = p_idempotency_key and r.organization_id = v_org;
++    if found then
++      -- (post-lock) the key is bound to the ORIGINAL request (driver, truck, trailer, reason as recorded in the ledger row).
++      if (v_c_driver, v_c_truck, v_c_trailer, v_c_reason) is distinct from (p_driver_id, p_truck_id, p_trailer_id, p_reason) then
++        raise exception 'reassign_dispatch_resources: this idempotency key was already used for a different request.' using errcode = 'RRIDK';
++      end if;
++      return v_cached || jsonb_build_object('idempotent_replay', true);
++    end if;
++  end if;
+ 
+   -- Determine "is this a REPLACEMENT" EXCLUSIVELY from the locked row just

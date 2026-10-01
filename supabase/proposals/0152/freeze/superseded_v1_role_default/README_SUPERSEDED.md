@@ -1,0 +1,2 @@
+# SUPERSEDED -- DO NOT RUN. FAILED THE HOSTED NON-PRODUCTION TEST.
+The v1 freeze (`ALTER ROLE authenticator SET default_transaction_read_only = on`) did not stop a real PostgREST insert (HTTP 201 during the freeze) and its verifier reported PASS anyway. Kept only as evidence; its local suite (`tests_freeze.py`, 87 checks) still passes because it validates the wrong model. The replacement is in the parent directory; analysis: `../ROOT_CAUSE_AND_REDESIGN.md`.

@@ -1,0 +1,98 @@
+--- 0134 (authoritative)
++++ 0151 (proposed)
+@@ -23,4 +23,6 @@
+   v_result jsonb;
+   v_cached jsonb;
++  v_cached_old public.dispatch_status;
++  v_cached_new public.dispatch_status;
+   v_is_reactivation boolean;
+   v_final_status public.dispatch_status;
+@@ -40,19 +42,8 @@
+   end if;
+ 
+-  -- Idempotency short-circuit -- BEFORE any lock, any validation, any
+-  -- write. A retried call with the SAME (dispatch_id, idempotency_key)
+-  -- pair replays the ORIGINAL cached result verbatim, never re-validates
+-  -- against however the row looks now.
+-  if p_idempotency_key is not null then
+-    select result into v_cached
+-    from public.dispatch_status_transitions
+-    where dispatch_id = p_dispatch_id and idempotency_key = p_idempotency_key;
+-    if found then
+-      return v_cached || jsonb_build_object('idempotent_replay', true);
+-    end if;
+-  end if;
+-
+-  -- Resolve dispatch -> load_id WITHOUT locking yet -- load_id is needed
+-  -- to lock the LOAD before touching the dispatch row at all.
++  -- 0151: AUTHORIZATION BEFORE ANY LEDGER READ. Order: authenticated (above) -> caller has an organization (above)
++  -- -> the target dispatch belongs to THAT organization (else exactly the same TSDNF a missing dispatch gets, so neither a
++  -- foreign dispatch nor a foreign idempotency key is ever confirmed) -> the caller CURRENTLY holds an allowed role.
++  -- Only then is the replay ledger consulted (org-scoped, key bound to the original requested status).
+   select organization_id, load_id into v_dispatch_org, v_load_id
+   from public.dispatches where id = p_dispatch_id;
+@@ -62,4 +53,34 @@
+     raise exception 'transition_dispatch_status: dispatch % not found.', p_dispatch_id using errcode = 'TSDNF';
+   end if;
++  if not public.has_role(array['owner','admin','dispatcher']::public.org_role[]) then
++    raise exception 'transition_dispatch_status: only an owner, admin, or dispatcher may change dispatch status.' using errcode = 'TSROL';
++  end if;
++
++  -- Idempotency short-circuit -- AFTER authorization, BEFORE any lock, validation or write. A retried call with the SAME
++  -- (dispatch_id, idempotency_key) in the caller's organization replays the ORIGINAL cached result verbatim, never
++  -- re-validating against however the row looks now.
++  if p_idempotency_key is not null then
++    select t.old_status, t.new_status, t.result into v_cached_old, v_cached_new, v_cached
++    from public.dispatch_status_transitions t
++    where t.dispatch_id = p_dispatch_id and t.idempotency_key = p_idempotency_key and t.organization_id = v_org;
++    if found then
++      -- (pre-lock) the key is bound to the ORIGINAL request: a different requested status is a client bug, never a silent stale result.
++      if v_cached_new is distinct from p_new_status then
++        raise exception 'transition_dispatch_status: this idempotency key was already used for a different request.' using errcode = 'TSIDK';
++      end if;
++      -- A replay never grants more than the original operation needed: replaying a reactivation or a backward correction
++      -- requires CURRENT owner/admin authority, exactly as performing it does.
++      if (v_cached_old = 'cancelled' and v_cached_new <> 'cancelled')
++         or (public.dispatch_status_sequence_rank(v_cached_old) is not null and public.dispatch_status_sequence_rank(v_cached_new) is not null
++             and public.dispatch_status_sequence_rank(v_cached_new) < public.dispatch_status_sequence_rank(v_cached_old)) then
++        if not public.has_role(array['owner','admin']::public.org_role[]) then
++          raise exception 'transition_dispatch_status: replaying a reactivation or a backward correction requires owner/admin authority.' using errcode = 'TSROL';
++        end if;
++      end if;
++      return v_cached || jsonb_build_object('idempotent_replay', true);
++    end if;
++  end if;
++
++  -- (the dispatch's organization and load_id were resolved and verified above, before any ledger read)
+ 
+   -- ===== STEP 1: LOCK THE LOAD FIRST -- unconditional, for EVERY call,
+@@ -85,4 +106,29 @@
+   select status, carrier_id into v_old_status, v_dispatch_carrier
+   from public.dispatches where id = p_dispatch_id for update;
++
++  -- 0151: re-check the ledger UNDER the locks. Two concurrent identical requests both miss the pre-lock lookup; the loser waits
++  -- on the load/dispatch lock here and must then replay the winner's committed result (same authorization, same rules) rather
++  -- than re-evaluating against the moved row.
++  if p_idempotency_key is not null then
++    select t.old_status, t.new_status, t.result into v_cached_old, v_cached_new, v_cached
++    from public.dispatch_status_transitions t
++    where t.dispatch_id = p_dispatch_id and t.idempotency_key = p_idempotency_key and t.organization_id = v_org;
++    if found then
++      -- (post-lock) the key is bound to the ORIGINAL request: a different requested status is a client bug, never a silent stale result.
++      if v_cached_new is distinct from p_new_status then
++        raise exception 'transition_dispatch_status: this idempotency key was already used for a different request.' using errcode = 'TSIDK';
++      end if;
++      -- A replay never grants more than the original operation needed: replaying a reactivation or a backward correction
++      -- requires CURRENT owner/admin authority, exactly as performing it does.
++      if (v_cached_old = 'cancelled' and v_cached_new <> 'cancelled')
++         or (public.dispatch_status_sequence_rank(v_cached_old) is not null and public.dispatch_status_sequence_rank(v_cached_new) is not null
++             and public.dispatch_status_sequence_rank(v_cached_new) < public.dispatch_status_sequence_rank(v_cached_old)) then
++        if not public.has_role(array['owner','admin']::public.org_role[]) then
++          raise exception 'transition_dispatch_status: replaying a reactivation or a backward correction requires owner/admin authority.' using errcode = 'TSROL';
++        end if;
++      end if;
++      return v_cached || jsonb_build_object('idempotent_replay', true);
++    end if;
++  end if;
+ 
+   if v_old_status = p_new_status then

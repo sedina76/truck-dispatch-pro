@@ -35,6 +35,8 @@ const HEADING_BY_CODE: Record<string, string> = {
   // picks up a fresh one.
   EXPECTED_VERSION_REQUIRED: "Please reload this page",
   LOCK_TIMEOUT: "This dispatch is busy",
+  // 0152: an idempotency key was reused with different request data (RRIDK)
+  IDEMPOTENCY_KEY_REUSED: "Request already submitted",
   CARRIER_CHANGE_REJECTED: "Carrier can't be changed here",
   // guard_dispatch_carrier_scope() (0132) conditions translated by
   // CARRIER_SCOPE_GUARD_MESSAGES in errors.ts. LOAD_NOT_FOUND and

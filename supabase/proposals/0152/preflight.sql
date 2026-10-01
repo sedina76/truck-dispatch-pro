@@ -1,0 +1,116 @@
+-- =============================================================================
+-- preflight.sql
+-- PROPOSAL 0152 -- NOT APPROVED FOR PRODUCTION. NOT APPLIED. NOT A PRODUCTION MIGRATION (lives under supabase/proposals/, not supabase/migrations/).
+-- Sequencing: 0130..0147 -> 0149 -> 0150 -> 0151 -> 0152 (this). Current proposal 0148 is unrelated and MUST be
+-- renumbered to 0153 or higher before promotion.
+--
+-- Run BEFORE applying 0152. READ-ONLY: ONE select statement over catalogs and public tables; no data-/schema-changing statement, no
+-- transaction control, no temporary object. RESULT: every row INFO or PASS and a final RESULT | PASS row; otherwise the statement RAISES
+-- (invalid input syntax for type integer: "PREFLIGHT 0152 FAIL ...") whose text is the complete report.
+-- =============================================================================
+with rows as (
+  select 100 as ord, 'SERVER' as section, 'server_version' as item, 'INFO' as result, current_setting('server_version')::text as detail
+  union all select 110, 'PRECONDITION', 'proposal 0151 is applied (transition_dispatch_status authorizes before replay)',
+         case when position('tsidk' in coalesce((select regexp_replace(lower(prosrc), '\s+', '', 'g') from pg_proc where oid = to_regprocedure('public.transition_dispatch_status(uuid,public.dispatch_status,text,text)')), '')) > 0 then 'PASS' else 'FAIL' end, 'catalog'
+  union all select 111, 'PRECONDITION', 'compute_financial_request_fingerprint(jsonb) exists (0143)', case when to_regprocedure('public.compute_financial_request_fingerprint(jsonb)') is not null then 'PASS' else 'FAIL' end, 'catalog'
+  union all select 112, 'PRECONDITION', 'the five ledger tables exist',
+         case when to_regclass('public.factoring_policy_idempotency') is not null and to_regclass('public.factoring_integration_lifecycle_idempotency') is not null and to_regclass('public.dispatch_resource_reassignments') is not null
+                   and to_regclass('public.legacy_invoice_review_idempotency') is not null and to_regclass('public.carrier_invoice_lifecycle_idempotency') is not null then 'PASS' else 'FAIL' end, 'catalog'
+  union all select 113, 'PRECONDITION', 'request_fingerprint columns do not exist yet (0152 not applied)',
+         case when not exists (select 1 from information_schema.columns where table_schema = 'public' and column_name = 'request_fingerprint' and table_name in ('factoring_policy_idempotency', 'factoring_integration_lifecycle_idempotency')) then 'PASS' else 'FAIL' end, 'catalog'
+  union all select 200, 'FUNCTION', 'reassign_dispatch_resources: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')) = '7275c1efb655f198bdc0c20043bdb8fb' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')), 'MISSING')
+  union all select 201, 'FUNCTION', 'reassign_dispatch_resources: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.reassign_dispatch_resources(uuid,uuid,uuid,uuid,text,text,timestamptz)')), 'MISSING')
+  union all select 203, 'FUNCTION', 'set_carrier_factoring_policy: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.set_carrier_factoring_policy(uuid,public.carrier_factoring_mode,text,timestamptz,text)')) = 'da10cb9a8f52a60df7cba39c7d554c8b' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.set_carrier_factoring_policy(uuid,public.carrier_factoring_mode,text,timestamptz,text)')), 'MISSING')
+  union all select 204, 'FUNCTION', 'set_carrier_factoring_policy: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.set_carrier_factoring_policy(uuid,public.carrier_factoring_mode,text,timestamptz,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.set_carrier_factoring_policy(uuid,public.carrier_factoring_mode,text,timestamptz,text)')), 'MISSING')
+  union all select 206, 'FUNCTION', 'configure_carrier_factoring_integration: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.configure_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')) = '26bf692b2ceb209e578016335adedc28' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.configure_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')), 'MISSING')
+  union all select 207, 'FUNCTION', 'configure_carrier_factoring_integration: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.configure_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.configure_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')), 'MISSING')
+  union all select 209, 'FUNCTION', 'rotate_carrier_factoring_integration: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.rotate_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')) = 'bb906c5a5869a2a7dcd667bbcbfaa908' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.rotate_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')), 'MISSING')
+  union all select 210, 'FUNCTION', 'rotate_carrier_factoring_integration: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.rotate_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.rotate_carrier_factoring_integration(uuid,text,text,public.integration_provider,text,text,timestamptz,text)')), 'MISSING')
+  union all select 212, 'FUNCTION', 'transition_carrier_factoring_integration_lifecycle: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text,uuid,text,timestamptz,text)')) = '4623555e7353ca9d4aaeee10280e8ae3' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text,uuid,text,timestamptz,text)')), 'MISSING')
+  union all select 213, 'FUNCTION', 'transition_carrier_factoring_integration_lifecycle: SECURITY DEFINER, pinned search_path, internal-only (authenticated may NOT execute)',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and not has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text,uuid,text,timestamptz,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text,uuid,text,timestamptz,text)')), 'MISSING')
+  union all select 215, 'FUNCTION', 'deactivate_factoring_relationship: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.deactivate_factoring_relationship(uuid,text,timestamptz,text,boolean)')) = '6d7f33e2f6d6f2b79c19b7da1883f6ac' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.deactivate_factoring_relationship(uuid,text,timestamptz,text,boolean)')), 'MISSING')
+  union all select 216, 'FUNCTION', 'deactivate_factoring_relationship: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.deactivate_factoring_relationship(uuid,text,timestamptz,text,boolean)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.deactivate_factoring_relationship(uuid,text,timestamptz,text,boolean)')), 'MISSING')
+  union all select 218, 'FUNCTION', 'review_legacy_invoice_carrier_migration: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')) = 'e40fdf2d68e9bfb4b9fa57faf9c082ae' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')), 'MISSING')
+  union all select 219, 'FUNCTION', 'review_legacy_invoice_carrier_migration: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.review_legacy_invoice_carrier_migration(uuid,text,text,timestamptz,text)')), 'MISSING')
+  union all select 221, 'FUNCTION', 'update_carrier_invoice_draft: body is the reviewed baseline definition',
+         case when (select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)')) = '46aaae9d829d888d9da2dbed865680fb' then 'PASS' else 'FAIL' end, coalesce((select md5(regexp_replace(lower(regexp_replace(prosrc, '--[^\n]*', '', 'g')), '\s+', '', 'g')) from pg_proc where oid = to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)')), 'MISSING')
+  union all select 222, 'FUNCTION', 'update_carrier_invoice_draft: SECURITY DEFINER, pinned search_path, EXECUTE for authenticated, none for PUBLIC',
+         case when (select p.prosecdef and p.proconfig::text = '{"search_path=pg_catalog, public"}' and has_function_privilege('authenticated', p.oid, 'execute')
+                           and not (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)')) then 'PASS' else 'FAIL' end,
+         coalesce((select coalesce(p.proacl::text, 'NULL') from pg_proc p where p.oid = to_regprocedure('public.update_carrier_invoice_draft(uuid,jsonb,timestamptz,text,text)')), 'MISSING')
+  union all select 400, 'PRIVILEGE', 'internal helper public._issue_dispatch_service_invoice_internal is not executable by authenticated/anon/PUBLIC (service_role: INFO below)', case when to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)') is not null and not has_function_privilege('authenticated', to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)'), 'execute') and not has_function_privilege('anon', to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)'), 'execute') and not (select (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)')) then 'PASS' else 'FAIL' end, coalesce((select coalesce(proacl::text, 'NULL') from pg_proc where oid = to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)')), 'MISSING')
+  union all select 401, 'PRIVILEGE', 'service_role EXECUTE on public._issue_dispatch_service_invoice_internal', 'INFO', coalesce(has_function_privilege('service_role', to_regprocedure('public._issue_dispatch_service_invoice_internal(uuid, public.carrier_invoices, uuid, uuid, text, text, text, integer, text)'), 'execute')::text, 'MISSING')
+  union all select 402, 'PRIVILEGE', 'internal helper public.transition_carrier_factoring_integration_lifecycle is not executable by authenticated/anon/PUBLIC (service_role: INFO below)', case when to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)') is not null and not has_function_privilege('authenticated', to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)'), 'execute') and not has_function_privilege('anon', to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)'), 'execute') and not (select (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)')) then 'PASS' else 'FAIL' end, coalesce((select coalesce(proacl::text, 'NULL') from pg_proc where oid = to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)')), 'MISSING')
+  union all select 403, 'PRIVILEGE', 'service_role EXECUTE on public.transition_carrier_factoring_integration_lifecycle', 'INFO', coalesce(has_function_privilege('service_role', to_regprocedure('public.transition_carrier_factoring_integration_lifecycle(text, uuid, text, timestamptz, text)'), 'execute')::text, 'MISSING')
+  union all select 404, 'PRIVILEGE', 'internal helper public._generate_carrier_invoice_payment_number_internal is not executable by authenticated/anon/PUBLIC (service_role: INFO below)', case when to_regprocedure('public._generate_carrier_invoice_payment_number_internal()') is not null and not has_function_privilege('authenticated', to_regprocedure('public._generate_carrier_invoice_payment_number_internal()'), 'execute') and not has_function_privilege('anon', to_regprocedure('public._generate_carrier_invoice_payment_number_internal()'), 'execute') and not (select (p.proacl is null or exists (select 1 from unnest(p.proacl) a where a::text like '=%')) from pg_proc p where p.oid = to_regprocedure('public._generate_carrier_invoice_payment_number_internal()')) then 'PASS' else 'FAIL' end, coalesce((select coalesce(proacl::text, 'NULL') from pg_proc where oid = to_regprocedure('public._generate_carrier_invoice_payment_number_internal()')), 'MISSING')
+  union all select 405, 'PRIVILEGE', 'service_role EXECUTE on public._generate_carrier_invoice_payment_number_internal', 'INFO', coalesce(has_function_privilege('service_role', to_regprocedure('public._generate_carrier_invoice_payment_number_internal()'), 'execute')::text, 'MISSING')
+  union all select 500, 'LEDGER', 'dispatch_resource_reassignments rows', 'INFO', (select count(*) from public.dispatch_resource_reassignments)::text
+  union all select 501, 'LEDGER', 'factoring_policy_idempotency is EMPTY (zero-row invariant; fingerprints cannot be derived for existing rows)',
+         case when (select count(*) from public.factoring_policy_idempotency) = 0 then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_policy_idempotency)::text || ' row(s)'
+  union all select 502, 'LEDGER', 'factoring_integration_lifecycle_idempotency is EMPTY or exactly the two reviewed retirement receipts (legacy keys will not replay)',
+         case when (select count(*) from public.factoring_integration_lifecycle_idempotency) = 0 or (
+      (select count(*) from public.factoring_integration_lifecycle_idempotency) = 2
+      and (select count(distinct t.target_id) from public.factoring_integration_lifecycle_idempotency t) = 2
+      and not exists (
+        select 1 from public.factoring_integration_lifecycle_idempotency t
+        left join public.factoring_relationships legacy_rel on legacy_rel.id = t.target_id
+        where not coalesce(
+          t.action = 'deactivate_relationship'
+          and ((t.target_id = 'fc926ea0-f11c-40fa-941b-afb89aae19de'::uuid
+                and t.created_at = '2026-09-29 02:31:43.081649+00'::timestamptz)
+            or (t.target_id = 'd9ddf2b8-8ab5-404a-a906-8a429ca2b608'::uuid
+                and t.created_at = '2026-09-29 02:40:54.444648+00'::timestamptz))
+          and legacy_rel.organization_id = t.organization_id
+          and legacy_rel.is_active = false
+          and t.result->'success' = 'true'::jsonb
+          and t.result->>'relationship_id' = t.target_id::text
+          and btrim(t.idempotency_key) <> '', false)
+      )
+    ) then 'PASS' else 'FAIL' end, (select count(*) from public.factoring_integration_lifecycle_idempotency)::text || ' row(s)'
+  union all select 503, 'LEDGER', 'legacy_invoice_review_idempotency rows', 'INFO', (select count(*) from public.legacy_invoice_review_idempotency)::text
+  union all select 504, 'LEDGER', 'carrier_invoice_lifecycle_idempotency rows', 'INFO', (select count(*) from public.carrier_invoice_lifecycle_idempotency)::text
+  union all select 510, 'LEDGER', 'reassignment ledger rows whose organization differs from their dispatch''s (would stop replaying; must be 0)',
+         case when (select count(*) from public.dispatch_resource_reassignments t join public.dispatches d on d.id = t.dispatch_id where d.organization_id <> t.organization_id) = 0 then 'PASS' else 'FAIL' end, 'ledger'
+  union all select 511, 'LEDGER', 'policy ledger rows whose organization differs from their carrier''s (must be 0)',
+         case when (select count(*) from public.factoring_policy_idempotency t join public.carriers c on c.id = t.carrier_id where c.organization_id <> t.organization_id) = 0 then 'PASS' else 'FAIL' end, 'ledger'
+),
+verdict as (
+  select count(*) filter (where result = 'PASS') as n_pass, count(*) filter (where result = 'FAIL') as n_fail, count(*) filter (where result = 'INFO') as n_info,
+         case when count(*) filter (where result = 'FAIL') = 0 and count(*) filter (where result = 'PASS') > 0 then 0
+              else ('PREFLIGHT 0152 FAIL: ' || (count(*) filter (where result = 'FAIL'))::text || ' failing check(s). Full report follows.' || E'\n'
+                    || string_agg(section || ' | ' || item || ' | ' || result || ' | ' || detail, E'\n' order by ord))::int
+         end as gate   -- a deliberate cast error: raises only when a check fails
+  from rows
+)
+select r.ord, r.section, r.item, r.result, r.detail from rows r cross join verdict v where v.gate = 0
+union all
+select 9000, 'RESULT', 'PREFLIGHT 0152: live definitions are the reviewed baseline', 'PASS', v.n_pass::text || ' checks passed, 0 failed, ' || v.n_info::text || ' informational rows' from verdict v where v.gate = 0
+order by 1;

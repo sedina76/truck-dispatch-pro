@@ -1,0 +1,2 @@
+# Proposal 0156 -- legacy-invoice factoring submission -- SUPERSEDED FOR PRODUCTION USE, NOT PROMOTABLE, DISABLED BY DEFAULT
+Owner decisions D-08a/D-08b exclude legacy `invoices` from automatic factoring. This proposal is kept (with its tests and history) but must not be promoted; its gate must never be enabled. The carrier-invoice design is **proposal 0157**. See `OWNER_DECISIONS.md`. Requires 0154 and 0155. `rollback.sql` restores the exact 0140 function and keeps historical submissions and snapshots.

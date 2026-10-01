@@ -1,0 +1,37 @@
+--- baseline (deactivate_factoring_relationship)
++++ 0152 (deactivate_factoring_relationship)
+@@ -16,4 +16,5 @@
+   v_precheck jsonb;
+   v_cached public.factoring_integration_lifecycle_idempotency%rowtype;
++  v_fp text;
+   v_relationship record;
+   v_active_count int;
+@@ -36,7 +37,19 @@
+   end if;
+ 
++  -- 0152: request binding. The organization-scoped target lookup and the owner/admin gate above already precede this read.
++  v_fp := public.compute_financial_request_fingerprint(jsonb_build_object(
++      'operation', 'deactivate_factoring_relationship',
++      'schema_version', 1,
++      'organization_id', v_org,
++      'relationship_id', p_relationship_id,
++      'coordinated', coalesce(p_coordinated, false),
++      'reason', nullif(btrim(coalesce(p_reason, '')), '')
++    ));
+   select * into v_cached from public.factoring_integration_lifecycle_idempotency
+     where action = 'deactivate_relationship' and target_id = p_relationship_id and idempotency_key = p_idempotency_key;
+   if found then
++    if v_cached.request_fingerprint is distinct from v_fp then
++      return jsonb_build_object('success', false, 'code', 'IDEMPOTENCY_KEY_REUSED', 'message', 'This idempotency key was already used for a different request.');
++    end if;
+     return v_cached.result || jsonb_build_object('idempotent_replay', true);
+   end if;
+@@ -74,6 +87,6 @@
+     'updated_at', v_updated_at, 'suspended_integrations', v_active_count);
+ 
+-  insert into public.factoring_integration_lifecycle_idempotency (organization_id, action, target_id, idempotency_key, result)
+-  values (v_org, 'deactivate_relationship', p_relationship_id, p_idempotency_key, v_result);
++  insert into public.factoring_integration_lifecycle_idempotency (organization_id, action, target_id, idempotency_key, result, request_fingerprint)
++  values (v_org, 'deactivate_relationship', p_relationship_id, p_idempotency_key, v_result, v_fp);
+ 
+   return v_result;

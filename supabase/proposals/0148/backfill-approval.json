@@ -1,0 +1,20 @@
+{
+  "status": "NOT APPROVED FOR PRODUCTION",
+  "enabled": false,
+  "executable_backfill_available": false,
+  "plan_sha256": null,
+  "catalog_sha256": null,
+  "evidence_sha256": null,
+  "expires_at": null,
+  "lead_dba_signature": null,
+  "finance_ar_signature": null,
+  "factoring_operations_signature": null,
+  "security_signature": null,
+  "conditions": [
+    "Separately implement and review signature verification; a session flag or edited JSON is not approval.",
+    "Refresh deterministic evidence under locked snapshot; refuse tenant or dispatch/load conflicts.",
+    "Leave ambiguous ownership NULL and record actual unresolved provenance only.",
+    "No invoice conversion, financial cleanup, or migration-history edits.",
+    "Current backfill.sql always refuses, even if this artifact is edited."
+  ]
+}
