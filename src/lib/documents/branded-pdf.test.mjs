@@ -273,3 +273,10 @@ test("statement PDF renders through the branded layout", () => {
   assert.match(gen, /return renderStatementDocument\(data, statementNumber\)/);
   assert.doesNotMatch(gen, /StandardFonts/);
 });
+
+test("the invoice screen's Download PDF / Print button serves the branded PDF", () => {
+  const route = src("../../app/invoices/[id]/pdf/route.ts");
+  assert.match(route, /requireRoleForApi\(FINANCIAL_ROLES\)/);
+  assert.match(route, /await renderInvoiceOnlyPdf\(id\)/);
+  assert.match(route, /"Content-Type": "application\/pdf"/);
+});
