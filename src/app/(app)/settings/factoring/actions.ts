@@ -7,6 +7,7 @@ import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/req
 import { emptyToNull } from "@/lib/utils/form";
 import type { CarrierFactoringMode } from "@/lib/factoring/types";
 import { resolveStructuredRpcResult, type StructuredRpcResult } from "@/lib/factoring/rpc-result";
+import { relationshipReadinessSteps, notReadyMessage } from "@/lib/factoring/readiness";
 import {
   validateOptionalEmail,
   validateOptionalWebsite,
@@ -15,6 +16,8 @@ import {
   validateFeeTiming,
   validateRecourseType,
   validateEffectiveRange,
+  validateSubmissionSetup,
+  validateNoaApproval,
 } from "@/lib/factoring/validation";
 
 const PATH = "/settings/factoring";
@@ -129,6 +132,12 @@ async function logFactoringActivity(organizationId: string, action: string, chan
     p_organization_id: organizationId,
   });
   if (error) console.error("[settings/factoring] log_activity failed:", error);
+}
+
+// The protected factoring RPCs raise "function_name: sentence" -- show only
+// the sentence.
+function stripRpcPrefix(message: string): string {
+  return message.replace(/^[a-z_]+:\s*/, "").replace(/^./, (c) => c.toUpperCase());
 }
 
 // Postgres error codes surfaced by PostgREST -- mapped to the human
@@ -449,7 +458,7 @@ export async function setDefaultFactoringRelationship(relationshipId: string): P
 
   const supabase = await createClient();
   const resolved = await resolveStructuredRpc(supabase.rpc("set_default_factoring_relationship", { p_relationship_id: relationshipId }));
-  if (!resolved.ok) return { ok: false, error: resolved.error };
+  if (!resolved.ok) return { ok: false, error: stripRpcPrefix(resolved.error) };
 
   await logFactoringActivity(auth.organizationId, "factoring_relationship_set_default", {
     factoring_relationship_id: relationshipId,
@@ -487,6 +496,127 @@ export async function setFactoringRelationshipActive(relationshipId: string, isA
   return { ok: true };
 }
 
+
+// ---------------------------------------------------------------------------
+// Billing & Submission -- remittance instructions + submission method
+// (0136 columns). These are two of the three things a relationship needs
+// before Set Default (0138) or a switch to Factored (0139) will succeed, and
+// until now no screen could set them. Owner/admin only:
+// guard_factoring_relationship_protected_fields() (0136) refuses remittance
+// changes from anyone else at the database layer regardless.
+// ---------------------------------------------------------------------------
+export async function updateFactoringRelationshipSetup(relationshipId: string, formData: FormData): Promise<FactoringActionResult> {
+  const auth = await requireOwnerAdminFactoringAccess();
+  if ("error" in auth) return { ok: false, error: auth.error };
+
+  const supabase = await createClient();
+  const { data: existing } = await supabase
+    .from("factoring_relationships")
+    .select("id, carrier_id, submission_method")
+    .eq("id", relationshipId)
+    .eq("organization_id", auth.organizationId)
+    .maybeSingle();
+  if (!existing) return { ok: false, error: "Factoring relationship not found." };
+
+  const parsed = validateSubmissionSetup(
+    {
+      remittance_instructions: formData.get("remittance_instructions"),
+      remittance_reference: formData.get("remittance_reference"),
+      submission_method: formData.get("submission_method"),
+      submission_destination_email: formData.get("submission_destination_email"),
+      submission_notes: formData.get("submission_notes"),
+    },
+    existing.submission_method ?? null
+  );
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+
+  const { error } = await supabase.from("factoring_relationships").update(parsed.values).eq("id", relationshipId);
+  if (error) return { ok: false, error: friendlyDbError(error, "relationship") };
+
+  await logFactoringActivity(auth.organizationId, "factoring_relationship_billing_updated", {
+    factoring_relationship_id: relationshipId,
+    carrier_id: existing.carrier_id,
+    submission_method: parsed.values.submission_method,
+    has_remittance_instructions: Boolean(parsed.values.remittance_instructions),
+  });
+  revalidatePath(PATH);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Approve Notice of Assignment -- the app's entry point to
+// approve_factoring_relationship_noa() (0140), which re-checks owner/admin,
+// organization, carrier, and (for a document) that it is this carrier's own
+// verified NOA/factoring-notice document. The RPC raises on every rejection;
+// its message is shown without the internal function-name prefix.
+// ---------------------------------------------------------------------------
+
+export async function approveFactoringRelationshipNoa(relationshipId: string, formData: FormData): Promise<FactoringActionResult> {
+  const auth = await requireOwnerAdminFactoringAccess();
+  if ("error" in auth) return { ok: false, error: auth.error };
+
+  const parsed = validateNoaApproval({
+    noa_reference: formData.get("noa_reference"),
+    noa_effective_date: formData.get("noa_effective_date"),
+    noa_template_text: formData.get("noa_template_text"),
+    noa_document_id: formData.get("noa_document_id"),
+  });
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("approve_factoring_relationship_noa", {
+    p_relationship_id: relationshipId,
+    p_noa_reference: parsed.values.reference,
+    p_noa_effective_date: parsed.values.effectiveDate,
+    p_noa_template_text: parsed.values.templateText,
+    p_noa_document_id: parsed.values.documentId,
+  });
+  if (error) return { ok: false, error: stripRpcPrefix(error.message) };
+  if (!data || (data as { success?: boolean }).success !== true) return { ok: false, error: "The Notice of Assignment could not be approved." };
+
+  // The RPC writes its own audit event (factoring_noa_approved, on the carrier).
+  revalidatePath(PATH);
+  return { ok: true };
+}
+
+// When set_carrier_factoring_policy refuses a switch to Factored as
+// not_ready, its own message points at a database function the user cannot
+// run. Build a plain-language list of what this carrier's closest-to-ready
+// relationship still needs instead (lib/factoring/readiness.ts mirrors the
+// RPC's exact conditions).
+async function describeFactoredNotReady(carrierId: string, organizationId: string): Promise<string> {
+  const supabase = await createClient();
+  const [{ data: carrier }, { data: rels }] = await Promise.all([
+    supabase.from("carriers").select("legal_name").eq("id", carrierId).eq("organization_id", organizationId).maybeSingle(),
+    supabase
+      .from("factoring_relationships")
+      .select("relationship_name, is_default, is_active, effective_from, effective_to, remittance_instructions, noa_approved, submission_method, factoring_companies(name, is_active)")
+      .eq("carrier_id", carrierId)
+      .eq("organization_id", organizationId),
+  ]);
+  type Row = {
+    relationship_name: string | null;
+    is_default: boolean;
+    is_active: boolean;
+    effective_from: string | null;
+    effective_to: string | null;
+    remittance_instructions: string | null;
+    noa_approved: boolean | null;
+    submission_method: "secure_email" | "api" | "portal_manual" | "internal_queue" | null;
+    factoring_companies: { name: string; is_active: boolean } | { name: string; is_active: boolean }[] | null;
+  };
+  const candidates = ((rels ?? []) as unknown as Row[]).map((r) => {
+    const company = Array.isArray(r.factoring_companies) ? r.factoring_companies[0] : r.factoring_companies;
+    return {
+      name: [company?.name, r.relationship_name].filter(Boolean).join(" · "),
+      isDefault: r.is_default,
+      isActive: r.is_active,
+      steps: relationshipReadinessSteps(r, Boolean(company?.is_active)),
+    };
+  });
+  return notReadyMessage(carrier?.legal_name ?? "This carrier", candidates);
+}
+
 // ---------------------------------------------------------------------------
 // Carrier factoring policy (Phase 3B.1.3 -- the app's one entry point to
 // public.set_carrier_factoring_policy(), 0139). Owner/admin only, app
@@ -511,16 +641,20 @@ export async function setCarrierFactoringPolicy(
   if (!expectedUpdatedAt) return { ok: false, error: "Missing the carrier's current version -- please refresh and try again." };
 
   const supabase = await createClient();
-  const resolved = await resolveStructuredRpc(
-    supabase.rpc("set_carrier_factoring_policy", {
-      p_carrier_id: carrierId,
-      p_mode: mode,
-      p_reason: reason,
-      p_expected_updated_at: expectedUpdatedAt,
-      p_idempotency_key: null,
-    })
-  );
-  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const { data, error } = await supabase.rpc("set_carrier_factoring_policy", {
+    p_carrier_id: carrierId,
+    p_mode: mode,
+    p_reason: reason,
+    p_expected_updated_at: expectedUpdatedAt,
+    p_idempotency_key: null,
+  });
+  const resolved = resolveStructuredRpcResult(data as StructuredRpcResult | null, error);
+  if (!resolved.ok) {
+    if (!error && (data as StructuredRpcResult | null)?.not_ready) {
+      return { ok: false, error: await describeFactoredNotReady(carrierId, auth.organizationId) };
+    }
+    return { ok: false, error: resolved.error };
+  }
 
   revalidatePath(PATH);
   return { ok: true };

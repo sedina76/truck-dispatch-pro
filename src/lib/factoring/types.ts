@@ -99,7 +99,34 @@ export type FactoringRelationshipRow = {
   effective_from: string;
   effective_to: string | null;
   created_at: string;
+  // Carrier-scoped readiness/configuration columns (0136). Optional so this
+  // type still describes rows read before 0136 was applied.
+  remittance_instructions?: string | null;
+  remittance_reference?: string | null;
+  noa_approved?: boolean | null;
+  noa_reference?: string | null;
+  noa_effective_date?: string | null;
+  noa_template_text?: string | null;
+  noa_document_id?: string | null;
+  noa_approved_at?: string | null;
+  submission_method?: FactoringSubmissionMethod | null;
+  submission_destination_email?: string | null;
+  submission_notes?: string | null;
 };
+
+// A carrier's verified NOA / factoring-notice document, offered when
+// approving a Notice of Assignment.
+export type NoaDocumentOption = { id: string; fileName: string; documentType: string; createdAt: string };
+
+// public.factoring_submission_method (0136). "api" additionally requires an
+// active factoring API integration (0141) and is configured elsewhere.
+export type FactoringSubmissionMethod = "secure_email" | "api" | "portal_manual" | "internal_queue";
+
+export const SUBMISSION_METHOD_OPTIONS: { value: Exclude<FactoringSubmissionMethod, "api">; label: string; description: string }[] = [
+  { value: "secure_email", label: "Email to the factor", description: "Invoices are emailed to the factor's submission address." },
+  { value: "portal_manual", label: "Factor's web portal (manual upload)", description: "Someone uploads each invoice on the factor's own website." },
+  { value: "internal_queue", label: "Internal queue", description: "Invoices are queued here for your team to submit by hand." },
+];
 
 // Derived UI-only lifecycle label (spec Phase 2H.3 section 10) -- NEVER a
 // stored/DB status. is_active remains the one real enable/disable control;

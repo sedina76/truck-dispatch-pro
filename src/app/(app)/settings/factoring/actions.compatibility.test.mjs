@@ -279,3 +279,23 @@ test("3B.1.5: a resolved rejection surfaces the RPC's own code/snapshot_required
   assert.match(FACTORING_ACTIONS, /code: rpcResult\?\.code,/);
   assert.match(FACTORING_ACTIONS, /snapshotRequired: rpcResult\?\.snapshot_required === true,/);
 });
+
+// ==========================================================================
+// Billing & Submission + Approve NOA (the two setup steps that had no screen
+// before): owner/admin only, matching guard_factoring_relationship_protected_
+// fields() (0136) and approve_factoring_relationship_noa() (0140).
+// ==========================================================================
+test("setup actions: updateFactoringRelationshipSetup and approveFactoringRelationshipNoa are owner/admin only", () => {
+  for (const fn of ["updateFactoringRelationshipSetup", "approveFactoringRelationshipNoa"]) {
+    assert.match(fnBody(fn), /requireOwnerAdminFactoringAccess\(\)/, `${fn} must use requireOwnerAdminFactoringAccess`);
+  }
+  assert.match(fnBody("approveFactoringRelationshipNoa"), /supabase\.rpc\("approve_factoring_relationship_noa"/);
+  // only the five Billing & Submission columns are written, never is_default/noa_*/carrier_id
+  assert.match(fnBody("updateFactoringRelationshipSetup"), /\.update\(parsed\.values\)/);
+});
+
+test("setCarrierFactoringPolicy turns a not_ready rejection into a plain-language list, never the raw function name", () => {
+  const body = fnBody("setCarrierFactoringPolicy");
+  assert.match(body, /\?\.not_ready\)/);
+  assert.match(body, /describeFactoredNotReady\(carrierId, auth\.organizationId\)/);
+});
