@@ -4,7 +4,7 @@
 //
 // Deletes the stored files (Supabase Storage) belonging to the 57 TEST-*
 // fixture organizations listed below, so that
-// supabase/CLEANUP_TEST_ORGS_2026_09.sql can then remove their database rows.
+// supabase/archive/one-off-sql/CLEANUP_TEST_ORGS_2026_09.sql (completed 2026-09-30) removed their database rows.
 // Supabase does not allow deleting storage files from SQL, so this uses the
 // Storage REST API with the service-role key. No npm packages needed.
 //

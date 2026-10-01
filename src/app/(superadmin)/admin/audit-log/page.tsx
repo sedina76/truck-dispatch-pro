@@ -46,7 +46,7 @@ export default async function SuperAdminAuditLogPage() {
       <PageHeader title="Audit Log" description="Every real, recorded platform-level event across all tenants." />
       {(logs ?? []).length === 0 && (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-[13px] text-amber-300">
-          No explicit platform-admin-action log entries yet -- either none have happened since RUN_THIS_FOR_PLATFORM_CONSOLE_REDESIGN.sql was applied, or it hasn&apos;t been applied yet. Company/subscription/payment events below are still real.
+          No explicit platform-admin-action log entries yet -- either none have happened since migration 0045_platform_console_redesign was applied, or it hasn&apos;t been applied yet. Company/subscription/payment events below are still real.
         </div>
       )}
       <PlatformActivityFeed entries={entries.slice(0, 100)} />

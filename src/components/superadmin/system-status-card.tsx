@@ -42,7 +42,7 @@ export function SystemStatusCard({
       </div>
       {!available && (
         <p className="mt-3 text-[11px] text-slate-600">
-          Live Dispatches/Open Invoices require RUN_THIS_FOR_PLATFORM_CONSOLE_REDESIGN.sql.
+          Live Dispatches/Open Invoices require migration 0045_platform_console_redesign.
         </p>
       )}
     </div>
