@@ -107,6 +107,13 @@ run_suite "TEST_FACTORING_LIFECYCLE_without_0160_must_fail" expect_failure run_f
 run_suite "TEST_FACTORING_LIFECYCLE_E2E" run_fresh_db_test TEST_FACTORING_LIFECYCLE_E2E.sql migrations/0160_factoring_fee_from_reserve_reconciliation_fix.sql
 run_suite "TEST_0160_existing_stuck_invoice" run_fresh_db_test TEST_0160_existing_stuck_invoice.sql
 
+# Signed-out function access (0161): with Supabase's default function grants
+# emulated, the encryption key is readable by anyone and advances can be
+# deducted into another org's settlement -- the test must FAIL; with 0161
+# it passes.
+run_suite "TEST_0161_without_fix_must_fail" expect_failure run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql
+run_suite "TEST_0161_signed_out_function_access" run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql migrations/0161_signed_out_function_access_hardening.sql
+
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
   echo "ALL DATABASE TESTS PASSED"
