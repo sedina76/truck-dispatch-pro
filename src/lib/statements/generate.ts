@@ -1,10 +1,6 @@
 import "server-only";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { createClient } from "@/lib/supabase/server";
-
-const PAGE_WIDTH = 612; // US Letter, points
-const PAGE_HEIGHT = 792;
-const MARGIN = 50;
+import { renderStatementDocument } from "@/lib/documents/branded-pdf";
 
 export type StatementPartyType = "broker" | "customer";
 export type StatementKind = "open_balance" | "period" | "aging";
@@ -52,6 +48,9 @@ export type StatementData = {
     address: string | null;
     phone: string | null;
     email: string | null;
+    authority: string | null; // "MC 123456 · USDOT 1234567"
+    footer: string | null; // organizations.invoice_footer
+    remitLines: string[]; // remittance instructions, else mailing address, else address
   };
   party: StatementParty;
   partyType: StatementPartyType;
@@ -107,10 +106,43 @@ export async function computeStatementData(params: {
         ]);
   if (partyError || !partyRow) throw new Error("Party not found.");
 
-  const { data: orgRow } = await supabase
+  // Branding/remittance columns are best-effort: if this database predates
+  // any of them, fall back to the basic columns rather than failing the
+  // statement.
+  type OrgRow = {
+    name: string;
+    address_line1: string | null;
+    city: string | null;
+    state: string | null;
+    postal_code: string | null;
+    business_phone: string | null;
+    business_email: string | null;
+    mc_number?: string | null;
+    dot_number?: string | null;
+    mailing_address_line1?: string | null;
+    mailing_city?: string | null;
+    mailing_state?: string | null;
+    mailing_postal_code?: string | null;
+    remittance_instructions?: string | null;
+    invoice_footer?: string | null;
+  };
+  const orgFull = await supabase
     .from("organizations")
-    .select("name, address_line1, city, state, postal_code, business_phone, business_email")
+    .select(
+      "name, address_line1, city, state, postal_code, business_phone, business_email, mc_number, dot_number, mailing_address_line1, mailing_city, mailing_state, mailing_postal_code, remittance_instructions, invoice_footer"
+    )
     .single();
+  const orgRow = (
+    orgFull.error
+      ? (await supabase.from("organizations").select("name, address_line1, city, state, postal_code, business_phone, business_email").single()).data
+      : orgFull.data
+  ) as OrgRow | null;
+  const cityLine = (city?: string | null, state?: string | null, zip?: string | null) => [[city, state].filter(Boolean).join(", "), zip].filter(Boolean).join(" ") || null;
+  const remitLines = orgRow?.remittance_instructions
+    ? orgRow.remittance_instructions.split(/\n/).map((l) => l.trim()).filter(Boolean).slice(0, 3)
+    : orgRow?.mailing_address_line1
+      ? [orgRow.mailing_address_line1, cityLine(orgRow.mailing_city, orgRow.mailing_state, orgRow.mailing_postal_code)].filter((l): l is string => Boolean(l))
+      : [orgRow?.address_line1, cityLine(orgRow?.city, orgRow?.state, orgRow?.postal_code)].filter((l): l is string => Boolean(l));
 
   const { data: bankRows } = await supabase
     .from("organization_bank_accounts")
@@ -206,9 +238,12 @@ export async function computeStatementData(params: {
   return {
     organization: {
       name: orgRow?.name ?? "Your Company",
-      address: [orgRow?.address_line1, orgRow?.city, orgRow?.state, orgRow?.postal_code].filter(Boolean).join(", ") || null,
+      address: [orgRow?.address_line1, cityLine(orgRow?.city, orgRow?.state, orgRow?.postal_code)].filter(Boolean).join(" \u00b7 ") || null,
       phone: orgRow?.business_phone ?? null,
       email: orgRow?.business_email ?? null,
+      authority: [orgRow?.mc_number ? `MC ${orgRow.mc_number}` : null, orgRow?.dot_number ? `USDOT ${orgRow.dot_number}` : null].filter(Boolean).join(" \u00b7 ") || null,
+      footer: orgRow?.invoice_footer?.trim() || null,
+      remitLines,
     },
     party,
     partyType,
@@ -238,172 +273,11 @@ export async function computeStatementData(params: {
   };
 }
 
-function money(n: number): string {
-  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-const AGING_LABELS: Record<string, string> = { current: "Current", "1_30": "1-30 Days", "31_60": "31-60 Days", "61_90": "61-90 Days", "90_plus": "90+ Days" };
-
-// Renders the PDF. Never touches SSN/CDL/medical/HR/collection-note data --
-// this file has no query path to any of it (organizations/brokers/
-// customers/invoices/payments/loads only).
+// Renders the PDF through the shared branded layout
+// (src/lib/documents/branded-pdf.ts -- same header/branding as invoices).
+// Never touches SSN/CDL/medical/HR/collection-note data -- this file has no
+// query path to any of it (organizations/brokers/customers/invoices/
+// payments/loads only).
 export async function renderStatementPdf(data: StatementData, statementNumber: string): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-  let page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  let y = PAGE_HEIGHT - MARGIN;
-
-  const newPage = () => {
-    page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    y = PAGE_HEIGHT - MARGIN;
-  };
-  const ensureRoom = (needed: number) => {
-    if (y - needed < MARGIN) newPage();
-  };
-
-  // ---- Header --------------------------------------------------------------
-  page.drawText(data.organization.name, { x: MARGIN, y, size: 15, font: bold });
-  page.drawText("STATEMENT", { x: PAGE_WIDTH - MARGIN - 140, y, size: 18, font: bold, color: rgb(0.1, 0.1, 0.15) });
-  y -= 16;
-  if (data.organization.address) {
-    page.drawText(data.organization.address, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-  }
-  page.drawText(statementNumber, { x: PAGE_WIDTH - MARGIN - 140, y, size: 10, font: bold });
-  y -= 13;
-  const contactLine = [data.organization.phone, data.organization.email].filter(Boolean).join("  |  ");
-  if (contactLine) page.drawText(contactLine, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-  page.drawText(`Statement Date: ${new Date(data.statementDate + "T00:00:00").toLocaleDateString()}`, { x: PAGE_WIDTH - MARGIN - 200, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-  y -= 13;
-  const periodLabel =
-    data.statementType === "period"
-      ? `Period: ${new Date(data.periodStart! + "T00:00:00").toLocaleDateString()} - ${new Date(data.periodEnd! + "T00:00:00").toLocaleDateString()}`
-      : `As Of: ${new Date(data.asOfDate + "T00:00:00").toLocaleDateString()}`;
-  page.drawText(periodLabel, { x: PAGE_WIDTH - MARGIN - 200, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-  y -= 26;
-
-  page.drawText("Bill To:", { x: MARGIN, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-  y -= 13;
-  page.drawText(data.party.company_name, { x: MARGIN, y, size: 12, font: bold });
-  y -= 14;
-  if (data.party.address) {
-    page.drawText(data.party.address, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  if (data.party.email) {
-    page.drawText(data.party.email, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  if (data.party.paymentTermsDays != null) {
-    page.drawText(`Terms: Net ${data.party.paymentTermsDays}`, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  y -= 12;
-
-  // ---- Balance summary -------------------------------------------------------
-  page.drawLine({ start: { x: MARGIN, y: y + 6 }, end: { x: PAGE_WIDTH - MARGIN, y: y + 6 }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
-  if (data.statementType === "period") {
-    drawSummaryRow(page, y, font, bold, "Opening Balance", money(data.openingBalance));
-    y -= 15;
-    drawSummaryRow(page, y, font, bold, "Charges This Period", money(data.periodCharges));
-    y -= 15;
-    drawSummaryRow(page, y, font, bold, "Payments This Period", `-${money(data.periodPayments)}`);
-    y -= 17;
-  }
-  page.drawText("Closing Balance", { x: MARGIN, y, size: 12, font: bold });
-  page.drawText(money(data.closingBalance), { x: PAGE_WIDTH - MARGIN - 100, y, size: 12, font: bold });
-  y -= 24;
-
-  // ---- Transaction ledger (Period) or Open Invoices (Open Balance / Aging) ---
-  if (data.statementType === "period") {
-    drawTableHeader(page, y, bold, ["Date", "Type", "Reference", "Load #", "Charges", "Payments", "Balance"], [MARGIN, 100, 165, 260, 330, 400, 470]);
-    y -= 16;
-    for (const t of data.transactions) {
-      ensureRoom(16);
-      if (y === PAGE_HEIGHT - MARGIN) drawTableHeader(page, y, bold, ["Date", "Type", "Reference", "Load #", "Charges", "Payments", "Balance"], [MARGIN, 100, 165, 260, 330, 400, 470]);
-      const typeLabel = t.txn_type === "invoice" ? "Invoice" : t.is_voided ? "Payment (Voided)" : "Payment";
-      const color = t.is_voided ? rgb(0.6, 0.6, 0.6) : rgb(0, 0, 0);
-      page.drawText(new Date(t.txn_date + "T00:00:00").toLocaleDateString(), { x: MARGIN, y, size: 8.5, font, color });
-      page.drawText(typeLabel, { x: 100, y, size: 8.5, font, color });
-      page.drawText(t.reference, { x: 165, y, size: 8.5, font, color });
-      page.drawText(t.load_number ?? "--", { x: 260, y, size: 8.5, font, color });
-      page.drawText(t.charge_amount > 0 ? money(t.charge_amount) : "--", { x: 330, y, size: 8.5, font, color });
-      page.drawText(t.payment_amount > 0 ? money(t.payment_amount) : t.is_voided ? "VOIDED" : "--", { x: 400, y, size: 8.5, font, color: t.is_voided ? rgb(0.7, 0.2, 0.2) : color });
-      page.drawText(money(t.running_balance), { x: 470, y, size: 8.5, font: bold, color });
-      y -= 14;
-    }
-    if (data.transactions.length === 0) {
-      page.drawText("No activity during this period.", { x: MARGIN, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-      y -= 16;
-    }
-  } else {
-    const cols = ["Invoice #", "Load #", "Invoice Date", "Due Date", "Original", "Balance", "Days Past Due", "Status"];
-    const xs = [MARGIN, 95, 150, 210, 270, 330, 400, 470];
-    drawTableHeader(page, y, bold, cols, xs);
-    y -= 16;
-    for (const inv of data.openInvoices) {
-      ensureRoom(16);
-      if (y === PAGE_HEIGHT - MARGIN) drawTableHeader(page, y, bold, cols, xs);
-      page.drawText(inv.invoice_number, { x: MARGIN, y, size: 8.5, font });
-      page.drawText(inv.load_number ?? "--", { x: 95, y, size: 8.5, font });
-      page.drawText(new Date(inv.issue_date + "T00:00:00").toLocaleDateString(), { x: 150, y, size: 8.5, font });
-      page.drawText(inv.due_date ? new Date(inv.due_date + "T00:00:00").toLocaleDateString() : "--", { x: 210, y, size: 8.5, font });
-      page.drawText(money(inv.total_amount), { x: 270, y, size: 8.5, font });
-      page.drawText(money(inv.balance_due), { x: 330, y, size: 8.5, font: bold });
-      page.drawText(inv.days_past_due > 0 ? String(inv.days_past_due) : "--", { x: 400, y, size: 8.5, font });
-      page.drawText(inv.effective_status.replace(/_/g, " "), { x: 470, y, size: 8, font });
-      y -= 14;
-    }
-    if (data.openInvoices.length === 0) {
-      page.drawText("No open invoices as of this date.", { x: MARGIN, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-      y -= 16;
-    }
-  }
-
-  // ---- Aging summary ---------------------------------------------------------
-  ensureRoom(90);
-  y -= 12;
-  page.drawText("Aging Summary", { x: MARGIN, y, size: 10, font: bold });
-  y -= 16;
-  const bucketVals: [string, number][] = [
-    [AGING_LABELS.current, data.aging.current],
-    [AGING_LABELS["1_30"], data.aging.bucket_1_30],
-    [AGING_LABELS["31_60"], data.aging.bucket_31_60],
-    [AGING_LABELS["61_90"], data.aging.bucket_61_90],
-    [AGING_LABELS["90_plus"], data.aging.bucket_90_plus],
-  ];
-  const bucketX = [MARGIN, MARGIN + 100, MARGIN + 200, MARGIN + 300, MARGIN + 400];
-  bucketVals.forEach(([label], i) => page.drawText(label, { x: bucketX[i], y, size: 8, font, color: rgb(0.45, 0.45, 0.45) }));
-  y -= 13;
-  bucketVals.forEach(([, val], i) => page.drawText(money(val), { x: bucketX[i], y, size: 9.5, font: bold }));
-  y -= 16;
-  page.drawText(`Total Outstanding: ${money(data.aging.total_outstanding)}`, { x: MARGIN, y, size: 10, font: bold });
-  y -= 22;
-
-  // ---- Payment instructions (only if the org actually has one configured) ---
-  if (data.bankInstructions) {
-    ensureRoom(50);
-    page.drawText("Payment Instructions", { x: MARGIN, y, size: 10, font: bold });
-    y -= 14;
-    const b = data.bankInstructions;
-    page.drawText(`${b.bankName}${b.accountNickname ? ` (${b.accountNickname})` : ""} -- ${b.accountType}`, { x: MARGIN, y, size: 9, font });
-    y -= 12;
-    if (b.routingLast4 || b.accountLast4) {
-      page.drawText(`Routing ...${b.routingLast4 ?? "----"}   Account ...${b.accountLast4 ?? "----"}`, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-      y -= 12;
-    }
-  }
-
-  return pdf.save();
-}
-
-function drawSummaryRow(page: import("pdf-lib").PDFPage, y: number, font: import("pdf-lib").PDFFont, bold: import("pdf-lib").PDFFont, label: string, value: string) {
-  page.drawText(label, { x: MARGIN, y, size: 9.5, font, color: rgb(0.4, 0.4, 0.4) });
-  page.drawText(value, { x: PAGE_WIDTH - MARGIN - 100, y, size: 9.5, font: bold });
-}
-
-function drawTableHeader(page: import("pdf-lib").PDFPage, y: number, bold: import("pdf-lib").PDFFont, cols: string[], xs: number[]) {
-  cols.forEach((c, i) => page.drawText(c, { x: xs[i], y, size: 8, font: bold, color: rgb(0.3, 0.3, 0.3) }));
-  page.drawLine({ start: { x: MARGIN, y: y - 4 }, end: { x: PAGE_WIDTH - MARGIN, y: y - 4 }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
+  return renderStatementDocument(data, statementNumber);
 }

@@ -1,13 +1,11 @@
 import "server-only";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument } from "pdf-lib";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestDocument, type DocumentRow } from "@/lib/documents/latest-document";
 import { computePodStatus } from "@/lib/documents/pod-status";
-import { formatStopDateTime } from "@/lib/timezone/format";
-import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { buildInvoiceDoc, drawInvoice, drawPacketCover, embedBrandFonts, PAGE_H, PAGE_W, pdfSafe } from "@/lib/documents/branded-pdf";
+import { loadInvoiceSource } from "@/lib/invoices/pdf";
 
-const PAGE_WIDTH = 612; // US Letter, points
-const PAGE_HEIGHT = 792;
 const MARGIN = 54;
 
 // Non-blocking accessorial/supporting document types included in the
@@ -44,30 +42,6 @@ export async function checkPacketReadiness(
   const missing: string[] = [];
   if (podStatus !== "verified") missing.push("Verified Proof of Delivery");
   return { ready: missing.length === 0, missing, pod };
-}
-
-function drawWrappedText(
-  page: import("pdf-lib").PDFPage,
-  text: string,
-  x: number,
-  y: number,
-  options: { font: import("pdf-lib").PDFFont; size: number; maxWidth: number; lineHeight: number; color?: ReturnType<typeof rgb> }
-) {
-  const words = text.split(" ");
-  let line = "";
-  let cursorY = y;
-  for (const word of words) {
-    const testLine = line ? `${line} ${word}` : word;
-    if (options.font.widthOfTextAtSize(testLine, options.size) > options.maxWidth && line) {
-      page.drawText(line, { x, y: cursorY, size: options.size, font: options.font, color: options.color ?? rgb(0, 0, 0) });
-      line = word;
-      cursorY -= options.lineHeight;
-    } else {
-      line = testLine;
-    }
-  }
-  if (line) page.drawText(line, { x, y: cursorY, size: options.size, font: options.font, color: options.color ?? rgb(0, 0, 0) });
-  return cursorY - options.lineHeight;
 }
 
 export type AppendResult = { ok: true } | { ok: false; reason: string };
@@ -122,13 +96,13 @@ async function appendDocumentPages(targetDoc: PDFDocument, bytes: ArrayBuffer, m
   try {
     const isPng = mimeType === "image/png";
     const image = isPng ? await targetDoc.embedPng(bytes) : await targetDoc.embedJpg(bytes);
-    const page = targetDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    const maxW = PAGE_WIDTH - MARGIN * 2;
-    const maxH = PAGE_HEIGHT - MARGIN * 2;
+    const page = targetDoc.addPage([PAGE_W, PAGE_H]);
+    const maxW = PAGE_W - MARGIN * 2;
+    const maxH = PAGE_H - MARGIN * 2;
     const scale = Math.min(maxW / image.width, maxH / image.height, 1);
     const w = image.width * scale;
     const h = image.height * scale;
-    page.drawImage(image, { x: (PAGE_WIDTH - w) / 2, y: (PAGE_HEIGHT - h) / 2, width: w, height: h });
+    page.drawImage(image, { x: (PAGE_W - w) / 2, y: (PAGE_H - h) / 2, width: w, height: h });
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: `could not read the image (${err instanceof Error ? err.message : "unknown error"})` };
@@ -159,7 +133,7 @@ function logAppendFailure(context: { invoiceId: string; loadId: string | null; d
   });
 }
 
-// Builds the full merged packet: cover page, invoice page (drawn directly,
+// Builds the full merged packet: cover page, invoice page(s) (drawn directly,
 // not re-using the browser-print /invoices/[id]/pdf view, since this must
 // run server-side without a browser), then verified POD, then whichever
 // optional supporting documents are on file, in the requested order.
@@ -174,115 +148,16 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
     throw new Error(`Billing packet not ready. Missing: ${readiness.missing.join(", ")}`);
   }
 
-  const [{ data: org }, { data: lineItems }, loadRes, dispatchRes] = await Promise.all([
-    supabase
-      .from("organizations")
-      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code, timezone")
-      .eq("id", invoice.organization_id)
-      .single(),
-    supabase.from("invoice_line_items").select("*").eq("invoice_id", invoiceId).order("sort_order"),
-    invoice.load_id
-      ? supabase
-          .from("loads")
-          .select("load_number, total_miles, load_stops(stop_type, facility_name, city, state, scheduled_at, timezone)")
-          .eq("id", invoice.load_id)
-          .single()
-      : Promise.resolve({ data: null }),
-    invoice.dispatch_id
-      ? supabase.from("dispatches").select("drivers(first_name, last_name), trucks(unit_number)").eq("id", invoice.dispatch_id).single()
-      : Promise.resolve({ data: null }),
-  ]);
-
-  const load = loadRes.data as unknown as {
-    load_number: string;
-    total_miles: number | null;
-    load_stops: { stop_type: string; facility_name: string | null; city: string | null; state: string | null; scheduled_at: string | null; timezone: string | null }[];
-  } | null;
-  const dispatchInfo = dispatchRes.data as unknown as {
-    drivers: { first_name: string; last_name: string } | null;
-    trucks: { unit_number: string } | null;
-  } | null;
-  const pickup = load?.load_stops.find((s) => s.stop_type === "pickup") ?? null;
-  const delivery = load?.load_stops.find((s) => s.stop_type === "delivery") ?? null;
-  const deliveryTz = resolveStopTimezone(delivery?.timezone ?? null, org?.timezone ?? null).timezone;
-
+  const source = await loadInvoiceSource(supabase, invoice, invoiceId);
   const packet = await PDFDocument.create();
-  const font = await packet.embedFont(StandardFonts.Helvetica);
-  const boldFont = await packet.embedFont(StandardFonts.HelveticaBold);
-
-  // ---- Cover page --------------------------------------------------------
+  const fonts = await embedBrandFonts(packet);
   const documentSnapshot: GeneratedPacket["documentSnapshot"] = [];
   const includedLabels: string[] = ["Invoice"];
-  const cover = packet.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  let y = PAGE_HEIGHT - MARGIN;
-  cover.drawText("BILLING PACKET", { x: MARGIN, y, size: 24, font: boldFont, color: rgb(0.1, 0.1, 0.15) });
-  y -= 40;
-  cover.drawText(org?.name ?? "Your Company", { x: MARGIN, y, size: 14, font: boldFont });
-  y -= 30;
 
-  const coverLine = (label: string, value: string) => {
-    cover.drawText(label, { x: MARGIN, y, size: 10, font, color: rgb(0.45, 0.45, 0.45) });
-    cover.drawText(value, { x: MARGIN + 160, y, size: 11, font: boldFont });
-    y -= 20;
-  };
-  coverLine("Invoice #", invoice.invoice_number);
-  coverLine("Load #", load?.load_number ?? "--");
-  coverLine("Bill To", invoice.bill_to_name);
-  if (pickup) coverLine("Pickup", [pickup.facility_name, pickup.city, pickup.state].filter(Boolean).join(", ") || "--");
-  if (delivery) {
-    coverLine("Delivery", [delivery.facility_name, delivery.city, delivery.state].filter(Boolean).join(", ") || "--");
-    if (delivery.scheduled_at) coverLine("Delivery Date", formatStopDateTime(delivery.scheduled_at, deliveryTz, { dateOnly: true, includeYear: true }));
-  }
-  coverLine("Invoice Amount", `$${Number(invoice.total_amount).toLocaleString()}`);
-
-  y -= 15;
-  cover.drawText("Documents Included:", { x: MARGIN, y, size: 11, font: boldFont });
-  y -= 22;
-
-  // ---- Invoice page -------------------------------------------------------
-  const invoicePage = packet.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  let iy = PAGE_HEIGHT - MARGIN;
-  invoicePage.drawText("INVOICE", { x: MARGIN, y: iy, size: 20, font: boldFont });
-  invoicePage.drawText(invoice.invoice_number, { x: PAGE_WIDTH - MARGIN - 120, y: iy, size: 12, font: boldFont });
-  iy -= 30;
-  invoicePage.drawText(org?.name ?? "Your Company", { x: MARGIN, y: iy, size: 11, font: boldFont });
-  iy -= 30;
-  invoicePage.drawText("Bill To:", { x: MARGIN, y: iy, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-  iy -= 14;
-  invoicePage.drawText(invoice.bill_to_name, { x: MARGIN, y: iy, size: 11, font: boldFont });
-  iy -= 30;
-
-  invoicePage.drawText("Description", { x: MARGIN, y: iy, size: 9, font: boldFont });
-  invoicePage.drawText("Qty", { x: 360, y: iy, size: 9, font: boldFont });
-  invoicePage.drawText("Unit Price", { x: 420, y: iy, size: 9, font: boldFont });
-  invoicePage.drawText("Amount", { x: 500, y: iy, size: 9, font: boldFont });
-  iy -= 16;
-  for (const li of lineItems ?? []) {
-    iy = drawWrappedText(invoicePage, String(li.description), MARGIN, iy, { font, size: 9, maxWidth: 290, lineHeight: 12 }) + 12;
-    invoicePage.drawText(String(Number(li.quantity)), { x: 360, y: iy, size: 9, font });
-    invoicePage.drawText(`$${Number(li.unit_price).toLocaleString()}`, { x: 420, y: iy, size: 9, font });
-    invoicePage.drawText(`$${Number(li.line_total).toLocaleString()}`, { x: 500, y: iy, size: 9, font });
-    iy -= 18;
-  }
-
-  iy -= 12;
-  invoicePage.drawText(`Subtotal: $${Number(invoice.subtotal_amount).toLocaleString()}`, { x: 400, y: iy, size: 10, font });
-  iy -= 16;
-  invoicePage.drawText(`TOTAL DUE: $${Number(invoice.total_amount).toLocaleString()}`, { x: 400, y: iy, size: 12, font: boldFont });
-
-  if (dispatchInfo?.drivers || dispatchInfo?.trucks) {
-    iy -= 40;
-    invoicePage.drawText("Load Details:", { x: MARGIN, y: iy, size: 9, font: boldFont, color: rgb(0.5, 0.5, 0.5) });
-    iy -= 14;
-    if (load?.total_miles) {
-      invoicePage.drawText(`Miles: ${Number(load.total_miles).toLocaleString()}`, { x: MARGIN, y: iy, size: 9, font });
-      iy -= 14;
-    }
-    if (dispatchInfo?.trucks) {
-      invoicePage.drawText(`Truck: ${dispatchInfo.trucks.unit_number}`, { x: MARGIN, y: iy, size: 9, font });
-      iy -= 14;
-    }
-  }
+  // The cover page and invoice page(s) are drawn LAST (and inserted at the
+  // front) because both list what's actually attached -- which is only
+  // known once every document below has been read. Page order in the
+  // finished packet is unchanged: cover, invoice, POD, supporting docs.
 
   // ---- POD (required, already confirmed verified) --------------------------
   // Required, not optional: the packet has no meaning without it (spec:
@@ -337,39 +212,17 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
     }
   }
 
-  // Finish the cover page's checklist now that we know what was actually included.
-  // Plain ASCII "-" rather than "✓" (U+2713): pdf-lib's StandardFonts only
-  // support WinAnsi encoding, which has no glyph for the Unicode checkmark
-  // -- drawText() throws "WinAnsi cannot encode ..." the instant a packet
-  // with any included document is generated. This is the same plain-ASCII
-  // convention already used everywhere else in this file/module ("--"
-  // instead of an em dash, "->" instead of an arrow) -- applied here too,
-  // not a new rule.
-  for (const label of includedLabels) {
-    cover.drawText(`- ${label}`, { x: MARGIN, y, size: 10, font, color: rgb(0.06, 0.5, 0.35) });
-    y -= 16;
-  }
-
-  // Warning surfaced directly on the cover page (spec: "surfacing a
-  // warning", never silent) -- this is the one artifact guaranteed to
-  // reach whoever generated or received the packet, regardless of
-  // whether the calling UI does anything with skippedDocuments itself.
-  if (skippedDocuments.length > 0) {
-    y -= 8;
-    cover.drawText("Could Not Include:", { x: MARGIN, y, size: 10, font: boldFont, color: rgb(0.6, 0.35, 0.05) });
-    y -= 16;
-    for (const skipped of skippedDocuments) {
-      y = drawWrappedText(cover, `- ${skipped.label} (${skipped.filename}): ${skipped.reason}`, MARGIN, y, { font, size: 9, maxWidth: PAGE_WIDTH - MARGIN * 2, lineHeight: 12, color: rgb(0.6, 0.35, 0.05) }) + 4;
-    }
-  }
-
-  y -= 10;
-  cover.drawText(`Total Amount Due: $${Number(invoice.total_amount).toLocaleString()}`, {
-    x: MARGIN,
-    y,
-    size: 13,
-    font: boldFont,
-  });
+  // ---- Cover + invoice pages (branded layout, src/lib/documents/branded-pdf.ts)
+  // Any document that could not be read is listed on the cover in a
+  // "Could not include" box -- the one artifact guaranteed to reach whoever
+  // generated or received the packet, regardless of what the calling UI
+  // does with skippedDocuments.
+  const invoiceDoc = buildInvoiceDoc({ ...source, documentsIncluded: includedLabels.filter((l) => l !== "Invoice") });
+  const cover = packet.insertPage(0, [PAGE_W, PAGE_H]);
+  drawPacketCover(cover, invoiceDoc, fonts, includedLabels, skippedDocuments);
+  let insertAt = 1;
+  drawInvoice(invoiceDoc, fonts, () => packet.insertPage(insertAt++, [PAGE_W, PAGE_H]));
+  packet.setTitle(pdfSafe(`Billing packet ${invoice.invoice_number}`));
 
   const bytes = await packet.save();
   return { bytes, documentSnapshot, skippedDocuments };
