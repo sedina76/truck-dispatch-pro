@@ -557,6 +557,31 @@ export async function getMyUnreadMessageCount(): Promise<number> {
   return count ?? 0;
 }
 
+// Same scope as getMyUnreadMessageCount() above, plus the newest unread
+// message's timestamp -- what the bottom nav needs to decide whether a
+// message is NEW since its last check (and chime), rather than just "there
+// are still unread messages".
+export async function getMyUnreadMessageStatus(): Promise<{ count: number; latestAt: string | null }> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return { count: 0, latestAt: null };
+
+  const { data, count, error } = await supabase
+    .from("dispatch_messages")
+    .select("created_at", { count: "exact" })
+    .eq("dispatch_id", dispatch.id)
+    .eq("sender_type", "staff")
+    .is("read_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) {
+    console.error("[driver-portal] unread message status failed:", error);
+    return { count: 0, latestAt: null };
+  }
+  return { count: count ?? 0, latestAt: (data ?? [])[0]?.created_at ?? null };
+}
+
 export async function markMyMessagesRead(dispatchId: string) {
   const identity = await requireIdentity();
   const supabase = createServiceRoleClient();

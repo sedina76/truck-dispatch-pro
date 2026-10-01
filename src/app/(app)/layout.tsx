@@ -10,6 +10,7 @@ import { DesktopToolbar } from "@/components/desktop/toolbar";
 import { DesktopStatusBar } from "@/components/desktop/status-bar";
 import { DesktopActionsProvider } from "@/components/desktop/actions-context";
 import { ToastProvider } from "@/components/ui/toast";
+import { MessageAlertWatcher } from "@/components/notify/message-alert-watcher";
 
 // The subscription-status access gate itself lives in middleware.ts, which
 // has direct access to the request path -- no fragile cross-request header
@@ -45,6 +46,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   const organizationName = profile.organizations?.name ?? "Your organization";
+  // Roles that handle driver communication get the new-message chime
+  // (same owner/admin/dispatcher tier as the Dispatch Board's composer).
+  const handlesDriverMessages = ["owner", "admin", "dispatcher"].includes(profile.role);
 
   // entity_type/entity_id added (Phase 2I.1A section E) so a
   // dispatch_message notification can navigate straight to the dispatch
@@ -91,9 +95,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <div className="no-print hidden lg:block"><Sidebar organizationName={organizationName} fullName={profile.full_name} role={profile.role} /></div>
             <main className="flex-1 overflow-y-auto px-4 py-3 pb-20 lg:pb-3 print:overflow-visible print:p-0">{children}</main>
           </div>
-          <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} /></div>
+          <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} showMessageSound={handlesDriverMessages} /></div>
         </div>
         <CommandPalette />
+        {handlesDriverMessages && <MessageAlertWatcher />}
       </DesktopActionsProvider>
       </ToastProvider>
     </TooltipProvider>

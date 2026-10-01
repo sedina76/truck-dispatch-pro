@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Home, Truck, FileText, Receipt, Wallet, History, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getMyUnreadMessageCount } from "@/app/driver-portal/actions";
+import { getMyUnreadMessageStatus } from "@/app/driver-portal/actions";
+import { decideMessageAlert } from "@/lib/notify/message-alert";
+import { installChimeUnlock, playMessageChime } from "@/lib/notify/message-chime";
 
 const ITEMS = [
   { href: "/driver-portal", label: "Home", icon: Home },
@@ -31,26 +33,37 @@ export function DriverPortalBottomNav({ initialUnreadMessageCount = 0 }: { initi
     setUnreadMessageCount(initialUnreadMessageCount);
   }, [initialUnreadMessageCount]);
 
-  // Phase 2I.1A section K -- lightweight 20s polling via the existing
-  // narrow getMyUnreadMessageCount() server action, never a websocket/
-  // Realtime channel. Skipped entirely on the login screen (no session to
-  // query). Guarded against overlap; stops on unmount.
+  // Phase 2I.1A section K -- lightweight 20s polling via a narrow server
+  // action, never a websocket/Realtime channel. Skipped entirely on the
+  // login screen (no session to query). Guarded against overlap; stops on
+  // unmount. Also drives the new-message chime: this nav lives in the
+  // portal layout, so it hears new dispatch messages on EVERY portal
+  // screen. The first check only records what's already unread, so old
+  // messages never chime on page load.
+  const chimeBaseline = useRef<string | null | undefined>(undefined);
+  useEffect(() => installChimeUnlock(), []);
   useEffect(() => {
     if (isLoginPage) return;
     let cancelled = false;
     let inFlight = false;
-    const interval = setInterval(() => {
+    const check = () => {
       if (inFlight || cancelled) return;
       inFlight = true;
-      getMyUnreadMessageCount()
-        .then((count) => {
-          if (!cancelled) setUnreadMessageCount(count);
+      getMyUnreadMessageStatus()
+        .then((status) => {
+          if (cancelled) return;
+          setUnreadMessageCount(status.count);
+          const decision = decideMessageAlert(chimeBaseline.current, status);
+          chimeBaseline.current = decision.baseline;
+          if (decision.chime) playMessageChime();
         })
         .catch(() => {})
         .finally(() => {
           inFlight = false;
         });
-    }, 20000);
+    };
+    check();
+    const interval = setInterval(check, 20000);
     return () => {
       cancelled = true;
       clearInterval(interval);
