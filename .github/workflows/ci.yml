@@ -1,0 +1,65 @@
+# Runs on every push to main and every pull request.
+#   app       -- lint, typecheck, unit tests, production build
+#   database  -- every database test suite on throwaway PostgreSQL
+#                (never touches Supabase; see supabase/ci/run-db-tests.sh)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: App (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          # Placeholders only -- the build never contacts these services.
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+          RESEND_API_KEY: re_ci_placeholder
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+          STRIPE_SECRET_KEY: sk_test_ci_placeholder
+          STRIPE_WEBHOOK_SECRET: whsec_ci_placeholder
+      - name: Security audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+  database:
+    name: Database tests (throwaway PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put PostgreSQL server tools on PATH
+        run: |
+          if ! ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y postgresql
+          fi
+          PGBIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)"
+          echo "$PGBIN" >> "$GITHUB_PATH"
+          "$PGBIN/postgres" --version
+      - name: Run every database suite
+        run: bash supabase/ci/run-db-tests.sh
