@@ -14,6 +14,7 @@ import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { isWithinActiveRetention, deliveredRetentionCountdown } from "@/lib/dispatch/board-retention";
 import { rpcDispatchConflict } from "@/lib/dispatch/conflicts";
+import { appendNoteLine } from "@/lib/dispatch/internal-notes";
 
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
@@ -1123,14 +1124,24 @@ export async function addDispatchQuickNote(dispatchId: string, note: string): Pr
     return { ok: false, error: "No organization on this account." };
   }
 
-  const { data: dispatch } = await supabase.from("dispatches").select("id, notes").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
+  // Internal notes live in dispatch_internal_notes (0067); 0069 dropped the
+  // old dispatches.notes column, so reading/writing it always failed here.
+  const { data: dispatch } = await supabase.from("dispatches").select("id").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
   if (!dispatch) return { ok: false, error: "Dispatch not found." };
+
+  const { data: existing, error: readError } = await supabase.from("dispatch_internal_notes").select("notes").eq("dispatch_id", dispatchId).maybeSingle();
+  if (readError) {
+    console.error("[dispatch board] read notes failed:", readError);
+    return { ok: false, error: "Unable to save note. Please try again." };
+  }
 
   const { data: profile } = await supabase.from("profiles").select("full_name").eq("id", user.id).maybeSingle();
   const stamp = `[${new Date().toLocaleString()}${profile?.full_name ? ` -- ${profile.full_name}` : ""}] ${trimmed}`;
-  const newNotes = dispatch.notes ? `${dispatch.notes}\n${stamp}` : stamp;
+  const newNotes = appendNoteLine(existing?.notes ?? null, stamp);
 
-  const { error } = await supabase.from("dispatches").update({ notes: newNotes }).eq("id", dispatchId);
+  const { error } = await supabase
+    .from("dispatch_internal_notes")
+    .upsert({ dispatch_id: dispatchId, organization_id: organizationId, notes: newNotes }, { onConflict: "dispatch_id" });
   if (error) {
     console.error("[dispatch board] add note failed:", error);
     return { ok: false, error: "Unable to save note. Please try again." };

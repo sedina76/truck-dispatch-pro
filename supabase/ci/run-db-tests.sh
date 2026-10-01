@@ -120,6 +120,11 @@ run_suite "TEST_0161_signed_out_function_access" run_fresh_db_test TEST_0161_sig
 run_suite "TEST_ROTATE_ENCRYPTION_KEYS" run_fresh_db_test TEST_ROTATE_ENCRYPTION_KEYS.sql
 run_suite "ROTATE_KEYS_PREVIEW_READONLY" run_fresh_db_test maintenance/ROTATE_KEYS_PREVIEW_READONLY.sql
 
+# Production twin: EVERY migration 0001..latest applied unchanged (see
+# ci/twin-db.sh, ci/twin/README.md), then the 0162 drift-repair checks and the
+# generated drift check (must return no rows against the twin itself).
+run_suite "TWIN_ALL_MIGRATIONS_TEST_0162" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql DRIFT_CHECK_READONLY.sql
+
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
   echo "ALL DATABASE TESTS PASSED"
