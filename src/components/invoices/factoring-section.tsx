@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS } from "@/lib/factoring/types";
+import { reserveStillDue } from "@/lib/factoring/reserve";
 import {
   submitInvoiceToFactor,
   markFactoredInvoicePending,
@@ -231,6 +232,9 @@ function FactoringStatusCard({ invoiceId, factoredInvoice: fi, events }: { invoi
   const expectedNetProceeds = fi.invoiceFaceValue - fi.factoringFeeAmount - fi.otherFees;
   const actualCarrierProceeds = (fi.actualFundedAmount ?? 0) + fi.reserveReleasedAmount;
   const variance = expectedNetProceeds - actualCarrierProceeds;
+  // What the factor still owes from the reserve (accounts for "Deduct fee
+  // from reserve" -- see src/lib/factoring/reserve.ts and migration 0160).
+  const reserveDue = reserveStillDue(fi);
 
   async function runAction(key: string, fn: () => Promise<FactoringLifecycleResult>) {
     setPendingAction(key);
@@ -271,7 +275,7 @@ function FactoringStatusCard({ invoiceId, factoredInvoice: fi, events }: { invoi
         {fi.actualFundedAmount != null && <Stat label="Actual Funded Amount" value={fmtMoney(fi.actualFundedAmount)} />}
         {fi.customerPaidFactorAmount != null && <Stat label="Customer Paid to Factor" value={fmtMoney(fi.customerPaidFactorAmount)} />}
         {fi.reserveAmount > 0 && <Stat label="Reserve Released" value={fmtMoney(fi.reserveReleasedAmount)} />}
-        {fi.reserveAmount > 0 && <Stat label="Outstanding Reserve" value={fmtMoney(fi.outstandingReserve)} />}
+        {fi.reserveAmount > 0 && <Stat label="Reserve Still Due" value={fmtMoney(reserveDue)} />}
         {fi.recourseAmount > 0 && <Stat label="Recourse Exposure" value={fmtMoney(fi.recourseAmount)} />}
         {fi.chargebackAmount > 0 && <Stat label="Chargeback Amount" value={fmtMoney(fi.chargebackAmount)} />}
       </div>
@@ -335,7 +339,7 @@ function FactoringStatusCard({ invoiceId, factoredInvoice: fi, events }: { invoi
                   Report Customer Payment
                 </Button>
               )}
-              {fi.customerPaidFactorAt != null && fi.outstandingReserve > 0 && (
+              {fi.customerPaidFactorAt != null && reserveDue > 0 && (
                 <Button type="button" size="sm" variant="outline" onClick={() => setReleaseReserveOpen(true)}>
                   Record Reserve Release
                 </Button>
@@ -396,10 +400,10 @@ function FactoringStatusCard({ invoiceId, factoredInvoice: fi, events }: { invoi
       )}
 
       {rejectOpen && <RejectDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} onClose={() => setRejectOpen(false)} />}
-      {fundOpen && <FundDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} externalReference={fi.externalReference} onClose={() => setFundOpen(false)} />}
+      {fundOpen && <FundDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} externalReference={fi.externalReference} invoiceFaceValue={fi.invoiceFaceValue} onClose={() => setFundOpen(false)} />}
       {reportPaymentOpen && <ReportPaymentDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} onClose={() => setReportPaymentOpen(false)} />}
       {releaseReserveOpen && (
-        <ReleaseReserveDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} outstandingReserve={fi.outstandingReserve} onClose={() => setReleaseReserveOpen(false)} />
+        <ReleaseReserveDialog invoiceId={invoiceId} factoredInvoiceId={fi.id} outstandingReserve={reserveDue} onClose={() => setReleaseReserveOpen(false)} />
       )}
       {closeConfirmOpen && (
         <CloseConfirmDialog
@@ -494,11 +498,13 @@ function FundDialog({
   invoiceId,
   factoredInvoiceId,
   externalReference,
+  invoiceFaceValue,
   onClose,
 }: {
   invoiceId: string;
   factoredInvoiceId: string;
   externalReference: string | null;
+  invoiceFaceValue: number;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -511,6 +517,12 @@ function FundDialog({
     const parsed = Number(amount);
     if (!amount || Number.isNaN(parsed) || parsed <= 0) {
       setError("Funded amount must be greater than zero.");
+      return;
+    }
+    // Same rule the database enforces (migration 0160) -- catches a typo
+    // like 9000 for 900 before it's sent.
+    if (parsed > invoiceFaceValue) {
+      setError(`Funded amount can't be more than the invoice amount (${fmtMoney(invoiceFaceValue)}).`);
       return;
     }
     setPending(true);
@@ -809,7 +821,7 @@ function ReleaseReserveDialog({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Record Reserve Release</DialogTitle>
-          <DialogDescription>Outstanding reserve: {fmtMoney(outstandingReserve)}. Multiple releases are supported until the reserve is fully released.</DialogDescription>
+          <DialogDescription>Reserve still due: {fmtMoney(outstandingReserve)}. Multiple releases are supported until it is fully paid.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">

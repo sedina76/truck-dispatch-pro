@@ -11,6 +11,8 @@
 #      migrations 0001..0119 + platform_stub.sql + 0148 -- the newest point a
 #      fresh build can reach (0120+ are pinned to production data). Also
 #      proves the guard is genuinely needed: the test must FAIL without 0148.
+#   5. TEST_FACTORING_LIFECYCLE_E2E (+ must-fail run without 0160) and
+#      TEST_0160_existing_stuck_invoice, on the same fresh 0001..0119 database
 #
 # Requires initdb/pg_ctl/psql/createdb on PATH and a non-root user (initdb
 # refuses root). Usage:  bash supabase/ci/run-db-tests.sh
@@ -95,6 +97,15 @@ run_suite "TEST_0144_LOAD_STOPS_PARENT_LOCK" single_sql_test TEST_0144_LOAD_STOP
 
 run_suite "TEST_0148_without_fix_must_fail" expect_failure run_fresh_db_test TEST_0148_profile_cross_tenant_move_guard.sql
 run_suite "TEST_0148_profile_cross_tenant_move_guard" run_fresh_db_test TEST_0148_profile_cross_tenant_move_guard.sql migrations/0148_profile_cross_tenant_move_guard.sql
+
+# Factoring lifecycle autopilot (submit -> pending -> approve -> fund ->
+# customer paid -> reserve released -> close, plus rejection, dispute,
+# recourse/chargeback/buyback and guard rails), run as real users with RLS.
+# Without 0160 it must FAIL (fee-from-reserve invoices can't close;
+# overfunding accepted); with 0160 every step passes.
+run_suite "TEST_FACTORING_LIFECYCLE_without_0160_must_fail" expect_failure run_fresh_db_test TEST_FACTORING_LIFECYCLE_E2E.sql
+run_suite "TEST_FACTORING_LIFECYCLE_E2E" run_fresh_db_test TEST_FACTORING_LIFECYCLE_E2E.sql migrations/0160_factoring_fee_from_reserve_reconciliation_fix.sql
+run_suite "TEST_0160_existing_stuck_invoice" run_fresh_db_test TEST_0160_existing_stuck_invoice.sql
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then
