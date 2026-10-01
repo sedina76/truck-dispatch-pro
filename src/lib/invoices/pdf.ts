@@ -84,7 +84,15 @@ export async function loadInvoiceSource(supabase: Supabase, invoice: InvoiceRow,
           email: company.email,
         }
       : null,
-    formatStopTime: (iso, tz) => formatStopDateTime(iso, resolveStopTimezone(tz, orgTimezone).timezone, { includeYear: true }),
+    formatStopTime: (iso, tz) => {
+      const zone = resolveStopTimezone(tz, orgTimezone).timezone;
+      // A stop saved with a date but no appointment time is stored as local
+      // midnight -- print just the date instead of a misleading "12:00 AM".
+      const time = formatStopDateTime(iso, zone, { timeOnly: true });
+      return time.replace(/\s/g, " ").startsWith("12:00 AM")
+        ? formatStopDateTime(iso, zone, { dateOnly: true, includeYear: true })
+        : formatStopDateTime(iso, zone, { includeYear: true });
+    },
   };
 }
 

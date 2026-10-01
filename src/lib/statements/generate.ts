@@ -1,6 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
-import { renderStatementDocument } from "@/lib/documents/branded-pdf";
+import { authorityLine, renderStatementDocument } from "@/lib/documents/branded-pdf";
 
 export type StatementPartyType = "broker" | "customer";
 export type StatementKind = "open_balance" | "period" | "aging";
@@ -241,7 +241,7 @@ export async function computeStatementData(params: {
       address: [orgRow?.address_line1, cityLine(orgRow?.city, orgRow?.state, orgRow?.postal_code)].filter(Boolean).join(" \u00b7 ") || null,
       phone: orgRow?.business_phone ?? null,
       email: orgRow?.business_email ?? null,
-      authority: [orgRow?.mc_number ? `MC ${orgRow.mc_number}` : null, orgRow?.dot_number ? `USDOT ${orgRow.dot_number}` : null].filter(Boolean).join(" \u00b7 ") || null,
+      authority: authorityLine(orgRow?.mc_number, orgRow?.dot_number),
       footer: orgRow?.invoice_footer?.trim() || null,
       remitLines,
     },

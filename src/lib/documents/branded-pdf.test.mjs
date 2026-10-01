@@ -280,3 +280,28 @@ test("the invoice screen's Download PDF / Print button serves the branded PDF", 
   assert.match(route, /await renderInvoiceOnlyPdf\(id\)/);
   assert.match(route, /"Content-Type": "application\/pdf"/);
 });
+
+test("MC / USDOT numbers never print their prefix twice", async () => {
+  const { authorityLine } = await import("./branded-pdf.ts");
+  assert.equal(authorityLine("MC-778812", "DOT-2934821"), "MC 778812 · USDOT 2934821");
+  assert.equal(authorityLine("mc 778812", "USDOT 2934821"), "MC 778812 · USDOT 2934821");
+  assert.equal(authorityLine("778812", null), "MC 778812");
+  assert.equal(authorityLine(" ", ""), null);
+});
+
+test("PDFs use the design's IBM Plex Sans + Mono fonts (shipped unmodified, with the OFL license)", async () => {
+  const pdf = await PDFDocument.create();
+  const fonts = await embedBrandFonts(pdf);
+  assert.equal(fonts.plex, true);
+  for (const k of ["reg", "med", "semi", "bold", "mono", "monoMed"]) assert.ok(fonts[k], k);
+  const license = src("./fonts/OFL-LICENSE.txt");
+  assert.match(license, /SIL Open Font License, Version 1\.1/);
+  // file tracing ships the font files with every server function on Vercel
+  assert.match(src("../../../next.config.ts"), /outputFileTracingIncludes:[\s\S]*src\/lib\/documents\/fonts\/\*\.woff/);
+});
+
+test("stops saved with a date only print the date, not 12:00 AM", () => {
+  const pdf = src("../invoices/pdf.ts");
+  assert.match(pdf, /startsWith\("12:00 AM"\)/);
+  assert.match(pdf, /dateOnly: true, includeYear: true/);
+});

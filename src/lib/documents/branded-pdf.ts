@@ -124,10 +124,61 @@ function splitLines(s: string | null | undefined, max: number): string[] {
 
 // ---- Low-level drawing (all positions measured from the TOP of the page) --
 
-export type BrandFonts = { reg: PDFFont; bold: PDFFont };
+// reg/med/semi/bold: IBM Plex Sans 400/500/600/700. mono/monoMed: IBM Plex
+// Mono 400/500 (numbers, invoice and reference numbers) -- the approved
+// design's typefaces. See ./fonts/README.md.
+export type BrandFonts = { reg: PDFFont; med: PDFFont; semi: PDFFont; bold: PDFFont; mono: PDFFont; monoMed: PDFFont; plex: boolean };
 
+const FONT_FILES = {
+  reg: "IBMPlexSans-Regular.woff",
+  med: "IBMPlexSans-Medium.woff",
+  semi: "IBMPlexSans-SemiBold.woff",
+  bold: "IBMPlexSans-Bold.woff",
+  mono: "IBMPlexMono-Regular.woff",
+  monoMed: "IBMPlexMono-Medium.woff",
+} as const;
+type FontKey = keyof typeof FONT_FILES;
+
+let fontBytesCache: Promise<Record<FontKey, Uint8Array> | null> | null = null;
+
+// Read once per server instance. Resolved from the project root
+// (process.cwd()), which is where next.config.ts's outputFileTracingIncludes
+// places these files on Vercel; `npm test` runs from the same root.
+function loadPlexFontBytes(): Promise<Record<FontKey, Uint8Array> | null> {
+  fontBytesCache ??= (async () => {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const dir = join(process.cwd(), "src", "lib", "documents", "fonts");
+      const keys = Object.keys(FONT_FILES) as FontKey[];
+      const files = await Promise.all(keys.map((k) => readFile(join(dir, FONT_FILES[k]))));
+      return Object.fromEntries(keys.map((k, i) => [k, new Uint8Array(files[i])])) as Record<FontKey, Uint8Array>;
+    } catch (err) {
+      console.warn("[branded-pdf] IBM Plex fonts unavailable, falling back to Helvetica:", err instanceof Error ? err.message : err);
+      return null;
+    }
+  })();
+  return fontBytesCache;
+}
+
+// Never throws on a font problem: if the Plex files can't be read or
+// embedded, the document still renders in Helvetica with the same layout.
 export async function embedBrandFonts(pdf: PDFDocument): Promise<BrandFonts> {
-  return { reg: await pdf.embedFont(StandardFonts.Helvetica), bold: await pdf.embedFont(StandardFonts.HelveticaBold) };
+  const bytes = await loadPlexFontBytes();
+  if (bytes) {
+    try {
+      const { default: fontkit } = await import("@pdf-lib/fontkit");
+      pdf.registerFontkit(fontkit);
+      const embed = (k: FontKey) => pdf.embedFont(bytes[k], { subset: true });
+      const [reg, med, semi, bold, mono, monoMed] = await Promise.all((Object.keys(FONT_FILES) as FontKey[]).map(embed));
+      return { reg, med, semi, bold, mono, monoMed, plex: true };
+    } catch (err) {
+      console.warn("[branded-pdf] could not embed IBM Plex fonts, falling back to Helvetica:", err instanceof Error ? err.message : err);
+    }
+  }
+  const reg = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  return { reg, med: bold, semi: bold, bold, mono: reg, monoMed: bold, plex: false };
 }
 
 function textWidth(s: string, font: PDFFont, size: number, spacing = 0): number {
@@ -245,10 +296,14 @@ function drawLogo(page: PDFPage, x: number, top: number, accent: RGB) {
 }
 
 function sectionLabel(page: PDFPage, f: BrandFonts, s: string, x: number, baseline: number, align: "left" | "right" = "left", color: RGB = C.muted, maxWidth?: number) {
-  return drawLine1(page, s.toUpperCase(), x, baseline, { size: 8.25, font: f.bold, color, spacing: 0.8, align, maxWidth });
+  return drawLine1(page, s.toUpperCase(), x, baseline, { size: 8.25, font: f.semi, color, spacing: 0.8, align, maxWidth });
 }
 
 // ---- Shared header -----------------------------------------------------------
+
+// Header detail rows: [label, value, style]. "mono" = IBM Plex Mono Medium
+// (document numbers), "strong" = SemiBold (due date).
+export type GridRow = [string, string, ("mono" | "strong")?];
 
 export type DocOrg = {
   name: string;
@@ -258,21 +313,23 @@ export type DocOrg = {
   footer: string | null; // organizations.invoice_footer
 };
 
-function drawHeader(page: PDFPage, f: BrandFonts, accent: RGB, org: DocOrg, title: string, grid: [string, string, boolean?][]): number {
+function drawHeader(page: PDFPage, f: BrandFonts, accent: RGB, org: DocOrg, title: string, grid: GridRow[]): number {
   // Right block first, so the left block knows how much width it has.
   const titleBase = MT + 17;
   drawLine1(page, title, PAGE_W - MR, titleBase, { size: 22.5, font: f.bold, color: accent, spacing: 1.8, align: "right" });
   const gSize = 9.4;
-  const valW = Math.max(60, ...grid.map(([, v, b]) => textWidth(v, b ? f.bold : f.reg, gSize)));
-  const labW = Math.max(...grid.map(([l]) => textWidth(l, f.reg, gSize)), 0);
-  const valX = PAGE_W - MR - valW;
-  const labX = valX - 12 - labW;
+  const gFont = (st?: string) => (st === "mono" ? f.monoMed : st === "strong" ? f.semi : f.reg);
+  // Values right-aligned to the margin, labels right-aligned in their own
+  // column -- as in the approved design.
+  const valW = Math.max(0, ...grid.map(([, v, st]) => textWidth(v, gFont(st), gSize)));
+  const labR = PAGE_W - MR - valW - 14;
   let gBase = titleBase + 19;
-  for (const [l, v, b] of grid) {
-    drawLine1(page, l, labX, gBase, { size: gSize, font: f.reg, color: C.muted });
-    drawLine1(page, v, valX, gBase, { size: gSize, font: b ? f.bold : f.reg, color: C.ink });
+  for (const [l, v, st] of grid) {
+    drawLine1(page, l, labR, gBase, { size: gSize, font: f.reg, color: C.muted, align: "right" });
+    drawLine1(page, v, PAGE_W - MR, gBase, { size: gSize, font: gFont(st), color: C.ink, align: "right" });
     gBase += 12.5;
   }
+  const labX = labR - Math.max(0, ...grid.map(([l]) => textWidth(l, f.reg, gSize)));
   const rightBottom = gBase - 12.5 + 4;
 
   drawLogo(page, ML, MT, accent);
@@ -281,10 +338,14 @@ function drawHeader(page: PDFPage, f: BrandFonts, accent: RGB, org: DocOrg, titl
   let base = MT + 13;
   drawLine1(page, org.name, lx, base, { size: 15, font: f.bold, maxWidth: lMax });
   base += 4;
-  for (const line of [org.address, org.contact, org.authority]) {
+  for (const line of [org.address, org.contact]) {
     if (!line) continue;
     base += 13.5;
     drawLine1(page, line, lx, base, { size: 9.4, font: f.reg, color: C.text2, maxWidth: lMax });
+  }
+  if (org.authority) {
+    base += 13.5;
+    drawLine1(page, org.authority, lx, base, { size: 8.6, font: f.mono, color: C.text2, maxWidth: lMax });
   }
   const leftBottom = Math.max(base + 4, MT + 39);
 
@@ -297,7 +358,7 @@ function drawHeader(page: PDFPage, f: BrandFonts, accent: RGB, org: DocOrg, titl
 // (continued)" on the right, thin accent rule.
 function drawContinuationHeader(page: PDFPage, f: BrandFonts, accent: RGB, orgName: string, right: string): number {
   drawLine1(page, orgName, ML, MT + 12, { size: 11, font: f.bold, maxWidth: CW / 2 });
-  drawLine1(page, right, PAGE_W - MR, MT + 12, { size: 9.4, font: f.bold, color: accent, align: "right", spacing: 0.4 });
+  drawLine1(page, right, PAGE_W - MR, MT + 12, { size: 9.4, font: f.semi, color: accent, align: "right", spacing: 0.4 });
   box(page, ML, MT + 22, CW, 2, { radius: 1, fill: accent });
   return MT + 22 + 2 + 15;
 }
@@ -306,19 +367,30 @@ function drawFooters(pages: PDFPage[], f: BrandFonts, left: (string | null)[], l
   pages.forEach((page, i) => {
     const top = PAGE_H - MB - 30;
     hline(page, ML, PAGE_W - MR, top, C.rule);
-    let base = top + 14;
+    let base = top + 13;
     if (leftBold) {
-      drawLine1(page, leftBold, ML, base, { size: 9, font: f.bold, color: C.ink, maxWidth: CW - 90 });
-      base += 11.5;
+      drawLine1(page, leftBold, ML, base, { size: 9, font: f.semi, color: C.ink, maxWidth: CW - 90 });
+      base += 11;
     }
-    const rest = left.filter(Boolean).join(" ");
-    if (rest) drawLine1(page, rest, ML, base, { size: 8.6, font: f.reg, color: C.muted, maxWidth: CW - 90 });
-    if (pageNumbers) drawLine1(page, `Page ${i + 1} of ${pages.length}`, PAGE_W - MR, base, { size: 8.6, font: f.reg, color: C.muted, align: "right" });
+    // Wraps onto a second line (long invoice numbers) rather than being cut.
+    const rest = wrapText(left.filter(Boolean).join(" "), f.reg, 8.25, CW - 80).slice(0, 2);
+    rest.forEach((l, j) => drawLine1(page, l, ML, base + j * 10, { size: 8.25, font: f.reg, color: C.muted, maxWidth: CW - 80 }));
+    if (pageNumbers) drawLine1(page, `Page ${i + 1} of ${pages.length}`, PAGE_W - MR, base + Math.max(0, rest.length - 1) * 10, { size: 8.25, font: f.reg, color: C.muted, align: "right" });
   });
 }
 
+// "MC 778812 · USDOT 2934821". Numbers are often stored with their own
+// prefix ("MC-778812", "DOT-2934821", "USDOT 2934821") -- strip it so the
+// label never prints twice ("MC MC-778812").
+export function authorityLine(mc: string | null | undefined, dot: string | null | undefined): string | null {
+  const clean = (v: string | null | undefined, prefix: RegExp) => (v ?? "").trim().replace(prefix, "").trim() || null;
+  const m = clean(mc, /^MC[\s#:.-]*/i);
+  const d = clean(dot, /^(US\s*)?DOT[\s#:.-]*/i);
+  return joinNonEmpty([m ? `MC ${m}` : null, d ? `USDOT ${d}` : null], " \u00b7 ");
+}
+
 function orgFromRow(org: OrgRow | null): DocOrg {
-  const authority = joinNonEmpty([org?.mc_number ? `MC ${org.mc_number}` : null, org?.dot_number ? `USDOT ${org.dot_number}` : null], " · ");
+  const authority = authorityLine(org?.mc_number, org?.dot_number);
   return {
     name: org?.name?.trim() || "Your Company",
     address: joinNonEmpty([org?.address_line1, cityStateZip(org?.city, org?.state, org?.postal_code)], " · "),
@@ -421,7 +493,7 @@ export type InvoiceDoc = {
   accent: string;
   org: DocOrg;
   number: string;
-  grid: [string, string, boolean?][];
+  grid: GridRow[];
   billTo: { name: string; lines: string[] };
   remitTo: { name: string; lines: string[] };
   references: [string, string][];
@@ -448,13 +520,13 @@ export function buildInvoiceDoc(src: InvoiceSource): InvoiceDoc {
   const fmtStop = src.formatStopTime ?? ((iso: string | null) => (iso ? formatDate(iso.slice(0, 10)) : ""));
 
   const grid: InvoiceDoc["grid"] = [
-    ["Invoice #", inv.invoice_number, true],
+    ["Invoice #", inv.invoice_number, "mono"],
     ["Invoice date", formatDate(inv.issue_date)],
-    ["Due date", formatDate(inv.due_date), true],
+    ["Due date", formatDate(inv.due_date), "strong"],
   ];
   const terms = termsLabel(inv.issue_date, inv.due_date);
   if (terms) grid.push(["Terms", terms]);
-  if (src.load?.load_number) grid.push(["Load #", src.load.load_number, true]);
+  if (src.load?.load_number) grid.push(["Load #", src.load.load_number, "mono"]);
 
   const billLines = [...splitLines(inv.bill_to_address, 3), ...(inv.bill_to_email ? [inv.bill_to_email] : [])];
 
@@ -550,9 +622,9 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
   const party = (x: number, label: string, p: { name: string; lines: string[] }) => {
     sectionLabel(page, f, label, x, blockTop + 7);
     let b = blockTop + 7 + 15;
-    const nameLines = wrapText(p.name, f.bold, 10.5, colW).slice(0, 2);
+    const nameLines = wrapText(p.name, f.semi, 10.5, colW).slice(0, 2);
     for (const nl of nameLines) {
-      drawLine1(page, nl, x, b, { size: 10.5, font: f.bold });
+      drawLine1(page, nl, x, b, { size: 10.5, font: f.semi });
       b += 13;
     }
     for (const l of p.lines) {
@@ -572,7 +644,8 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
     const rLabW = Math.max(...doc.references.map(([l]) => textWidth(l, f.reg, 9.4)));
     for (const [l, v] of doc.references) {
       drawLine1(page, l, colX[2], b3, { size: 9.4, font: f.reg, color: C.muted });
-      drawLine1(page, v, colX[2] + rLabW + 9, b3, { size: 9.4, font: f.reg, maxWidth: colW - rLabW - 9 });
+      const mono = l !== "Driver" && l !== "Truck"; // reference numbers in Plex Mono, names in Sans
+      drawLine1(page, v, colX[2] + rLabW + 9, b3, { size: mono ? 9 : 9.4, font: mono ? f.mono : f.reg, maxWidth: colW - rLabW - 9 });
       b3 += 12.5;
     }
   }
@@ -594,7 +667,7 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
       page.drawCircle({ x: innerL + 3.75, y: PAGE_H - (labelBase - 3), size: 3, borderColor: accent, borderWidth: 1.5 });
       sectionLabel(page, f, "Pickup", innerL + 13.5, labelBase);
       let b = labelBase + 15;
-      drawLine1(page, r.pickup.name, innerL, b, { size: 10.5, font: f.bold, maxWidth: sideW });
+      drawLine1(page, r.pickup.name, innerL, b, { size: 10.5, font: f.semi, maxWidth: sideW });
       for (const l of [r.pickup.place, r.pickup.when]) {
         if (!l) continue;
         b += 12.5;
@@ -605,7 +678,7 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
       page.drawCircle({ x: innerR - 3.75, y: PAGE_H - (labelBase - 3), size: 3.75, color: accent });
       sectionLabel(page, f, "Delivery", innerR - 13.5, labelBase, "right");
       let b = labelBase + 15;
-      drawLine1(page, r.delivery.name, innerR, b, { size: 10.5, font: f.bold, maxWidth: sideW, align: "right" });
+      drawLine1(page, r.delivery.name, innerR, b, { size: 10.5, font: f.semi, maxWidth: sideW, align: "right" });
       for (const l of [r.delivery.place, r.delivery.when]) {
         if (!l) continue;
         b += 12.5;
@@ -613,7 +686,7 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
       }
     }
     const arrowTop = top + h / 2;
-    if (r.middleTop) drawLine1(page, r.middleTop, midCx, arrowTop - 7, { size: 9, font: f.reg, color: C.text2, align: "center", maxWidth: midW });
+    if (r.middleTop) drawLine1(page, r.middleTop, midCx, arrowTop - 7, { size: 9, font: f.mono, color: C.text2, align: "center", maxWidth: midW });
     const ax1 = midCx - midW / 2;
     const ax2 = midCx + midW / 2;
     page.drawLine({ start: { x: ax1, y: PAGE_H - arrowTop }, end: { x: ax2 - 1, y: PAGE_H - arrowTop }, thickness: 1.5, color: accent });
@@ -650,17 +723,17 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
   tableHeader();
   const items = doc.lines.length ? doc.lines : [{ description: "No charges listed", qty: "", rate: "", amount: "" }];
   items.forEach((li, i) => {
-    const descLines = wrapText(li.description, f.reg, 9.75, descW);
+    const descLines = wrapText(li.description, f.med, 9.75, descW);
     const rowH = 8.25 * 2 + 12 * descLines.length;
     if (top + rowH > CONTENT_BOTTOM) {
       continuePage();
       tableHeader();
     }
     const b = top + 8.25 + 9;
-    descLines.forEach((dl, j) => drawLine1(page, dl, tx.desc, b + j * 12, { size: 9.75, font: j === 0 ? f.bold : f.reg, color: doc.lines.length ? C.ink : C.muted }));
-    drawLine1(page, li.qty, tx.qtyR, b, { size: 9.4, font: f.reg, align: "right" });
-    drawLine1(page, li.rate, tx.rateR, b, { size: 9.4, font: f.reg, align: "right" });
-    drawLine1(page, li.amount, tx.amtR, b, { size: 9.4, font: f.reg, align: "right" });
+    descLines.forEach((dl, j) => drawLine1(page, dl, tx.desc, b + j * 12, { size: 9.75, font: j === 0 ? f.med : f.reg, color: doc.lines.length ? C.ink : C.muted }));
+    drawLine1(page, li.qty, tx.qtyR, b, { size: 9.4, font: f.mono, align: "right" });
+    drawLine1(page, li.rate, tx.rateR, b, { size: 9.4, font: f.mono, align: "right" });
+    drawLine1(page, li.amount, tx.amtR, b, { size: 9.4, font: f.mono, align: "right" });
     top += rowH;
     hline(page, ML, ML + CW, top, i === items.length - 1 ? C.border : C.rule);
   });
@@ -693,13 +766,13 @@ export function drawInvoice(doc: InvoiceDoc, f: BrandFonts, newPage: () => PDFPa
   let tb = top + 10;
   for (const [l, v] of doc.totals) {
     drawLine1(page, l, tL + 10.5, tb, { size: 9.75, font: f.reg, color: C.muted });
-    drawLine1(page, v, PAGE_W - MR - 10.5, tb, { size: 9.75, font: f.reg, align: "right" });
+    drawLine1(page, v, PAGE_W - MR - 10.5, tb, { size: 9.75, font: f.mono, align: "right" });
     tb += 16.5;
   }
   const dueTop = tb - 16.5 + 12;
   box(page, tL, dueTop, totalsW, 36, { radius: 6, fill: accent });
   sectionLabel(page, f, "Total due", tL + 10.5, dueTop + 21.5, "left", C.white);
-  drawLine1(page, doc.totalDue, PAGE_W - MR - 10.5, dueTop + 24, { size: 16.5, font: f.bold, color: C.white, align: "right" });
+  drawLine1(page, doc.totalDue, PAGE_W - MR - 10.5, dueTop + 24.5, { size: 16.5, font: f.monoMed, color: C.white, align: "right" });
   top = Math.max(lb - 8, dueTop + 36);
 
   // ---- Notice of assignment --------------------------------------------------
@@ -747,7 +820,7 @@ export function drawPacketCover(
   const colW = (CW - 30) / 3;
   sectionLabel(page, f, "Bill to", ML, top + 7);
   let b = top + 22;
-  drawLine1(page, doc.billTo.name, ML, b, { size: 10.5, font: f.bold, maxWidth: colW * 2 });
+  drawLine1(page, doc.billTo.name, ML, b, { size: 10.5, font: f.semi, maxWidth: colW * 2 });
   for (const l of doc.billTo.lines) {
     b += 12.5;
     drawLine1(page, l, ML, b, { size: 9.4, font: f.reg, color: C.text2, maxWidth: colW * 2 });
@@ -755,7 +828,7 @@ export function drawPacketCover(
   const boxW = 225;
   box(page, PAGE_W - MR - boxW, top, boxW, 48, { radius: 6, fill: accent });
   sectionLabel(page, f, "Total due", PAGE_W - MR - boxW + 10.5, top + 18, "left", C.white);
-  drawLine1(page, doc.totalDue, PAGE_W - MR - 10.5, top + 38, { size: 18, font: f.bold, color: C.white, align: "right" });
+  drawLine1(page, doc.totalDue, PAGE_W - MR - 10.5, top + 38.5, { size: 18, font: f.monoMed, color: C.white, align: "right" });
   top = Math.max(b, top + 48) + 20;
 
   // Route
@@ -798,7 +871,7 @@ export function drawPacketCover(
     const lines = skipped.flatMap((s) => wrapText(`${s.label} (${s.filename}): ${s.reason}`, f.reg, 9, CW - 30));
     const h = 22 + lines.length * 11.5 + 8;
     box(page, ML, top, CW, h, { radius: 6, stroke: warn, strokeWidth: 1.2, fill: hex("#fff7ed") });
-    drawLine1(page, "COULD NOT INCLUDE", ML + 12, top + 15, { size: 8.6, font: f.bold, color: warn, spacing: 0.6 });
+    drawLine1(page, "COULD NOT INCLUDE", ML + 12, top + 15, { size: 8.6, font: f.semi, color: warn, spacing: 0.6 });
     let wb = top + 28;
     for (const l of lines) {
       drawLine1(page, l, ML + 12, wb, { size: 9, font: f.reg, color: warn });
@@ -871,8 +944,8 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
   let page = pdf.addPage([PAGE_W, PAGE_H]);
   pages.push(page);
 
-  const grid: [string, string, boolean?][] = [
-    ["Statement #", statementNumber, true],
+  const grid: GridRow[] = [
+    ["Statement #", statementNumber, "mono"],
     ["Statement date", formatDate(d.statementDate)],
     d.statementType === "period" ? ["Period", `${formatDate(d.periodStart)} – ${formatDate(d.periodEnd)}`] : ["As of", formatDate(d.asOfDate)],
   ];
@@ -883,8 +956,8 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
   const partyW = 165;
   sectionLabel(page, f, "Statement for", ML, top + 7);
   let pb = top + 7 + 15;
-  for (const nl of wrapText(d.party.company_name, f.bold, 10.5, partyW).slice(0, 2)) {
-    drawLine1(page, nl, ML, pb, { size: 10.5, font: f.bold });
+  for (const nl of wrapText(d.party.company_name, f.semi, 10.5, partyW).slice(0, 2)) {
+    drawLine1(page, nl, ML, pb, { size: 10.5, font: f.semi });
     pb += 13;
   }
   for (const l of [...splitLines(d.party.address, 2), ...(d.party.email ? [d.party.email] : [])]) {
@@ -900,7 +973,7 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
     box(page, x, top, cardW, cardH, c.emphasis ? { radius: 6, fill: accent } : { radius: 6, stroke: C.border });
     const fg = c.emphasis ? C.white : C.ink;
     sectionLabel(page, f, c.label, x + 10.5, top + 17, "left", c.emphasis ? C.white : C.muted, cardW - 21);
-    drawLine1(page, c.value, x + 10.5, top + 36, { size: 15, font: f.bold, color: fg, maxWidth: cardW - 21 });
+    drawLine1(page, c.value, x + 10.5, top + 36, { size: 13.5, font: c.emphasis ? f.monoMed : f.mono, color: fg, maxWidth: cardW - 21 });
     if (c.sub) drawLine1(page, c.sub, x + 10.5, top + 50, { size: 8.25, font: f.reg, color: c.emphasis ? C.white : C.muted, maxWidth: cardW - 21 });
   });
   top = Math.max(pb - 8, top + cardH) + 18;
@@ -936,7 +1009,7 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
     const x = ML + i * bW;
     box(page, x, top, 6.75, 6.75, { radius: 1.5, fill: color });
     drawLine1(page, label, x + 10.5, top + 6.5, { size: 8.6, font: f.reg, color: C.muted });
-    drawLine1(page, formatMoney(v), x, top + 21, { size: 10.5, font: f.bold, color: Number(v) > 0 && i >= 3 ? C.overdue : C.ink });
+    drawLine1(page, formatMoney(v), x, top + 21, { size: 10.5, font: f.mono, color: C.ink });
   });
   top += 21 + 18;
 
@@ -971,44 +1044,46 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
     cols.forEach((c) => sectionLabel(page, f, c.label, c.x, top + 14, c.align, C.text2));
     top += 22;
   };
-  const SLIP_H = 120;
+  const SLIP_H = 104;
   const newPage = () => {
     page = pdf.addPage([PAGE_W, PAGE_H]);
     pages.push(page);
     top = drawContinuationHeader(page, f, accent, org.name, `STATEMENT ${statementNumber} (continued)`);
   };
-  type Cell = { text: string; color?: RGB; bold?: boolean };
+  // Fonts per the approved design: document numbers and money in Plex Mono
+  // (Medium for the key column), dates/labels in Plex Sans.
+  type Cell = { text: string; color?: RGB; font?: "mono" | "monoMed" | "semi" };
   const rows: Cell[][] = period
     ? d.transactions.map((t) => {
         const muted = t.is_voided ? C.muted : undefined;
         return [
           { text: formatDate(t.txn_date), color: muted },
           { text: t.txn_type === "invoice" ? "Invoice" : t.is_voided ? "Payment (voided)" : "Payment", color: muted },
-          { text: t.reference, color: muted, bold: true },
-          { text: t.load_number ?? "—", color: muted },
-          { text: Number(t.charge_amount) > 0 ? formatMoney(t.charge_amount, { symbol: false }) : "—", color: muted },
-          { text: Number(t.payment_amount) > 0 ? formatMoney(t.payment_amount, { symbol: false }) : t.is_voided ? "VOIDED" : "—", color: t.is_voided ? C.overdue : undefined },
-          { text: formatMoney(t.running_balance, { symbol: false }), bold: true, color: muted },
+          { text: t.reference, color: muted, font: "monoMed" },
+          { text: t.load_number ?? "—", color: muted ?? C.text2, font: "mono" },
+          { text: Number(t.charge_amount) > 0 ? formatMoney(t.charge_amount, { symbol: false }) : "—", color: muted, font: "mono" },
+          { text: Number(t.payment_amount) > 0 ? formatMoney(t.payment_amount, { symbol: false }) : t.is_voided ? "VOIDED" : "—", color: t.is_voided ? C.overdue : undefined, font: "mono" },
+          { text: formatMoney(t.running_balance, { symbol: false }), color: muted, font: "monoMed" },
         ];
       })
     : d.openInvoices.map((r) => {
         const days = Number(r.days_past_due) || 0;
         return [
-          { text: r.invoice_number, bold: true },
-          { text: r.load_number ?? "—" },
+          { text: r.invoice_number, font: "monoMed" },
+          { text: r.load_number ?? "—", color: C.text2, font: "mono" },
           { text: formatDate(r.issue_date) },
           { text: formatDate(r.due_date) },
-          { text: days > 0 ? String(days) : "—", color: days > 60 ? C.overdue : days > 0 ? C.ink : C.muted, bold: days > 0 },
-          { text: formatMoney(r.total_amount, { symbol: false }) },
-          { text: Number(r.amount_paid) > 0 ? formatMoney(r.amount_paid, { symbol: false }) : "—", color: Number(r.amount_paid) > 0 ? undefined : C.muted },
-          { text: formatMoney(r.balance_due, { symbol: false }), bold: true },
+          { text: days > 0 ? String(days) : "—", color: days > 60 ? C.overdue : days > 0 ? C.ink : C.muted, font: days > 0 ? "semi" : undefined },
+          { text: formatMoney(r.total_amount, { symbol: false }), font: "mono" },
+          { text: Number(r.amount_paid) > 0 ? formatMoney(r.amount_paid, { symbol: false }) : "—", color: Number(r.amount_paid) > 0 ? C.text2 : C.muted, font: Number(r.amount_paid) > 0 ? "mono" : undefined },
+          { text: formatMoney(r.balance_due, { symbol: false }), font: "monoMed" },
         ];
       });
 
   header();
-  const ROW_H = 20;
+  const ROW_H = 24;
   if (rows.length === 0) {
-    drawLine1(page, period ? "No activity during this period." : "No open invoices as of this date.", ML + 9, top + 13.5, { size: 9.4, font: f.reg, color: C.muted });
+    drawLine1(page, period ? "No activity during this period." : "No open invoices as of this date.", ML + 9, top + 15.5, { size: 9.4, font: f.reg, color: C.muted });
     top += ROW_H;
     hline(page, ML, ML + CW, top, C.rule);
   }
@@ -1019,7 +1094,7 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
     }
     cells.forEach((cell, i) => {
       const c = cols[i];
-      drawLine1(page, cell.text, c.x, top + 13.5, { size: 9, font: cell.bold ? f.bold : f.reg, color: cell.color ?? C.ink, align: c.align, maxWidth: widths[i] });
+      drawLine1(page, cell.text, c.x, top + 15.5, { size: 9, font: cell.font ? f[cell.font] : f.reg, color: cell.color ?? C.ink, align: c.align, maxWidth: widths[i] });
     });
     top += ROW_H;
     hline(page, ML, ML + CW, top, C.rule);
@@ -1027,8 +1102,8 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
   // closing row
   if (top + 26 > CONTENT_BOTTOM) newPage();
   hline(page, ML, ML + CW, top, C.border);
-  sectionLabel(page, f, period ? "Closing balance" : "Balance due", R - 110, top + 16, "right");
-  drawLine1(page, formatMoney(d.closingBalance), R, top + 16.5, { size: 11.25, font: f.bold, align: "right" });
+  drawLine1(page, period ? "Closing balance" : "Balance due", R - 96, top + 17, { size: 9.75, font: f.semi, align: "right" });
+  drawLine1(page, formatMoney(d.closingBalance), R, top + 17, { size: 11.25, font: f.monoMed, align: "right" });
   top += 26;
 
   // ---- Remittance slip (bottom of the last page) ----------------------------------
@@ -1038,45 +1113,59 @@ export async function renderStatementDocument(d: StatementSource, statementNumbe
     drawContinuationHeader(page, f, accent, org.name, `STATEMENT ${statementNumber}`);
   }
   const slipTop = CONTENT_BOTTOM - SLIP_H;
+  // scissors + dashed cut line + label, then the boxed slip
+  page.drawSvgPath("M8.12 8.12 L12 12 M14.47 14.48 L20 20 M20 4 L8.12 15.88 M9 6 A3 3 0 1 1 3 6 A3 3 0 1 1 9 6 M9 18 A3 3 0 1 1 3 18 A3 3 0 1 1 9 18", {
+    x: ML,
+    y: PAGE_H - (slipTop - 5),
+    scale: 10.5 / 24,
+    borderColor: C.muted,
+    borderWidth: 2,
+    borderLineCap: LineCapStyle.Round,
+  });
   const cut = "DETACH AND RETURN WITH YOUR PAYMENT";
-  const cutW = textWidth(cut, f.bold, 7.5, 0.6);
-  hline(page, ML, PAGE_W / 2 - cutW / 2 - 9, slipTop, C.border, 0.75, [3, 3]);
-  hline(page, PAGE_W / 2 + cutW / 2 + 9, PAGE_W - MR, slipTop, C.border, 0.75, [3, 3]);
-  drawLine1(page, cut, PAGE_W / 2, slipTop + 2.5, { size: 7.5, font: f.bold, color: C.muted, align: "center", spacing: 0.6 });
+  const cutW = textWidth(cut, f.med, 7.5, 0.6);
+  hline(page, ML + 16, PAGE_W / 2 - cutW / 2 - 6, slipTop, C.border, 0.75, [2, 2.5]);
+  hline(page, PAGE_W / 2 + cutW / 2 + 6, PAGE_W - MR, slipTop, C.border, 0.75, [2, 2.5]);
+  drawLine1(page, cut, PAGE_W / 2, slipTop + 2.5, { size: 7.5, font: f.med, color: C.muted, align: "center", spacing: 0.6 });
 
-  const sTop = slipTop + 16;
-  const sColW = (CW - 30) / 3;
-  const sx = [ML, ML + sColW + 15, ML + 2 * (sColW + 15)];
-  sectionLabel(page, f, "Remit to", sx[0], sTop + 7);
-  let rb = sTop + 22;
-  drawLine1(page, org.name, sx[0], rb, { size: 10.5, font: f.bold, maxWidth: sColW });
-  const remitLines = d.organization.remitLines?.length ? d.organization.remitLines : splitLines(d.organization.address?.replace(/ · /g, "\n"), 3);
+  const boxTop = slipTop + 12;
+  box(page, ML, boxTop, CW, SLIP_H - 12, { radius: 6, stroke: C.border });
+  const sTop = boxTop + 6;
+  const pad = 13;
+  const sColW = (CW - 2 * pad - 30) / 3;
+  const sx = [ML + pad, ML + pad + sColW + 15, ML + pad + 2 * (sColW + 15)];
+  sectionLabel(page, f, "Remit to", sx[0], sTop + 9);
+  let rb = sTop + 24;
+  drawLine1(page, org.name, sx[0], rb, { size: 9.75, font: f.semi, maxWidth: sColW });
+  const remitLines = d.organization.remitLines?.length ? d.organization.remitLines : splitLines(d.organization.address?.replace(/ \u00b7 /g, "\n"), 3);
   for (const l of remitLines.slice(0, 3)) {
     rb += 12.5;
-    drawLine1(page, l, sx[0], rb, { size: 9.4, font: f.reg, color: C.text2, maxWidth: sColW });
+    drawLine1(page, l, sx[0], rb, { size: 9, font: f.reg, color: C.text2, maxWidth: sColW });
   }
   if (d.bankInstructions) {
     const b = d.bankInstructions;
     rb += 12.5;
-    drawLine1(page, `ACH: ${b.bankName}${b.accountLast4 ? ` · acct ...${b.accountLast4}` : ""}`, sx[0], rb, { size: 8.6, font: f.reg, color: C.muted, maxWidth: sColW });
+    drawLine1(page, `ACH: ${b.bankName}${b.accountLast4 ? ` \u00b7 acct ...${b.accountLast4}` : ""}`, sx[0], rb, { size: 8.25, font: f.reg, color: C.muted, maxWidth: sColW });
   }
 
-  const kv: [string, string][] = [
-    ["Account", d.party.company_name],
-    ["Statement #", statementNumber],
-    ["Balance due", formatMoney(d.closingBalance)],
+  const kv: [string, string, PDFFont][] = [
+    ["Account", d.party.company_name, f.reg],
+    ["Statement #", statementNumber, f.mono],
+    ["Balance due", formatMoney(d.closingBalance), f.monoMed],
   ];
-  let kb = sTop + 7;
-  for (const [k, v] of kv) {
-    drawLine1(page, k, sx[1], kb, { size: 9.4, font: f.reg, color: C.muted });
-    drawLine1(page, v, sx[1] + 66, kb, { size: 9.4, font: k === "Balance due" ? f.bold : f.reg, maxWidth: sColW - 66 });
-    kb += 14;
+  let kb = sTop + 24;
+  for (const [k, v, font] of kv) {
+    drawLine1(page, k, sx[1], kb, { size: 9, font: f.reg, color: C.text2 });
+    drawLine1(page, v, sx[1] + 70, kb, { size: 9, font, maxWidth: sColW - 70 });
+    kb += 16.5;
   }
 
-  sectionLabel(page, f, "Amount enclosed", sx[2], sTop + 7);
-  box(page, sx[2], sTop + 14, sColW, 30, { radius: 4.5, stroke: C.border });
-  drawLine1(page, "$", sx[2] + 9, sTop + 33.5, { size: 12, font: f.reg, color: C.muted });
-  drawLine1(page, "List invoice numbers paid on your remittance.", sx[2], sTop + 56, { size: 8.25, font: f.reg, color: C.muted, maxWidth: sColW });
+  sectionLabel(page, f, "Amount enclosed", sx[2], sTop + 9);
+  drawLine1(page, "$", sx[2], sTop + 38, { size: 10.5, font: f.reg });
+  hline(page, sx[2], sx[2] + sColW, sTop + 43, C.ink, 0.75);
+  wrapText("List invoice numbers paid on your remittance.", f.reg, 8.25, sColW).forEach((l, j) =>
+    drawLine1(page, l, sx[2], sTop + 58 + j * 11, { size: 8.25, font: f.reg, color: C.muted })
+  );
 
   drawFooters(pages, f, [org.footer ?? "Questions about this statement? Contact us at the phone or email above."], "Thank you for your business.");
   pdf.setTitle(pdfSafe(`Statement ${statementNumber}`));

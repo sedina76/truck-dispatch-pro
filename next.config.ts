@@ -8,6 +8,12 @@ const nextConfig: NextConfig = {
   // __dirname is not reliably defined in that context -- using it silently
   // corrupted output file tracing and broke every route under `next start`.)
   outputFileTracingRoot: process.cwd(),
+  // The IBM Plex font files used by the invoice/statement/billing-packet
+  // PDFs (src/lib/documents/branded-pdf.ts) are read from disk at runtime,
+  // which file tracing can't see -- ship them with every server function.
+  outputFileTracingIncludes: {
+    "/**/*": ["./src/lib/documents/fonts/*.woff"],
+  },
   experimental: {
     serverActions: {
       // Server Actions called directly from client code (not a traditional
