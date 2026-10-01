@@ -10,6 +10,18 @@ import { sendTenantEmail } from "@/lib/email/send-pipeline";
 import { generateExecutedAgreementDocument } from "@/lib/carrier-agreements/executed-document";
 import { getStaffExecutedAgreementSignedUrl } from "@/lib/carrier-agreements/signed-url";
 import { ExecutedAgreementAccessDeniedError, ExecutedAgreementResourceNotFoundError } from "@/lib/carrier-agreements/errors";
+import { carrierInvitationEmail } from "@/lib/email/templates";
+
+// Whole days until an invitation link expires (for "expires in N days").
+function daysUntil(expiresAt: Date): number {
+  return Math.max(1, Math.round((expiresAt.getTime() - Date.now()) / 86_400_000));
+}
+
+// The inviting organization's name, as recipients know it.
+async function organizationDisplayName(supabase: Awaited<ReturnType<typeof createClient>>, organizationId: string): Promise<string> {
+  const { data } = await supabase.from("organizations").select("name").eq("id", organizationId).maybeSingle();
+  return (data?.name as string | undefined)?.trim() || "Our team";
+}
 
 // ---------------------------------------------------------------------------
 // Staff-side onboarding workspace actions. Everything that only needs
@@ -155,8 +167,7 @@ export async function inviteCarrier(formData: FormData): Promise<{ ok: true; app
       authContext: auth.context,
       emailPurpose: "carrier_onboarding_invitation",
       to: [email],
-      subject: `${legalName} -- Carrier Onboarding Invitation`,
-      text: `Hello ${contactName},\n\nPlease complete your carrier onboarding packet using the secure link below. This link expires in 14 days.\n\n${invitation.url}`,
+      ...carrierInvitationEmail({ orgName: await organizationDisplayName(supabase, organizationId), contactName, url: invitation.url, expiresInDays: daysUntil(invitation.expiresAt) }),
       entityType: "carrier_onboarding_application",
       entityId: application.id,
       sentBy: user.id,
@@ -229,8 +240,7 @@ export async function resendInvitation(applicationId: string): Promise<{ ok: tru
       authContext: auth.context,
       emailPurpose: "carrier_onboarding_invitation",
       to: [application.email],
-      subject: `${application.legal_name ?? "Carrier"} -- Carrier Onboarding Invitation`,
-      text: `Hello ${application.contact_name ?? ""},\n\nHere is a fresh secure link to complete your carrier onboarding packet. This link expires in 14 days.\n\n${invitation.url}`,
+      ...carrierInvitationEmail({ orgName: await organizationDisplayName(supabase, organizationId), contactName: application.contact_name ?? null, url: invitation.url, expiresInDays: daysUntil(invitation.expiresAt), resend: true }),
       entityType: "carrier_onboarding_application",
       entityId: applicationId,
       sentBy: user.id,
