@@ -7,7 +7,7 @@ import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/req
 import { emptyToNull } from "@/lib/utils/form";
 import type { CarrierFactoringMode } from "@/lib/factoring/types";
 import { resolveStructuredRpcResult, type StructuredRpcResult } from "@/lib/factoring/rpc-result";
-import { relationshipReadinessSteps, notReadyMessage } from "@/lib/factoring/readiness";
+import { relationshipReadinessSteps, notReadyMessage, setDefaultIncompleteMessage } from "@/lib/factoring/readiness";
 import {
   validateOptionalEmail,
   validateOptionalWebsite,
@@ -174,18 +174,12 @@ function friendlyDbError(error: { code?: string; message: string }, context: "co
 // result for business-rule rejections -- {success:false, ...} -- so a
 // caller that only checks the Postgres/transport-level `error` and never
 // looks at `data` will silently treat a rejected change as if it
-// succeeded. The actual decision logic lives in the framework-independent
+// succeeded. Every RPC call below passes BOTH to resolveStructuredRpcResult(). The actual decision logic lives in the framework-independent
 // lib/factoring/rpc-result.ts (unit-tested directly, without a Supabase
 // client) -- this is a thin wrapper that adapts a Supabase `.rpc()` call
 // (a PromiseLike, not a plain Promise) to it. It is never sufficient to
 // check `error` alone.
 // ---------------------------------------------------------------------------
-async function resolveStructuredRpc<T extends StructuredRpcResult>(
-  call: PromiseLike<{ data: T | null; error: { message: string } | null }>
-): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
-  const { data, error } = await call;
-  return resolveStructuredRpcResult(data, error);
-}
 
 // ---------------------------------------------------------------------------
 // Factoring companies
@@ -439,13 +433,38 @@ export async function updateFactoringRelationship(relationshipId: string, formDa
   return { ok: true };
 }
 
+async function describeSetDefaultIncomplete(relationshipId: string, organizationId: string): Promise<string> {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("factoring_relationships")
+    .select("relationship_name, is_default, is_active, effective_from, effective_to, remittance_instructions, noa_approved, submission_method, factoring_companies(is_active)")
+    .eq("id", relationshipId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (!data) return "This relationship is missing required setup and cannot be the default yet.";
+  const row = data as unknown as {
+    relationship_name: string | null;
+    is_default: boolean;
+    is_active: boolean;
+    effective_from: string | null;
+    effective_to: string | null;
+    remittance_instructions: string | null;
+    noa_approved: boolean | null;
+    submission_method: "secure_email" | "api" | "portal_manual" | "internal_queue" | null;
+    factoring_companies: { is_active: boolean } | { is_active: boolean }[] | null;
+  };
+  const company = Array.isArray(row.factoring_companies) ? row.factoring_companies[0] : row.factoring_companies;
+  return setDefaultIncompleteMessage(row.relationship_name ?? "", relationshipReadinessSteps(row, Boolean(company?.is_active)));
+}
+
+
 // Phase 2H.3A / 3B.1 (0072 -> 0138): a single atomic, carrier-scoped RPC.
 // Called through the CALLER'S OWN session client (never service_role) --
 // org/role/carrier are derived and re-verified INSIDE the function itself
 // (current_org_id()/has_role(), 0138), never trusted from this action's
 // own arguments. Phase 3B.1.3 (Section D) fix: the RPC's own STRUCTURED
 // result is now the authority on success, not merely a null transport
-// error -- resolveStructuredRpc() maps {success:false, incomplete:true,
+// error -- resolveStructuredRpcResult() maps {success:false, incomplete:true,
 // ...} (a normal, non-exception result the RPC returns for "this
 // relationship isn't complete enough to become the default yet") to a
 // failed FactoringActionResult exactly the same as a raised exception
@@ -457,8 +476,16 @@ export async function setDefaultFactoringRelationship(relationshipId: string): P
   if ("error" in auth) return { ok: false, error: auth.error };
 
   const supabase = await createClient();
-  const resolved = await resolveStructuredRpc(supabase.rpc("set_default_factoring_relationship", { p_relationship_id: relationshipId }));
-  if (!resolved.ok) return { ok: false, error: stripRpcPrefix(resolved.error) };
+  const { data, error } = await supabase.rpc("set_default_factoring_relationship", { p_relationship_id: relationshipId });
+  const resolved = resolveStructuredRpcResult(data as StructuredRpcResult | null, error);
+  if (!resolved.ok) {
+    // An "incomplete" refusal's own message lists every POSSIBLE gap; name
+    // the ones that are actually missing instead.
+    if (!error && (data as StructuredRpcResult | null)?.incomplete) {
+      return { ok: false, error: await describeSetDefaultIncomplete(relationshipId, auth.organizationId) };
+    }
+    return { ok: false, error: stripRpcPrefix(resolved.error) };
+  }
 
   await logFactoringActivity(auth.organizationId, "factoring_relationship_set_default", {
     factoring_relationship_id: relationshipId,

@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { relationshipReadinessSteps, canBecomeDefault, isFullyReady, notReadyMessage } from "./readiness.ts";
+import { relationshipReadinessSteps, canBecomeDefault, isFullyReady, notReadyMessage, setDefaultIncompleteMessage } from "./readiness.ts";
 
 const TODAY = "2026-10-01";
 const complete = {
@@ -79,4 +79,16 @@ test("not-ready message names the carrier, the closest relationship, and every m
 
 test("not-ready message when the carrier has no relationship at all", () => {
   assert.match(notReadyMessage("KALI FR.", []), /has no factoring relationship yet/);
+});
+
+test("Set Default refusal names only what is actually missing (the live 'standard' case)", () => {
+  // active + NOA approved, but Billing & Submission never saved
+  const rel = { is_default: false, is_active: true, effective_from: "2026-08-20", effective_to: null, remittance_instructions: null, noa_approved: true, submission_method: null };
+  const msg = setDefaultIncompleteMessage("standard", relationshipReadinessSteps(rel, true, TODAY));
+  assert.equal(msg, '"standard" can\'t be the default yet. It still needs: remittance instructions, a submission method. Click Billing & Submission and enter where brokers must send payment.');
+  assert.doesNotMatch(msg, /Notice of Assignment|default\./);
+});
+
+test("Set Default refusal when nothing is missing any more suggests a refresh", () => {
+  assert.match(setDefaultIncompleteMessage("standard", relationshipReadinessSteps({ ...complete, is_default: false }, true, TODAY)), /Refresh the page/);
 });

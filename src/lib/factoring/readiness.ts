@@ -103,3 +103,15 @@ export function notReadyMessage(
   const label = best.name ? `"${best.name}"` : "its factoring relationship";
   return `${carrierName} can't be switched to Factored yet. ${label} still needs: ${missing.join(", ")}. Complete these under Factoring Companies → Relationships, then try again.`;
 }
+
+/**
+ * Message shown when Set Default is refused because the relationship is
+ * incomplete -- lists exactly what is still missing (the "default" step
+ * itself is what is being attempted, so it is never listed).
+ */
+export function setDefaultIncompleteMessage(relationshipName: string, steps: ReadinessStep[]): string {
+  const missing = steps.filter((s) => s.key !== "default" && !s.done);
+  const label = relationshipName ? `"${relationshipName}"` : "This relationship";
+  if (missing.length === 0) return `${label} looks complete now. Refresh the page and click Set Default again.`;
+  return `${label} can't be the default yet. It still needs: ${missing.map((s) => s.need).join(", ")}. ${missing[0].fix}`;
+}
