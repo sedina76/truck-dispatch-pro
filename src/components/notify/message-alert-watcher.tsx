@@ -1,21 +1,27 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getUnreadDriverMessageAlert } from "@/app/(app)/dispatch/message-alert-actions";
+import { useRouter } from "next/navigation";
+import { getUnreadDriverMessageAlert, getUnreadNotificationAlert } from "@/app/(app)/dispatch/message-alert-actions";
 import { decideMessageAlert } from "@/lib/notify/message-alert";
 import { installChimeUnlock, playMessageChime } from "@/lib/notify/message-chime";
 import { useToast } from "@/components/ui/toast";
 
 const POLL_MS = 15000;
 
-// Staff side of the "new message" chime. Mounted once in the (app) layout
-// (only for owner/admin/dispatcher), so it works on every page -- not just
-// the Dispatch Board. Plays the chime and shows a toast naming the driver
-// and load when a driver sends a new message. The first check after a page
-// load only records what's already unread (no chime for old messages).
+// Staff side of the chime. Mounted once in the (app) layout for every staff
+// role, so it works on every page. Checks every 15 seconds for:
+//   * a new driver message (owner/admin/dispatcher; the server returns
+//     nothing for other roles), and
+//   * a new notification in the bell (POD uploaded, exceptions, late /
+//     off-route trucks, ...) -- which also refreshes the bell.
+// Each plays the chime once with a toast. The first check after a page load
+// only records what's already unread (no chime for old items).
 export function MessageAlertWatcher() {
   const toast = useToast();
-  const baseline = useRef<string | null | undefined>(undefined);
+  const router = useRouter();
+  const messageBaseline = useRef<string | null | undefined>(undefined);
+  const notificationBaseline = useRef<string | null | undefined>(undefined);
 
   useEffect(() => installChimeUnlock(), []);
 
@@ -25,16 +31,22 @@ export function MessageAlertWatcher() {
     const check = () => {
       if (inFlight || cancelled) return;
       inFlight = true;
-      getUnreadDriverMessageAlert()
-        .then((alert) => {
+      Promise.all([getUnreadDriverMessageAlert(), getUnreadNotificationAlert()])
+        .then(([message, notification]) => {
           if (cancelled) return;
-          const decision = decideMessageAlert(baseline.current, alert);
-          baseline.current = decision.baseline;
-          if (decision.chime && alert.latest) {
-            playMessageChime();
-            const who = alert.latest.driverName ?? "Driver";
-            const load = alert.latest.loadNumber ? ` (${alert.latest.loadNumber})` : "";
-            toast.show("info", `New message from ${who}${load}: ${alert.latest.preview}`);
+          const m = decideMessageAlert(messageBaseline.current, message);
+          messageBaseline.current = m.baseline;
+          const n = decideMessageAlert(notificationBaseline.current, notification);
+          notificationBaseline.current = n.baseline;
+          if (m.chime || n.chime) playMessageChime();
+          if (m.chime && message.latest) {
+            const who = message.latest.driverName ?? "Driver";
+            const load = message.latest.loadNumber ? ` (${message.latest.loadNumber})` : "";
+            toast.show("info", `New message from ${who}${load}: ${message.latest.preview}`);
+          }
+          if (n.chime && notification.latest) {
+            toast.show("info", notification.latest.body ? `${notification.latest.title}: ${notification.latest.body}` : notification.latest.title);
+            router.refresh(); // the bell shows it right away
           }
         })
         .catch(() => {})

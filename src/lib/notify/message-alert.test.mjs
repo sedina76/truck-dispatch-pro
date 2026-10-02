@@ -38,17 +38,29 @@ test("sound is on by default; only an explicit 'off' mutes", () => {
 
 const src = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-test("staff app: every page of the app watches for driver messages (dispatch roles only)", () => {
+test("staff app: every page chimes for new driver messages (dispatch roles only) and new bell notifications (every staff role)", () => {
   const layout = src("../../app/(app)/layout.tsx");
-  assert.match(layout, /\["owner", "admin", "dispatcher"\]\.includes\(profile\.role\)/);
-  assert.match(layout, /\{handlesDriverMessages && <MessageAlertWatcher \/>\}/);
-  assert.match(layout, /showMessageSound=\{handlesDriverMessages\}/);
+  assert.match(layout, /<MessageAlertWatcher \/>/);
+  assert.ok(!/&& <MessageAlertWatcher/.test(layout), "mounted for every staff role");
+  assert.match(layout, /showMessageSound /);
   const watcher = src("../../components/notify/message-alert-watcher.tsx");
-  assert.match(watcher, /decideMessageAlert\(baseline\.current, alert\)/);
-  assert.match(watcher, /playMessageChime\(\)/);
+  assert.match(watcher, /decideMessageAlert\(messageBaseline\.current, message\)/);
+  assert.match(watcher, /decideMessageAlert\(notificationBaseline\.current, notification\)/);
+  assert.match(watcher, /if \(m\.chime \|\| n\.chime\) playMessageChime\(\)/);
+  assert.match(watcher, /router\.refresh\(\)/);
   const action = src("../../app/(app)/dispatch/message-alert-actions.ts");
   assert.match(action, /\.eq\("sender_type", "driver"\)/);
   assert.match(action, /\["owner", "admin", "dispatcher"\]/);
+  // the bell: only the caller's own unread notifications, driver messages excluded (no double chime)
+  assert.match(action, /\.eq\("profile_id", user\.id\)\.is\("read_at", null\)\.neq\("type", "dispatch_message"\)/);
+});
+
+test("sound resumes in Safari after sleep / background (\"interrupted\" state), not only from \"suspended\"", () => {
+  const chime = src("./message-chime.ts");
+  assert.match(chime, /a\.state !== "running"\) a\.resume\(\)/);
+  assert.match(chime, /\(a\.state as string\) !== "running"\) a\.resume\(\)/);
+  assert.ok(!/state === "suspended"/.test(chime));
+  assert.match(chime, /"visibilitychange"/);
 });
 
 test("driver portal: the bottom nav chimes on every screen for new dispatch messages", () => {

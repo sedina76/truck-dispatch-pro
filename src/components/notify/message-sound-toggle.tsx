@@ -20,13 +20,13 @@ export function MessageSoundToggle({ className, compact = false }: { className?:
   }
 
   const Icon = on ? Bell : BellOff;
-  const label = on ? "Message sound on" : "Message sound off";
+  const label = on ? "Sound on" : "Sound off";
   return (
     <button
       type="button"
       onClick={toggle}
       aria-pressed={on}
-      title={on ? "New-message sound is on (click to mute)" : "New-message sound is off (click to turn on)"}
+      title={on ? "Sound for new messages and notifications is on (click to mute)" : "Sound for new messages and notifications is off (click to turn on)"}
       className={cn("inline-flex items-center gap-1 hover:text-foreground", className)}
     >
       <Icon className={compact ? "size-3" : "size-4"} />

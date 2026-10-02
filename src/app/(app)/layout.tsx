@@ -47,9 +47,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   const organizationName = profile.organizations?.name ?? "Your organization";
-  // Roles that handle driver communication get the new-message chime
-  // (same owner/admin/dispatcher tier as the Dispatch Board's composer).
-  const handlesDriverMessages = ["owner", "admin", "dispatcher"].includes(profile.role);
+  // Every staff role gets the chime for new bell notifications; the
+  // driver-message part is limited to owner/admin/dispatcher on the server
+  // (message-alert-actions.ts).
 
   // entity_type/entity_id added (Phase 2I.1A section E) so a
   // dispatch_message notification can navigate straight to the dispatch
@@ -97,10 +97,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <div className="no-print hidden lg:block"><Sidebar organizationName={organizationName} fullName={profile.full_name} role={profile.role} /></div>
             <main className="flex-1 overflow-y-auto px-4 py-3 pb-20 lg:pb-3 print:overflow-visible print:p-0">{children}</main>
           </div>
-          <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} showMessageSound={handlesDriverMessages} /></div>
+          <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} showMessageSound /></div>
         </div>
         <CommandPalette />
-        {handlesDriverMessages && <MessageAlertWatcher />}
+        <MessageAlertWatcher />
       </DesktopActionsProvider>
       </ToastProvider>
     </TooltipProvider>

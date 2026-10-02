@@ -55,3 +55,41 @@ export async function getUnreadDriverMessageAlert(): Promise<DriverMessageAlert>
     return EMPTY;
   }
 }
+
+export type NotificationAlert = {
+  count: number;
+  latestAt: string | null;
+  latest: { title: string; body: string | null } | null;
+};
+
+const EMPTY_NOTIFICATIONS: NotificationAlert = { count: 0, latestAt: null, latest: null };
+
+// Polled by <MessageAlertWatcher> for the bell: the caller's own unread
+// notifications (profile_id = the signed-in user, enforced by RLS), except
+// driver messages -- those already chime through the message check above.
+// Never throws: any failure just means "no alert".
+export async function getUnreadNotificationAlert(): Promise<NotificationAlert> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return EMPTY_NOTIFICATIONS;
+    const [{ count }, { data: latestRows }] = await Promise.all([
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("profile_id", user.id).is("read_at", null).neq("type", "dispatch_message"),
+      supabase
+        .from("notifications")
+        .select("title, body, created_at")
+        .eq("profile_id", user.id)
+        .is("read_at", null)
+        .neq("type", "dispatch_message")
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ]);
+    const row = (latestRows ?? [])[0] as { title: string; body: string | null; created_at: string } | undefined;
+    if (!count || !row) return EMPTY_NOTIFICATIONS;
+    return { count, latestAt: row.created_at, latest: { title: row.title, body: row.body } };
+  } catch {
+    return EMPTY_NOTIFICATIONS;
+  }
+}

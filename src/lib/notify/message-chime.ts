@@ -14,6 +14,7 @@ let ctx: AudioContext | null = null;
 
 function audio(): AudioContext | null {
   if (typeof window === "undefined") return null;
+  if (ctx && ctx.state === "closed") ctx = null;
   if (ctx) return ctx;
   const Ctor: AudioCtor | undefined = window.AudioContext ?? (window as unknown as { webkitAudioContext?: AudioCtor }).webkitAudioContext;
   if (!Ctor) return null;
@@ -29,9 +30,9 @@ export function installChimeUnlock(): () => void {
   if (typeof window === "undefined") return () => {};
   const unlock = () => {
     const a = audio();
-    if (a && a.state === "suspended") a.resume().catch(() => {});
+    if (a && a.state !== "running") a.resume().catch(() => {});
   };
-  const events = ["pointerdown", "keydown", "touchstart"] as const;
+  const events = ["pointerdown", "keydown", "touchstart", "focus", "visibilitychange"] as const;
   events.forEach((e) => window.addEventListener(e, unlock, { passive: true }));
   return () => events.forEach((e) => window.removeEventListener(e, unlock));
 }
@@ -59,7 +60,9 @@ function playNotes(notes: Note[], opts?: { force?: boolean }) {
   const a = audio();
   if (!a) return;
   try {
-    if (a.state === "suspended") a.resume().catch(() => {});
+    // Safari reports "interrupted" (not "suspended") after the Mac sleeps or
+    // the tab sits in the background -- resume from any non-running state.
+    if ((a.state as string) !== "running") a.resume().catch(() => {});
     const now = a.currentTime;
     for (const { freq, start, dur, type, peak } of notes) {
       const osc = a.createOscillator();
