@@ -1,6 +1,7 @@
 # Runs on every push to main and every pull request.
 #   app       -- lint, typecheck, unit tests, production build
-#   database  -- every database test suite on throwaway PostgreSQL
+#   database  -- every database test suite on throwaway PostgreSQL 17,
+#                incl. the production twin built from ALL migrations
 #                (never touches Supabase; see supabase/ci/run-db-tests.sh)
 name: CI
 
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   app:
     name: App (lint, types, tests, build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest moves to Ubuntu 26 on 2026-10-19
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -49,16 +50,19 @@ jobs:
 
   database:
     name: Database tests (throwaway PostgreSQL)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest moves to Ubuntu 26 on 2026-10-19
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Put PostgreSQL server tools on PATH
+      # Same major version as production (Supabase: PostgreSQL 17.6), from
+      # the official PostgreSQL apt repository.
+      - name: Install PostgreSQL 17 and put it on PATH
         run: |
-          if ! ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y postgresql
-          fi
-          PGBIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)"
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-17
+          PGBIN=/usr/lib/postgresql/17/bin
           echo "$PGBIN" >> "$GITHUB_PATH"
           "$PGBIN/postgres" --version
       - name: Run every database suite
