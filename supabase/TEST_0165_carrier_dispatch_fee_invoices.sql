@@ -43,9 +43,10 @@ update public.profiles set organization_id = :'org', role = 'dispatcher' where i
 set local app.bypass_profile_guard = 'false';
 
 -- fixtures (superuser): carriers, drivers, trucks, loads, dispatches
-insert into public.carriers (id, organization_id, legal_name, dispatch_service_terms_days) values
- ('16500000-0000-0000-0000-0000000000c1', :'org', 'Road Runner Trucking', 7),
- ('16500000-0000-0000-0000-0000000000c2', :'org', 'Other Carrier', 7);
+-- both carriers: the broker pays the carrier (0167), so their fees go on Dispatch Fee Invoices
+insert into public.carriers (id, organization_id, legal_name, dispatch_service_terms_days, load_proceeds_model) values
+ ('16500000-0000-0000-0000-0000000000c1', :'org', 'Road Runner Trucking', 7, 'carrier_paid_directly'),
+ ('16500000-0000-0000-0000-0000000000c2', :'org', 'Other Carrier', 7, 'carrier_paid_directly');
 insert into public.drivers (id, organization_id, carrier_id, first_name, last_name) values
  ('16500000-0000-0000-0000-0000000000d1', :'org', '16500000-0000-0000-0000-0000000000c1', 'Dana', 'One'),
  ('16500000-0000-0000-0000-0000000000d2', :'org', '16500000-0000-0000-0000-0000000000c2', 'Eli', 'Two');

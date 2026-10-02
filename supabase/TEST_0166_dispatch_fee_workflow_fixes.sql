@@ -36,9 +36,10 @@ update public.profiles set organization_id = :'org', role = 'dispatcher' where i
 set local app.bypass_profile_guard = 'false';
 
 -- fixtures (superuser): carriers, drivers, trucks, loads, dispatches
-insert into public.carriers (id, organization_id, legal_name, dispatch_service_terms_days) values
- ('16500000-0000-0000-0000-0000000000c1', :'org', 'Road Runner Trucking', 7),
- ('16500000-0000-0000-0000-0000000000c2', :'org', 'Other Carrier', 7);
+-- both carriers: the broker pays the carrier (0167), so their fees go on Dispatch Fee Invoices
+insert into public.carriers (id, organization_id, legal_name, dispatch_service_terms_days, load_proceeds_model) values
+ ('16500000-0000-0000-0000-0000000000c1', :'org', 'Road Runner Trucking', 7, 'carrier_paid_directly'),
+ ('16500000-0000-0000-0000-0000000000c2', :'org', 'Other Carrier', 7, 'carrier_paid_directly');
 insert into public.drivers (id, organization_id, carrier_id, first_name, last_name) values
  ('16500000-0000-0000-0000-0000000000d1', :'org', '16500000-0000-0000-0000-0000000000c1', 'Dana', 'One'),
  ('16500000-0000-0000-0000-0000000000d2', :'org', '16500000-0000-0000-0000-0000000000c2', 'Eli', 'Two');
@@ -194,8 +195,8 @@ declare r text;
 begin
   -- W5: the invoiced load L165-1 is not offered to a settlement for this week
   r := pg_temp.as_user(owner, format($q$select coalesce(string_agg(load_number, ',' order by load_number), '') from public.get_payable_carrier_loads(%L, current_date - 7, current_date)$q$, c1));
-  -- (L165-2 left the invoice in W3 -- zero fee -- so it may be settled)
-  if r like '%L165-1%' or r like '%L165-5%' or r not like '%L165-2%' then raise exception 'FAIL W5 payable: %', r; end if;
+  -- (since 0167 a "broker pays the carrier" load is never offered to a settlement at all)
+  if r like '%L165-1%' or r like '%L165-2%' or r like '%L165-5%' then raise exception 'FAIL W5 payable: %', r; end if;
   begin
     insert into public.settlement_line_items (organization_id, settlement_id, item_type, description, amount, load_id, load_number, carrier_rate)
     select organization_id, '16600000-0000-0000-0000-0000000000a1', 'load_pay', 'Load L165-1', 7200, '16500000-0000-0000-0000-0000000000f1', 'L165-1', 7200

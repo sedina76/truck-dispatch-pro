@@ -9,6 +9,7 @@ import { updateCarrier } from "../actions";
 import { CarrierSettlementSummarySection } from "@/components/carriers/carrier-settlement-summary-section";
 import { CarrierCompanyProfitabilitySection } from "@/components/carriers/carrier-company-profitability-section";
 import { CarrierExpenseSummarySection } from "@/components/carriers/carrier-expense-summary-section";
+import { BrokerPaysSection } from "@/components/carriers/broker-pays-section";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
 import { ComplianceTab } from "@/components/carrier-compliance/compliance-tab";
 import { CarrierDocumentsSection, type CarrierDocumentRow } from "@/components/carriers/carrier-documents-section";
@@ -23,10 +24,10 @@ export default async function CarrierDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; bp_saved?: string; bp_error?: string }>;
 }) {
   const { id } = await params;
-  const { tab } = await searchParams;
+  const { tab, bp_saved, bp_error } = await searchParams;
   const supabase = await createClient();
 
   const { data: roleData } = await supabase.rpc("current_role");
@@ -147,6 +148,16 @@ export default async function CarrierDetailPage({
           )}
         </FormGrid>
       </FormCard>
+
+      {canSeeFinancials && (
+        <BrokerPaysSection
+          carrierId={id}
+          value={(carrier as { load_proceeds_model?: string | null }).load_proceeds_model ?? null}
+          canEdit={!!role && OWNER_ADMIN_ROLES.includes(role)}
+          saved={bp_saved}
+          error={bp_error}
+        />
+      )}
 
       {canSeeFinancials && <CarrierSettlementSummarySection carrierId={id} />}
 

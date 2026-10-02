@@ -5,6 +5,7 @@ import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components
 import { DesktopFilterField, desktopInputClass } from "@/components/desktop/filter-bar";
 import { Button } from "@/components/ui/button";
 import { defaultFeePeriod, feePeriodError, summarizeFeeLines } from "@/lib/dispatch-fee-invoices/summary";
+import { brokerPaysOf } from "@/lib/carriers/broker-pays";
 import { createDispatchFeeInvoice } from "../actions";
 
 function money(n: number | string): string {
@@ -24,7 +25,7 @@ export default async function NewDispatchFeeInvoicePage({
 }) {
   const sp = await searchParams;
   const supabase = await createClient();
-  const { data: carriers } = await supabase.from("carriers").select("id, legal_name").eq("is_active", true).order("legal_name");
+  const { data: carriers } = await supabase.from("carriers").select("id, legal_name, load_proceeds_model").eq("is_active", true).order("legal_name");
 
   const fallback = defaultFeePeriod();
   const carrierId = sp.carrier_id ?? "";
@@ -40,7 +41,9 @@ export default async function NewDispatchFeeInvoicePage({
     else preview = (data ?? []) as PreviewLine[];
   }
   const summary = summarizeFeeLines(preview);
-  const carrierName = (carriers ?? []).find((c) => c.id === carrierId)?.legal_name;
+  const carrier = (carriers ?? []).find((c) => c.id === carrierId);
+  const carrierName = carrier?.legal_name;
+  const brokerPaysUs = !!carrier && brokerPaysOf(carrier.load_proceeds_model) === "dispatcher_receives_funds";
 
   return (
     <div className="space-y-3">
@@ -68,7 +71,7 @@ export default async function NewDispatchFeeInvoicePage({
               <select name="carrier_id" defaultValue={carrierId} required className={desktopInputClass + " w-60"}>
                 <option value="" disabled>Select a carrier...</option>
                 {(carriers ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.legal_name}</option>
+                  <option key={c.id} value={c.id}>{c.legal_name}{brokerPaysOf(c.load_proceeds_model) === "dispatcher_receives_funds" ? " (broker pays us)" : ""}</option>
                 ))}
               </select>
             </DesktopFilterField>
@@ -87,11 +90,17 @@ export default async function NewDispatchFeeInvoicePage({
         <DesktopPanel>
           <DesktopPanelHeader title={`2. Review${carrierName ? ` -- ${carrierName}` : ""}`} />
           <DesktopPanelBody>
+            {brokerPaysUs && (
+              <p className="mb-3 rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+                This carrier is set to &quot;Broker pays us&quot;, so its load fees are not billed here (you keep them from the broker&apos;s payment and settle with the carrier). Only advances, fuel and repairs can be billed.{" "}
+                <Link href={`/carriers/${carrierId}#broker-pays`} className="font-medium text-primary hover:underline">Change who the broker pays</Link>
+              </p>
+            )}
             {previewError ? (
               <p className="text-sm text-danger">{previewError}</p>
             ) : preview.length === 0 ? (
               <p className="text-[12.5px] text-muted-foreground">
-                Nothing to bill this carrier for that period: no delivered loads with a dispatch fee, and no advances, fuel or repairs left to bill. Loads count by their delivery date.
+                Nothing to bill this carrier for that period: no delivered loads with a dispatch fee, and no advances, fuel or repairs left to bill. Loads count by their delivery date; loads already on a carrier settlement or another invoice are not billed again.
               </p>
             ) : (
               <div className="space-y-4">
