@@ -124,7 +124,7 @@ run_suite "ROTATE_KEYS_PREVIEW_READONLY" run_fresh_db_test maintenance/ROTATE_KE
 # ci/twin-db.sh, ci/twin/README.md), then the 0162 drift-repair checks and the
 # generated drift check (must return no rows against the twin itself), then
 # the one-time stuck-dispatch repair (commits, cleans up after itself; last).
-run_suite "TWIN_ALL_MIGRATIONS_0162_TO_0167_CORE_WORKFLOW" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql TEST_0163_settle_by_delivery_date.sql TEST_0164_draft_invoice_follows_load_rate.sql TEST_0165_carrier_dispatch_fee_invoices.sql TEST_0166_dispatch_fee_workflow_fixes.sql TEST_0167_broker_pays_carrier_setting.sql DRIFT_CHECK_READONLY.sql TEST_CORE_WORKFLOW_E2E.sql TEST_FIX_STUCK_DISPATCHES.sql
+run_suite "TWIN_ALL_MIGRATIONS_0162_TO_0168_CORE_WORKFLOW" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql TEST_0163_settle_by_delivery_date.sql TEST_0164_draft_invoice_follows_load_rate.sql TEST_0165_carrier_dispatch_fee_invoices.sql TEST_0166_dispatch_fee_workflow_fixes.sql TEST_0167_broker_pays_carrier_setting.sql TEST_0168_carrier_invoice_double_billing_guards.sql DRIFT_CHECK_READONLY.sql TEST_CORE_WORKFLOW_E2E.sql TEST_FIX_STUCK_DISPATCHES.sql
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then

@@ -55,7 +55,16 @@ export async function listBillableLoads(carrierId: string): Promise<BillableLoad
   const { supabase, user } = await authed();
   if (!user) return [];
   const { data } = await supabase.from("loads").select("id, load_number, status, broker_id, customer_id").eq("carrier_id", carrierId).in("status", ["delivered", "pod_received"]).order("load_number").limit(200);
-  return (data ?? []).map((l) => ({ id: String(l.id), loadNumber: String(l.load_number), status: String(l.status), brokerId: l.broker_id ? String(l.broker_id) : null, customerId: l.customer_id ? String(l.customer_id) : null }));
+  // Only "broker pays the carrier" loads go on the carrier's own invoice
+  // (0167/0168); "broker pays us" loads are invoiced to the broker by you.
+  const ids = (data ?? []).map((l) => String(l.id));
+  const { data: live } = ids.length
+    ? await supabase.from("dispatches").select("load_id, proceeds_model").in("load_id", ids).neq("status", "cancelled")
+    : { data: [] as { load_id: string; proceeds_model: string | null }[] };
+  const carrierPaid = new Set((live ?? []).filter((d) => d.proceeds_model === "carrier_paid_directly").map((d) => String(d.load_id)));
+  return (data ?? [])
+    .filter((l) => carrierPaid.has(String(l.id)))
+    .map((l) => ({ id: String(l.id), loadNumber: String(l.load_number), status: String(l.status), brokerId: l.broker_id ? String(l.broker_id) : null, customerId: l.customer_id ? String(l.customer_id) : null }));
 }
 
 export async function previewCarrierInvoiceIssuance(input: IssuanceInput): Promise<IssuancePreview> {
