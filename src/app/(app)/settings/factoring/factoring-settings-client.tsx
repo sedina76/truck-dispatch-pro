@@ -11,6 +11,7 @@ import type { OrgRole } from "@/lib/auth/require-role";
 import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, NoaDocumentOption } from "@/lib/factoring/types";
 import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS, SUBMISSION_METHOD_OPTIONS, deriveEffectiveState } from "@/lib/factoring/types";
 import { relationshipReadinessSteps, canBecomeDefault, isFullyReady, type ReadinessStep } from "@/lib/factoring/readiness";
+import { defaultPolicyFilter, filterCarriers, policyCounts, type PolicyFilter } from "@/lib/factoring/carrier-policy-filter";
 import {
   createFactoringCompany,
   updateFactoringCompany,
@@ -229,17 +230,30 @@ function CarrierFactoringPolicyPanel({
 }) {
   const [showInactive, setShowInactive] = useState(false);
   const [policyCarrier, setPolicyCarrier] = useState<CarrierOption | null>(null);
+  const [filter, setFilter] = useState<PolicyFilter>(() => defaultPolicyFilter(carriers));
+  const [query, setQuery] = useState("");
 
-  const activeCarriers = carriers.filter((c) => c.is_active);
   const inactiveCarriers = carriers.filter((c) => !c.is_active);
-  const shown = showInactive ? carriers : activeCarriers;
+  const counts = policyCounts(carriers);
+  const shown = filterCarriers(carriers, filter, query, showInactive);
+  const tabs: { key: PolicyFilter; label: string; count: number }[] = [
+    { key: "needs_setup", label: "Needs setup", count: counts.needsSetup },
+    { key: "factored", label: "Factored", count: counts.factored },
+    { key: "direct", label: "Direct", count: counts.direct },
+    { key: "all", label: "All", count: counts.active },
+  ];
 
   return (
     <div className="rounded-md border border-desktop-border bg-card shadow-elevation-1">
       <div className="flex h-7 items-center justify-between rounded-t-md bg-desktop-header px-3 text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
         <span>Carrier Factoring Policy</span>
+        {carrierScopingApplied && carriers.length > 0 && (
+          <span className="font-normal normal-case tracking-normal">
+            {counts.factored} factored · {counts.direct} direct · {counts.needsSetup} need setup
+          </span>
+        )}
       </div>
-      <div className="p-4">
+      <div className="p-3">
         {!carrierScopingApplied ? (
           <p className="text-sm text-muted-foreground">Carrier-specific factoring policy is not available yet. This section will appear once the database migration is applied.</p>
         ) : carriers.length === 0 ? (
@@ -249,9 +263,39 @@ function CarrierFactoringPolicyPanel({
             <p className="text-xs text-muted-foreground">
               Every carrier starts <span className="font-medium text-foreground">Unconfigured</span> and blocks invoice issuance until an owner or admin explicitly sets Direct or Factored.
             </p>
-            <div className="overflow-x-auto rounded-md border border-desktop-border">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter carriers by policy">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={filter === tab.key}
+                    onClick={() => setFilter(tab.key)}
+                    className={
+                      filter === tab.key
+                        ? "h-7 rounded-sm border border-primary bg-primary/10 px-2.5 text-xs font-medium text-primary"
+                        : "h-7 rounded-sm border border-desktop-border px-2.5 text-xs text-muted-foreground hover:bg-desktop-muted"
+                    }
+                  >
+                    {tab.label} <span className="tabular-nums">({tab.count})</span>
+                  </button>
+                ))}
+              </div>
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search carriers"
+                aria-label="Search carriers"
+                className="ml-auto h-7 w-full max-w-[220px] rounded-sm border border-desktop-border bg-card px-2 text-xs outline-none focus-visible:border-primary"
+              />
+            </div>
+            {/* Fixed height: the list scrolls inside the panel (header stays),
+                so the page never grows with the number of carriers. */}
+            <div className="max-h-[296px] overflow-auto rounded-md border border-desktop-border">
               <table className="w-full text-[13px]">
-                <thead>
+                <thead className="sticky top-0 z-10">
                   <tr className="border-b border-desktop-border bg-desktop-header text-left text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
                     <th className="px-3 py-2">Carrier</th>
                     <th className="px-3 py-2">Policy</th>
@@ -261,21 +305,28 @@ function CarrierFactoringPolicyPanel({
                   </tr>
                 </thead>
                 <tbody>
+                  {shown.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">
+                        {query ? "No carriers match your search." : filter === "needs_setup" ? "Every active carrier has a policy." : "No carriers in this view."}
+                      </td>
+                    </tr>
+                  )}
                   {shown.map((carrier) => {
                     const readiness = readinessByCarrierId[carrier.id];
                     const defaultRel = relationships.find((r) => r.carrier_id === carrier.id && r.is_default && r.is_active) ?? null;
                     const defaultCompany = defaultRel ? companyById.get(defaultRel.factoring_company_id) : null;
                     return (
                       <tr key={carrier.id} className="border-b border-desktop-border last:border-0">
-                        <td className="px-3 py-2 font-medium">
+                        <td className="px-3 py-1.5 font-medium">
                           {carrier.legal_name}
                           {!carrier.is_active && <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(Historical)</span>}
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-3 py-1.5">
                           <StatusBadge status={carrier.factoring_mode ?? "unconfigured"} />
                         </td>
-                        <td className="px-3 py-2">{readiness ? <StatusBadge status={readiness.classification} /> : <span className="text-xs text-muted-foreground">--</span>}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                        <td className="px-3 py-1.5">{readiness ? <StatusBadge status={readiness.classification} /> : <span className="text-xs text-muted-foreground">--</span>}</td>
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground">
                           {defaultCompany ? (
                             <span className="text-foreground">
                               {defaultCompany.name}
@@ -285,7 +336,7 @@ function CarrierFactoringPolicyPanel({
                             "Not set"
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-1.5 text-right">
                           {canManage && carrier.is_active && (
                             <Button type="button" size="sm" variant="outline" onClick={() => setPolicyCarrier(carrier)}>
                               Change Policy
