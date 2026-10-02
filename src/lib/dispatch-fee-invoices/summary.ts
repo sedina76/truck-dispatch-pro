@@ -99,3 +99,8 @@ export function feeLineIssues(invoiceStatus: string, lines: FeeLineForCheck[], c
   }
   return out;
 }
+
+/** Default email text sent with a Dispatch Fee Invoice (editable in the compose dialog). */
+export function dispatchFeeInvoiceEmailBody(a: { carrierName: string | null; invoiceNumber: string; periodLabel: string; balanceDue: string; dueDate: string; orgName: string }): string {
+  return `Hello${a.carrierName ? ` ${a.carrierName}` : ""},\n\nPlease find attached Dispatch Fee Invoice ${a.invoiceNumber} for loads delivered ${a.periodLabel}: our dispatch fees plus any advances, fuel or repairs we paid for you.\n\nAmount due: ${a.balanceDue}${a.dueDate ? `\nDue date: ${a.dueDate}` : ""}\n\nPlease include ${a.invoiceNumber} with your payment.\n\nThank you,\n${a.orgName}`;
+}

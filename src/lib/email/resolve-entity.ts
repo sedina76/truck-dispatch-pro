@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getBillingParty } from "@/lib/billing/party";
 import { isPacketOutdated } from "@/app/(app)/invoices/billing-packet-actions";
 import { checkPacketReadiness } from "@/lib/billing-packet/generate";
+import { dispatchFeeInvoiceEmailBody } from "@/lib/dispatch-fee-invoices/summary";
 
 // Shared "who does this go to, what's the subject/body, what attachment,
 // is it blocked" resolver -- used by BOTH /api/email/resolve (populates
@@ -240,6 +241,51 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
         blocked: null,
         organizationName: orgName,
         numberLabel: p.payment_number,
+      };
+    }
+
+    case "dispatch_fee_invoice": {
+      // Dispatch company -> carrier (0165). Billing roles only (RLS); the
+      // PDF attached is the same one the Download button serves.
+      const { data: invoice } = await supabase
+        .from("carrier_fee_invoices")
+        .select("id, invoice_number, status, period_start, period_end, total_amount, balance_due, due_date, carriers(legal_name, email)")
+        .eq("id", entityId)
+        .maybeSingle();
+      if (!invoice) return { error: "Invoice not found.", status: 404 };
+      const v = invoice as unknown as {
+        invoice_number: string;
+        status: string;
+        period_start: string;
+        period_end: string;
+        total_amount: number;
+        balance_due: number;
+        due_date: string | null;
+        carriers: { legal_name: string; email: string | null } | null;
+      };
+      const orgName = await resolveOrgName(supabase);
+      const day = (d: string | null) => (d ? new Date(d + "T00:00:00").toLocaleDateString("en-US") : "");
+      return {
+        to: v.carriers?.email || "",
+        subject: `Dispatch Fee Invoice ${v.invoice_number}`,
+        message: dispatchFeeInvoiceEmailBody({
+          carrierName: v.carriers?.legal_name ?? null,
+          invoiceNumber: v.invoice_number,
+          periodLabel: `${day(v.period_start)} - ${day(v.period_end)}`,
+          balanceDue: money(v.balance_due),
+          dueDate: day(v.due_date),
+          orgName,
+        }),
+        attachmentType: "dispatch_fee_invoice_pdf",
+        attachmentLabel: `Dispatch Fee Invoice PDF (${v.invoice_number})`,
+        blocked:
+          v.status === "draft"
+            ? 'This invoice is still a draft. Click "Mark as Sent" first -- that locks the lines and sets the due date shown on the PDF -- then email it.'
+            : v.status === "void"
+              ? "This invoice is void and cannot be emailed."
+              : null,
+        organizationName: orgName,
+        numberLabel: v.invoice_number,
       };
     }
 

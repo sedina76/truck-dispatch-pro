@@ -8,6 +8,7 @@ import { resolveEmailForEntity } from "@/lib/email/resolve-entity";
 import { renderInvoiceOnlyPdf } from "@/lib/invoices/pdf";
 import { renderReceiptPdf } from "@/lib/payments/pdf";
 import { renderCarrierSettlementPdf, renderDriverSettlementPdf } from "@/lib/settlements/pdf";
+import { renderDispatchFeeInvoicePdfById } from "@/lib/dispatch-fee-invoices/pdf";
 
 // This route never fakes a successful send: with no provider configured,
 // or on any expected business failure, sendTenantEmail() (Phase 2F's
@@ -28,6 +29,7 @@ const ENTITY_TABLES: Record<string, string> = {
   carrier_settlement: "settlements",
   driver_settlement: "driver_settlements",
   payment: "payments",
+  dispatch_fee_invoice: "carrier_fee_invoices",
 };
 
 const ENTITY_TYPE_TO_PURPOSE: Record<string, EmailPurpose> = {
@@ -36,6 +38,7 @@ const ENTITY_TYPE_TO_PURPOSE: Record<string, EmailPurpose> = {
   carrier_settlement: "settlement",
   driver_settlement: "settlement",
   payment: "receipt",
+  dispatch_fee_invoice: "invoice",
 };
 
 async function fetchAttachment(
@@ -69,6 +72,11 @@ async function fetchAttachment(
       return { filename: `${safeName}.pdf`, content: await renderDriverSettlementPdf(entityId) };
     case "receipt_pdf":
       return { filename: `${safeName}.pdf`, content: await renderReceiptPdf(entityId) };
+    case "dispatch_fee_invoice_pdf": {
+      const pdf = await renderDispatchFeeInvoicePdfById(supabase, entityId);
+      if (!pdf) throw new Error("Invoice not found.");
+      return { filename: `${safeName}.pdf`, content: pdf.bytes };
+    }
     default:
       throw new Error("Unknown attachment type.");
   }

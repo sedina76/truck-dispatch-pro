@@ -59,3 +59,13 @@ test("flags loads that changed after billing", async () => {
   assert.deepEqual(feeLineIssues("draft", lines, cur).map((i) => i.lineId), ["b"]);
   assert.deepEqual(feeLineIssues("void", lines, cur), []);
 });
+
+test("carrier email text", async () => {
+  const { dispatchFeeInvoiceEmailBody } = await import("./summary.ts");
+  const body = dispatchFeeInvoiceEmailBody({ carrierName: "Road Runner", invoiceNumber: "DFI-2026-00001", periodLabel: "9/24/2026 - 9/30/2026", balanceDue: "$1,900.00", dueDate: "10/9/2026", orgName: "Sedina Dispatch" });
+  assert.match(body, /^Hello Road Runner,/);
+  assert.match(body, /Dispatch Fee Invoice DFI-2026-00001 for loads delivered 9\/24\/2026 - 9\/30\/2026/);
+  assert.match(body, /Amount due: \$1,900\.00\nDue date: 10\/9\/2026/);
+  assert.match(body, /Sedina Dispatch$/);
+  assert.doesNotMatch(dispatchFeeInvoiceEmailBody({ carrierName: null, invoiceNumber: "X", periodLabel: "p", balanceDue: "$1.00", dueDate: "", orgName: "O" }), /Due date|Hello ,/);
+});

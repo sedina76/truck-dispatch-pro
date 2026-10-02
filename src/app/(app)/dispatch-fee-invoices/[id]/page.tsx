@@ -7,6 +7,8 @@ import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { FormField, FormGrid, FormSelect } from "@/components/ui/form-field";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
+import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { EmailCarrierButton } from "@/components/dispatch-fee-invoices/email-carrier-button";
 import { feeInvoiceActions, feeLineIssues, summarizeFeeLines, type FeeLineCurrent } from "@/lib/dispatch-fee-invoices/summary";
 import {
   recordDispatchFeeInvoicePayment,
@@ -60,7 +62,7 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
   if (!inv) notFound();
   const invoice = inv as unknown as Invoice;
 
-  const [{ data: linesRaw }, { data: paymentsRaw }] = await Promise.all([
+  const [{ data: linesRaw }, { data: paymentsRaw }, { data: emailsRaw }] = await Promise.all([
     supabase
       .from("carrier_fee_invoice_lines")
       .select("id, line_type, description, amount, service_date, load_id, dispatch_id, load_number, load_rate, fee_percentage, voided")
@@ -68,7 +70,11 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
       .order("sort_order")
       .order("service_date"),
     supabase.from("carrier_fee_invoice_payments").select("id, amount, method, paid_date, reference_number, notes, status, void_reason").eq("invoice_id", id).order("paid_date").order("created_at"),
+    supabase.from("email_send_log").select("recipient, status, sent_at, error").eq("entity_type", "dispatch_fee_invoice").eq("entity_id", id).order("sent_at", { ascending: false }).limit(5),
   ]);
+  const emails = (emailsRaw ?? []) as { recipient: string; status: string; sent_at: string; error: string | null }[];
+  const lastSent = emails.find((e) => e.status === "sent");
+  const lastAttempt = emails[0];
   const lines = (linesRaw ?? []) as Line[];
   const payments = (paymentsRaw ?? []) as Payment[];
   const posted = payments.filter((p) => p.status === "posted");
@@ -98,6 +104,12 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
 
   return (
     <div className="space-y-3">
+      <RegisterDesktopActions
+        title={`Dispatch Fee Invoice ${invoice.invoice_number}`}
+        printHref={pdfHref}
+        exportOptions={[{ label: "Export PDF", href: `${pdfHref}?download=1` }]}
+        email={{ entityType: "dispatch_fee_invoice", entityId: id }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Dispatch Fee Invoice {invoice.invoice_number}</h1>
@@ -118,9 +130,20 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
               <Button type="submit" size="sm">Mark as Sent</Button>
             </form>
           )}
+          {!isVoid && invoice.status !== "draft" && <EmailCarrierButton label={lastSent ? "Email Again" : "Email to Carrier"} />}
         </div>
       </div>
 
+      {!isVoid && invoice.status !== "draft" && (
+        <p className="text-[12px] text-muted-foreground">
+          {lastSent
+            ? `Emailed to ${lastSent.recipient} on ${new Date(lastSent.sent_at).toLocaleString()}.`
+            : "Not emailed yet -- use \"Email to Carrier\", or download the PDF and send it yourself."}
+          {lastAttempt && lastAttempt.status !== "sent" && (
+            <span className="text-danger"> Last attempt ({new Date(lastAttempt.sent_at).toLocaleString()}) did not send: {lastAttempt.error ?? lastAttempt.status}.</span>
+          )}
+        </p>
+      )}
       {actionError && (
         <div className="flex items-start gap-2 rounded-sm border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
           <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {actionError}
@@ -134,7 +157,7 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
       )}
       {invoice.status === "draft" && (
         <p className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
-          Draft: review the lines and remove anything that shouldn&apos;t be billed. If a load&apos;s rate is corrected, its fee here updates by itself. &quot;Mark as Sent&quot; locks the lines and sets the due date ({invoice.terms_days} days). Send the PDF to the carrier yourself.
+          Draft: review the lines and remove anything that shouldn&apos;t be billed. If a load&apos;s rate is corrected, its fee here updates by itself. &quot;Mark as Sent&quot; locks the lines and sets the due date ({invoice.terms_days} days); then email it to the carrier from here.
         </p>
       )}
 
