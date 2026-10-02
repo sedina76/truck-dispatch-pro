@@ -62,7 +62,7 @@ export type AppendResult = { ok: true } | { ok: false; reason: string };
 // never throw. The caller (generateBillingPacket) decides what a failure
 // MEANS (required POD vs. optional supporting document), which is a
 // business decision, not this function's job.
-async function appendDocumentPages(targetDoc: PDFDocument, bytes: ArrayBuffer, mimeType: string | null): Promise<AppendResult> {
+export async function appendDocumentPages(targetDoc: PDFDocument, bytes: ArrayBuffer, mimeType: string | null): Promise<AppendResult> {
   if (mimeType === "application/pdf") {
     let srcDoc: PDFDocument;
     try {
@@ -228,7 +228,7 @@ export async function generateBillingPacket(invoiceId: string): Promise<Generate
   return { bytes, documentSnapshot, skippedDocuments };
 }
 
-async function downloadDocumentBytes(
+export async function downloadDocumentBytes(
   supabase: Awaited<ReturnType<typeof createClient>>,
   storagePath: string
 ): Promise<ArrayBuffer | null> {

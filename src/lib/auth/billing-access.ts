@@ -7,7 +7,7 @@
 
 export const BILLING_ROLES = ["owner", "admin", "accountant"] as const;
 
-const BILLING_ONLY_PREFIXES = ["/invoices", "/payments", "/statements", "/settlements", "/driver-settlements", "/dispatch-fee-invoices"];
+const BILLING_ONLY_PREFIXES = ["/invoices", "/payments", "/statements", "/settlements", "/driver-settlements", "/dispatch-fee-invoices", "/carrier-invoices"];
 
 export function isBillingOnlyHref(href: string): boolean {
   const path = href.split(/[?#]/)[0];

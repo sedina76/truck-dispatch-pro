@@ -16,11 +16,21 @@ export default async function NewCarrierInvoicePage() {
   if (role !== "owner" && role !== "admin" && role !== "dispatcher") redirect("/access-denied");
   const carriers = await listBillableCarriers();
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold">New carrier invoice</h1>
-      <p className="text-sm text-muted-foreground">
-        Select one carrier and its delivered loads. The system resolves whether the carrier is billed directly or factored, the recipient and the totals; the dispatch-service fee is a separate receivable.
-      </p>
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">New Carrier Invoice</h1>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Select one carrier and its delivered loads (one broker per invoice). The system resolves whether the carrier is billed directly or factored, the recipient and the totals; the dispatch-service fee is a separate receivable.
+        </p>
+      </div>
+      <div className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+        <p className="font-medium text-desktop-text">Before the first invoice for a carrier</p>
+        <ul className="mt-1 list-disc space-y-0.5 pl-4">
+          <li>On the carrier: &quot;Who does the broker pay?&quot; = Broker pays the carrier (only those loads are listed), an Invoice code (e.g. RRT), and the broker under &quot;Brokers this carrier invoices&quot;.</li>
+          <li>In Settings, Factoring: the carrier&apos;s billing policy, Direct or Factored. For Factored: its factoring company, remit-to, and an approved notice of assignment.</li>
+          <li>Each load needs its pickup and delivery stops, and a verified proof of delivery before its package can be sent.</li>
+        </ul>
+      </div>
       <NewCarrierInvoiceForm carriers={carriers} />
     </div>
   );

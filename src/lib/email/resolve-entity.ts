@@ -4,6 +4,8 @@ import { getBillingParty } from "@/lib/billing/party";
 import { isPacketOutdated } from "@/app/(app)/invoices/billing-packet-actions";
 import { checkPacketReadiness } from "@/lib/billing-packet/generate";
 import { dispatchFeeInvoiceEmailBody } from "@/lib/dispatch-fee-invoices/summary";
+import { loadIssuedCarrierInvoice, factorPackageMissing } from "@/lib/carrier-invoices/pdf";
+import { packageEmailBody, packageRecipient } from "@/lib/carrier-invoices/source";
 
 // Shared "who does this go to, what's the subject/body, what attachment,
 // is it blocked" resolver -- used by BOTH /api/email/resolve (populates
@@ -286,6 +288,42 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
               : null,
         organizationName: orgName,
         numberLabel: v.invoice_number,
+      };
+    }
+
+    case "carrier_invoice": {
+      // The carrier's own invoice to the broker + paperwork (factor package).
+      // Recipient follows the carrier's "who sends the paperwork" setting
+      // (0169) and whether the carrier factors (issuance snapshot).
+      const inv = await loadIssuedCarrierInvoice(supabase, entityId);
+      if (!inv) return { error: "Only an issued carrier invoice can be emailed.", status: 404 };
+      const { data: carrier } = await supabase.from("carriers").select("legal_name, dba_name, email, factor_package_sent_by").eq("id", inv.carrierId).maybeSingle();
+      const sender = carrier?.factor_package_sent_by === "carrier" ? "carrier" : "dispatcher";
+      const dest = packageRecipient(inv.snapshot, sender, carrier?.email ?? null);
+      const carrierName = carrier?.dba_name || carrier?.legal_name || inv.snapshot.issuer?.legal_name || "the carrier";
+      const orgName = await resolveOrgName(supabase);
+      const missing = inv.issuanceStatus === "voided" ? [] : await factorPackageMissing(supabase, inv);
+      return {
+        to: dest.to,
+        subject: `Invoice ${inv.snapshot.invoice_number} - ${carrierName}`,
+        message: packageEmailBody({
+          who: dest.who,
+          carrierName,
+          invoiceNumber: inv.snapshot.invoice_number,
+          loadNumbers: (inv.snapshot.loads ?? []).map((l) => l.load_number),
+          total: money(Number(inv.snapshot.total_amount)),
+          orgName,
+        }),
+        attachmentType: "carrier_invoice_package_pdf",
+        attachmentLabel: `Invoice package PDF (${inv.snapshot.invoice_number}: invoice, POD, rate con, BOL)`,
+        blocked:
+          inv.issuanceStatus === "voided"
+            ? "This invoice is void and cannot be sent."
+            : missing.length
+              ? `The package is not ready. Missing: ${missing.join("; ")}.`
+              : null,
+        organizationName: orgName,
+        numberLabel: inv.snapshot.invoice_number,
       };
     }
 

@@ -14,7 +14,7 @@ test("billing roles match the database write tier", () => {
 });
 
 test("billing-only paths, without catching look-alikes", () => {
-  for (const h of ["/invoices", "/invoices/new?load_id=1", "/payments/new", "/statements", "/settlements", "/settlements/abc", "/driver-settlements/new", "/dispatch-fee-invoices", "/dispatch-fee-invoices/new"]) assert.equal(isBillingOnlyHref(h), true, h);
+  for (const h of ["/invoices", "/invoices/new?load_id=1", "/payments/new", "/statements", "/settlements", "/settlements/abc", "/driver-settlements/new", "/dispatch-fee-invoices", "/dispatch-fee-invoices/new", "/carrier-invoices/abc"]) assert.equal(isBillingOnlyHref(h), true, h);
   for (const h of ["/settings/organization", "/billing", "/billing/ready-to-bill", "/advances", "/accounts-receivable", "/loads", "/invoices-x"]) assert.equal(isBillingOnlyHref(h), false, h);
   assert.equal(hrefAllowedForRole("/invoices", "dispatcher"), false);
   assert.equal(hrefAllowedForRole("/loads/new", "dispatcher"), true);
@@ -23,10 +23,10 @@ test("billing-only paths, without catching look-alikes", () => {
 
 test("every money area is guarded with BILLING_ROLES server-side", () => {
   for (const p of ["../../app/(app)/invoices/layout.tsx", "../../app/(app)/payments/layout.tsx", "../../app/(app)/statements/layout.tsx",
-                   "../../app/(app)/settlements/layout.tsx", "../../app/(app)/driver-settlements/layout.tsx", "../../app/(app)/dispatch-fee-invoices/layout.tsx", "../../app/payments/[id]/receipt/page.tsx"]) {
+                   "../../app/(app)/settlements/layout.tsx", "../../app/(app)/driver-settlements/layout.tsx", "../../app/(app)/dispatch-fee-invoices/layout.tsx", "../../app/(app)/carrier-invoices/layout.tsx", "../../app/payments/[id]/receipt/page.tsx"]) {
     assert.match(read(p), /requireRole\(BILLING_ROLES\)/, p);
   }
-  for (const p of ["../../app/invoices/[id]/pdf/route.ts", "../../app/(app)/statements/[id]/pdf/route.ts", "../../app/(app)/invoices/export/route.ts", "../../app/(app)/payments/export/route.ts", "../../app/(app)/dispatch-fee-invoices/[id]/pdf/route.ts"]) {
+  for (const p of ["../../app/invoices/[id]/pdf/route.ts", "../../app/(app)/statements/[id]/pdf/route.ts", "../../app/(app)/invoices/export/route.ts", "../../app/(app)/payments/export/route.ts", "../../app/(app)/dispatch-fee-invoices/[id]/pdf/route.ts", "../../app/(app)/carrier-invoices/[id]/pdf/route.ts", "../../app/(app)/carrier-invoices/[id]/package/route.ts"]) {
     assert.match(read(p), /requireRoleForApi\(BILLING_ROLES\)/, p);
   }
 });

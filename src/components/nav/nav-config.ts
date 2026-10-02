@@ -130,6 +130,9 @@ export const SECTIONS: NavSection[] = [
       // Dispatch company -> carrier: dispatch fees plus advances, fuel and
       // repairs the dispatch company paid. Billing roles only.
       { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText, roles: ["owner", "admin", "accountant"] },
+      // The carrier's own invoice + paperwork package for its factoring company
+      // ("broker pays the carrier" loads). Billing roles only.
+      { label: "Carrier Invoices", href: "/carrier-invoices", icon: ReceiptText, roles: ["owner", "admin", "accountant"] },
       { label: "Advances", href: "/advances", icon: Wallet },
       { label: "Expenses", href: "/expenses", icon: ReceiptText },
     ],

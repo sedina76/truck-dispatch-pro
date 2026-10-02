@@ -24,6 +24,9 @@ function carrierValues(formData: FormData) {
     email: emptyToNull(formData.get("email")),
     city: emptyToNull(formData.get("city")),
     state: emptyToNull(formData.get("state")),
+    // Only when the form shows it (staff with financial access): the prefix
+    // of the carrier's own invoice numbers (Carrier Invoices), e.g. "RRT".
+    ...(formData.has("invoice_code") ? { invoice_code: emptyToNull(String(formData.get("invoice_code") ?? "").trim().toUpperCase()) } : {}),
   };
 }
 

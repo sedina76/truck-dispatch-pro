@@ -17,7 +17,7 @@ export type DesktopExportOption = {
 
 export type DesktopEmailConfig = {
   /** Matches a case in /api/email/resolve and /api/email/send. */
-  entityType: "invoice" | "statement" | "carrier_settlement" | "driver_settlement" | "payment" | "dispatch_fee_invoice";
+  entityType: "invoice" | "statement" | "carrier_settlement" | "driver_settlement" | "payment" | "dispatch_fee_invoice" | "carrier_invoice";
   entityId: string;
 };
 
