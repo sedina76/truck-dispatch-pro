@@ -123,7 +123,7 @@ run_suite "ROTATE_KEYS_PREVIEW_READONLY" run_fresh_db_test maintenance/ROTATE_KE
 # Production twin: EVERY migration 0001..latest applied unchanged (see
 # ci/twin-db.sh, ci/twin/README.md), then the 0162 drift-repair checks and the
 # generated drift check (must return no rows against the twin itself).
-run_suite "TWIN_ALL_MIGRATIONS_0162_0163_0164_CORE_WORKFLOW" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql TEST_0163_settle_by_delivery_date.sql TEST_0164_draft_invoice_follows_load_rate.sql DRIFT_CHECK_READONLY.sql TEST_CORE_WORKFLOW_E2E.sql
+run_suite "TWIN_ALL_MIGRATIONS_0162_TO_0165_CORE_WORKFLOW" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql TEST_0163_settle_by_delivery_date.sql TEST_0164_draft_invoice_follows_load_rate.sql TEST_0165_carrier_dispatch_fee_invoices.sql DRIFT_CHECK_READONLY.sql TEST_CORE_WORKFLOW_E2E.sql
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then

@@ -62,6 +62,7 @@ export function DesktopMenuBar() {
       { label: "Record Payment", href: "/payments/new" },
       { label: "New Driver Settlement", href: "/driver-settlements/new" },
       { label: "New Carrier Settlement", href: "/settlements/new" },
+      { label: "New Dispatch Fee Invoice", href: "/dispatch-fee-invoices/new" },
       { label: "New Expense", href: "/expenses/new" },
     ]),
     menu("Tools", [
@@ -99,6 +100,7 @@ export function DesktopMenuBar() {
       "separator",
       { label: "Driver Settlements", href: "/driver-settlements" },
       { label: "Carrier Settlements", href: "/settlements" },
+      { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
     ]),
     menu("Help", [
       { label: "Keyboard Shortcuts / Search", action: () => openCommandPalette() },

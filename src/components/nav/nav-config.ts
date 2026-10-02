@@ -127,6 +127,9 @@ export const SECTIONS: NavSection[] = [
       // write settlements) -- see lib/auth/billing-access.ts.
       { label: "Carrier Settlements", href: "/settlements", icon: HandCoins, roles: ["owner", "admin", "accountant"] },
       { label: "Driver Settlements", href: "/driver-settlements", icon: UserRound, roles: ["owner", "admin", "accountant"] },
+      // Dispatch company -> carrier: dispatch fees plus advances, fuel and
+      // repairs the dispatch company paid. Billing roles only.
+      { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText, roles: ["owner", "admin", "accountant"] },
       { label: "Advances", href: "/advances", icon: Wallet },
       { label: "Expenses", href: "/expenses", icon: ReceiptText },
     ],
