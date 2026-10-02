@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRoleForApi, BILLING_ROLES } from "@/lib/auth/require-role";
 import { renderInvoiceOnlyPdf } from "@/lib/invoices/pdf";
 
 // "Download PDF" / Print / Export target on the invoice screen and the
@@ -9,11 +9,11 @@ import { renderInvoiceOnlyPdf } from "@/lib/invoices/pdf";
 // old browser-print HTML page that drew its own, separate layout.
 //
 // This route lives outside (app), so it is NOT covered by
-// invoices/layout.tsx: guarded explicitly with the same FINANCIAL_ROLES tier
+// invoices/layout.tsx: guarded explicitly with the same BILLING_ROLES tier
 // as every other invoice surface (Phase 2G.7 finding). RLS still scopes the
 // invoice itself -- another org's id simply 404s.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  const denied = await requireRoleForApi(BILLING_ROLES);
   if (denied) return denied;
 
   const { id } = await params;

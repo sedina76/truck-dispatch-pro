@@ -276,7 +276,7 @@ test("statement PDF renders through the branded layout", () => {
 
 test("the invoice screen's Download PDF / Print button serves the branded PDF", () => {
   const route = src("../../app/invoices/[id]/pdf/route.ts");
-  assert.match(route, /requireRoleForApi\(FINANCIAL_ROLES\)/);
+  assert.match(route, /requireRoleForApi\(BILLING_ROLES\)/);
   assert.match(route, /await renderInvoiceOnlyPdf\(id\)/);
   assert.match(route, /"Content-Type": "application\/pdf"/);
 });

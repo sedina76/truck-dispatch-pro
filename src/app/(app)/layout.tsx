@@ -10,6 +10,7 @@ import { DesktopToolbar } from "@/components/desktop/toolbar";
 import { DesktopStatusBar } from "@/components/desktop/status-bar";
 import { DesktopActionsProvider } from "@/components/desktop/actions-context";
 import { ToastProvider } from "@/components/ui/toast";
+import { RoleProvider } from "@/components/auth/role-context";
 import { MessageAlertWatcher } from "@/components/notify/message-alert-watcher";
 
 // The subscription-status access gate itself lives in middleware.ts, which
@@ -62,6 +63,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .limit(20);
 
   return (
+    <RoleProvider role={profile.role}>
     <TooltipProvider delayDuration={200}>
       <ToastProvider>
       <DesktopActionsProvider>
@@ -102,5 +104,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </DesktopActionsProvider>
       </ToastProvider>
     </TooltipProvider>
+    </RoleProvider>
   );
 }

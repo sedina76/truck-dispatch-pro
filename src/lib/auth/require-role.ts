@@ -2,6 +2,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { BILLING_ROLES as BILLING_ROLE_LIST } from "@/lib/auth/billing-access";
 
 // Phase 2G.6 -- the first real "deny before rendering" server-side route
 // guard in this app. Every existing role check found during audit
@@ -65,6 +66,11 @@ export async function requireRoleForApi(allowed: OrgRole[]): Promise<NextRespons
 // others, and no "approved non-sensitive financial area" has been defined
 // for viewer yet, so it stays excluded until one is.
 export const FINANCIAL_ROLES: OrgRole[] = ["owner", "admin", "dispatcher", "accountant"];
+
+// Money pages that WRITE (invoices, payments, statements, settlements):
+// owner/admin/accountant only -- the same roles the database lets write
+// there. See lib/auth/billing-access.ts.
+export const BILLING_ROLES: OrgRole[] = [...BILLING_ROLE_LIST];
 
 // The tier allowed to change a load's internal load_number after creation
 // (0114 revision 2 -- controlled Owner/Admin override). Matches the

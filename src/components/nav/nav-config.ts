@@ -123,8 +123,10 @@ export const SECTIONS: NavSection[] = [
       // anticipated. Same FINANCIAL_ROLES tier as every other item here
       // (inherited from the section, no per-item override needed).
       { label: "Factoring", href: "/factoring", icon: Banknote },
-      { label: "Carrier Settlements", href: "/settlements", icon: HandCoins },
-      { label: "Driver Settlements", href: "/driver-settlements", icon: UserRound },
+      // Settlements: owner/admin/accountant only (the roles the database lets
+      // write settlements) -- see lib/auth/billing-access.ts.
+      { label: "Carrier Settlements", href: "/settlements", icon: HandCoins, roles: ["owner", "admin", "accountant"] },
+      { label: "Driver Settlements", href: "/driver-settlements", icon: UserRound, roles: ["owner", "admin", "accountant"] },
       { label: "Advances", href: "/advances", icon: Wallet },
       { label: "Expenses", href: "/expenses", icon: ReceiptText },
     ],

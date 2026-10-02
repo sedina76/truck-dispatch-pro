@@ -176,10 +176,13 @@ export async function updateInvoice(id: string, formData: FormData) {
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
-  const { data: current } = await supabase.from("invoices").select("id, load_id").eq("id", id).maybeSingle();
+  const { data: current } = await supabase.from("invoices").select("id, load_id, status, sent_at").eq("id", id).maybeSingle();
   if (!current) throw new Error("Invoice not found.");
 
   const values = invoiceValues(formData);
+  // Marking an invoice "sent" from the edit form records when it was sent
+  // (the billing-packet email path already does).
+  const sentAt = values.status === "sent" && !current.sent_at ? new Date().toISOString() : undefined;
 
   // Explicit rejection, not silent discard, for a DETECTABLE relink/link
   // attempt: the current UI never submits load_id at all, so this only
@@ -222,7 +225,7 @@ export async function updateInvoice(id: string, formData: FormData) {
 
   const { error } = await supabase
     .from("invoices")
-    .update({ ...values, load_id: current.load_id, broker_id: resolvedBrokerId, customer_id: resolvedCustomerId })
+    .update({ ...values, load_id: current.load_id, broker_id: resolvedBrokerId, customer_id: resolvedCustomerId, ...(sentAt ? { sent_at: sentAt } : {}) })
     .eq("id", id);
   if (error) throw new Error(error.message);
 
@@ -236,12 +239,13 @@ export async function addInvoiceLineItem(invoiceId: string, formData: FormData) 
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
-  await supabase.from("invoice_line_items").insert({
+  const { error } = await supabase.from("invoice_line_items").insert({
     organization_id: organizationId,
     invoice_id: invoiceId,
     description: String(formData.get("description")),
     quantity: toNumber(formData.get("quantity")) ?? 1,
     unit_price: toNumber(formData.get("unit_price")) ?? 0,
   });
+  if (error) throw new Error(error.message);
   revalidatePath(`/invoices/${invoiceId}`);
 }

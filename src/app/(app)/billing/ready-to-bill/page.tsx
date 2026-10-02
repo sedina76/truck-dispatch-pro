@@ -4,6 +4,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
+import { canUseBilling } from "@/lib/auth/billing-access";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 
 // Phase 2G: the one real gap identified in an otherwise mature, already-
@@ -49,6 +50,9 @@ type Row = ReadyRow & { id: string };
 export default async function BillingReadyToBillPage() {
   const supabase = await createClient();
   const { data } = await supabase.rpc("get_ready_to_bill_loads");
+  const { data: roleData } = await supabase.rpc("current_role");
+  // Dispatchers see what is ready; invoicing itself is owner/admin/accountant.
+  const canInvoice = canUseBilling(roleData as string | null);
   const rows: Row[] = ((data ?? []) as ReadyRow[]).map((r) => ({ ...r, id: r.load_id }));
 
   const readyCount = rows.filter((r) => r.ready_to_bill).length;
@@ -108,13 +112,15 @@ export default async function BillingReadyToBillPage() {
     },
     {
       header: "Action",
-      cell: (row) => (
+      cell: (row) => canInvoice ? (
         <a
           href={`/invoices/new?load_id=${row.load_id}`}
           className="inline-flex h-6 items-center rounded-sm bg-primary px-2.5 text-[12px] font-medium text-primary-foreground hover:bg-primary-hover"
         >
           Create Invoice
         </a>
+      ) : (
+        <span className="text-[11.5px] text-muted-foreground">Billing team</span>
       ),
     },
   ];

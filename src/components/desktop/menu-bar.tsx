@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { openCommandPalette } from "@/components/nav/command-palette";
 import { logout } from "@/lib/supabase/actions";
+import { useOrgRole } from "@/components/auth/role-context";
+import { hrefAllowedForRole } from "@/lib/auth/billing-access";
 
 type MenuLink = { label: string; href: string } | { label: string; action: () => void } | "separator";
 
@@ -27,6 +29,7 @@ function menu(label: string, items: MenuLink[]) {
 
 export function DesktopMenuBar() {
   const { resolvedTheme, setTheme } = useTheme();
+  const role = useOrgRole();
 
   const menus = [
     menu("File", [
@@ -116,7 +119,7 @@ export function DesktopMenuBar() {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56 rounded-sm p-1 text-[12.5px]">
-            {m.items.map((item, idx) =>
+            {m.items.filter((item) => item === "separator" || !("href" in item) || hrefAllowedForRole(item.href, role)).map((item, idx) =>
               item === "separator" ? (
                 <DropdownMenuSeparator key={idx} />
               ) : "href" in item ? (
