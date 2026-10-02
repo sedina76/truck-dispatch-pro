@@ -37,3 +37,25 @@ test("buttons follow the invoice status", () => {
   assert.equal(feeInvoiceActions("paid", 0, 1).canRecordPayment, false);
   assert.deepEqual(feeInvoiceActions("void", 0, 0), { canRemoveLines: false, canSend: false, canRecordPayment: false, canVoid: false });
 });
+
+test("flags loads that changed after billing", async () => {
+  const { feeLineIssues } = await import("./summary.ts");
+  const lines = [
+    { id: "a", line_type: "dispatch_fee", amount: "800.00", dispatch_id: "d1", load_number: "L1", voided: false },
+    { id: "b", line_type: "dispatch_fee", amount: 200, dispatch_id: "d2", load_number: "L2", voided: false },
+    { id: "c", line_type: "advance", amount: 50, dispatch_id: null, load_number: null, voided: false },
+    { id: "d", line_type: "dispatch_fee", amount: 100, dispatch_id: "d3", load_number: "L3", voided: false },
+  ];
+  const cur = new Map([
+    ["d1", { fee: 900, dispatchStatus: "delivered", loadStatus: "delivered" }],
+    ["d2", { fee: 200, dispatchStatus: "cancelled", loadStatus: "booked" }],
+    ["d3", { fee: 100, dispatchStatus: "completed", loadStatus: "invoiced" }],
+  ]);
+  const sent = feeLineIssues("sent", lines, cur);
+  assert.deepEqual(sent.map((i) => i.lineId), ["a", "b"]);
+  assert.match(sent[0].message, /Billed \$800\.00, the fee is now \$900\.00/);
+  assert.match(sent[1].message, /L2 was cancelled/);
+  // drafts follow the fee themselves: only the cancellation is flagged
+  assert.deepEqual(feeLineIssues("draft", lines, cur).map((i) => i.lineId), ["b"]);
+  assert.deepEqual(feeLineIssues("void", lines, cur), []);
+});

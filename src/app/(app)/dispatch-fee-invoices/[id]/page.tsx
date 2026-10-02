@@ -7,7 +7,7 @@ import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { FormField, FormGrid, FormSelect } from "@/components/ui/form-field";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
-import { feeInvoiceActions, summarizeFeeLines } from "@/lib/dispatch-fee-invoices/summary";
+import { feeInvoiceActions, feeLineIssues, summarizeFeeLines, type FeeLineCurrent } from "@/lib/dispatch-fee-invoices/summary";
 import {
   recordDispatchFeeInvoicePayment,
   removeDispatchFeeInvoiceLine,
@@ -44,7 +44,7 @@ type Invoice = {
   voided_at: string | null;
   carriers: { legal_name: string; email: string | null; phone: string | null } | null;
 };
-type Line = { id: string; line_type: string; description: string; amount: number; service_date: string | null; load_id: string | null; load_rate: number | null; fee_percentage: number | null; voided: boolean };
+type Line = { id: string; line_type: string; description: string; amount: number; service_date: string | null; load_id: string | null; dispatch_id: string | null; load_number: string | null; load_rate: number | null; fee_percentage: number | null; voided: boolean };
 type Payment = { id: string; amount: number; method: string; paid_date: string; reference_number: string | null; notes: string | null; status: string; void_reason: string | null };
 
 export default async function DispatchFeeInvoicePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
@@ -63,7 +63,7 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
   const [{ data: linesRaw }, { data: paymentsRaw }] = await Promise.all([
     supabase
       .from("carrier_fee_invoice_lines")
-      .select("id, line_type, description, amount, service_date, load_id, load_rate, fee_percentage, voided")
+      .select("id, line_type, description, amount, service_date, load_id, dispatch_id, load_number, load_rate, fee_percentage, voided")
       .eq("invoice_id", id)
       .order("sort_order")
       .order("service_date"),
@@ -72,6 +72,23 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
   const lines = (linesRaw ?? []) as Line[];
   const payments = (paymentsRaw ?? []) as Payment[];
   const posted = payments.filter((p) => p.status === "posted");
+
+  // Has anything changed on the billed loads since? (cancelled, or a rate
+  // correction after sending -- drafts follow the fee automatically, 0166)
+  const dispatchIds = lines.filter((l) => l.line_type === "dispatch_fee" && l.dispatch_id && !l.voided).map((l) => l.dispatch_id as string);
+  const current = new Map<string, FeeLineCurrent>();
+  if (dispatchIds.length && invoice.status !== "void") {
+    const [{ data: dispatchRows }, { data: feeRows }] = await Promise.all([
+      supabase.from("dispatches").select("id, status, loads:loads!dispatches_load_id_fkey(status)").in("id", dispatchIds),
+      supabase.from("dispatch_financials").select("dispatch_id, dispatch_fee_amount").in("dispatch_id", dispatchIds),
+    ]);
+    const fees = new Map(((feeRows ?? []) as { dispatch_id: string; dispatch_fee_amount: number }[]).map((f) => [f.dispatch_id, Number(f.dispatch_fee_amount)]));
+    for (const d of (dispatchRows ?? []) as unknown as { id: string; status: string; loads: { status: string } | null }[]) {
+      if (fees.has(d.id)) current.set(d.id, { fee: fees.get(d.id)!, dispatchStatus: d.status, loadStatus: d.loads?.status ?? null });
+    }
+  }
+  const issues = feeLineIssues(invoice.status, lines, current);
+  const issueByLine = new Map(issues.map((i) => [i.lineId, i.message]));
   const isVoid = invoice.status === "void";
   const summary = summarizeFeeLines(lines);
   const can = feeInvoiceActions(invoice.status, Number(invoice.balance_due), posted.length);
@@ -117,8 +134,22 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
       )}
       {invoice.status === "draft" && (
         <p className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
-          Draft: review the lines and remove anything that shouldn&apos;t be billed. &quot;Mark as Sent&quot; locks the lines and sets the due date ({invoice.terms_days} days). Send the PDF to the carrier yourself.
+          Draft: review the lines and remove anything that shouldn&apos;t be billed. If a load&apos;s rate is corrected, its fee here updates by itself. &quot;Mark as Sent&quot; locks the lines and sets the due date ({invoice.terms_days} days). Send the PDF to the carrier yourself.
         </p>
+      )}
+
+      {issues.length > 0 && (
+        <div className="space-y-1 rounded-sm border border-warning/30 bg-warning/5 px-3 py-2 text-[12.5px] text-warning">
+          <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-4 shrink-0" /> Loads changed after billing</p>
+          {issues.map((i) => <p key={i.lineId}>{i.message}</p>)}
+          <p className="text-desktop-text">
+            {invoice.status === "draft"
+              ? "Remove the cancelled load's line before sending."
+              : Number(invoice.amount_paid) > 0
+                ? "To correct it: void the payments, void this invoice, then create it again -- the corrected amounts are picked up."
+                : "To correct it: void this invoice and create it again -- the corrected amounts are picked up."}
+          </p>
+        </div>
       )}
 
       <DesktopKpiStrip>
@@ -141,7 +172,7 @@ export default async function DispatchFeeInvoicePage({ params, searchParams }: {
                   <table className="w-full text-[12.5px]">
                     <tbody>
                       {lines.filter((l) => l.line_type === g.type).map((l) => (
-                        <tr key={l.id} className={"border-b border-desktop-border last:border-0" + (l.voided ? " text-muted-foreground line-through" : "")}>
+                        <tr key={l.id} className={"border-b border-desktop-border last:border-0" + (l.voided ? " text-muted-foreground line-through" : issueByLine.has(l.id) ? " bg-warning/5" : "")} title={issueByLine.get(l.id)}>
                           <td className="w-24 py-1 pr-3 text-muted-foreground">{day(l.service_date)}</td>
                           <td className="py-1 pr-3">
                             {l.load_id ? <Link href={`/loads/${l.load_id}`} className="hover:underline">{l.description}</Link> : l.description}

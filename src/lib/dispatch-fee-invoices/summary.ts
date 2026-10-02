@@ -70,3 +70,32 @@ export function feeInvoiceActions(status: string, balanceDue: number, postedPaym
     canVoid: status !== "void" && postedPayments === 0,
   };
 }
+
+export type FeeLineCurrent = { fee: number; dispatchStatus: string; loadStatus: string | null };
+export type FeeLineForCheck = { id: string; line_type: string; amount: number | string; dispatch_id: string | null; load_number: string | null; voided: boolean };
+
+/**
+ * Lines whose load changed after billing: the load or dispatch was
+ * cancelled, or (once the invoice is sent -- drafts follow the fee on their
+ * own) the dispatch fee no longer matches what was billed.
+ */
+export function feeLineIssues(invoiceStatus: string, lines: FeeLineForCheck[], current: Map<string, FeeLineCurrent>): { lineId: string; message: string }[] {
+  if (invoiceStatus === "void") return [];
+  const out: { lineId: string; message: string }[] = [];
+  for (const l of lines) {
+    if (l.voided || l.line_type !== "dispatch_fee" || !l.dispatch_id) continue;
+    const c = current.get(l.dispatch_id);
+    const load = l.load_number ?? "this load";
+    if (!c) continue;
+    if (c.dispatchStatus === "cancelled" || c.loadStatus === "cancelled") {
+      out.push({ lineId: l.id, message: `Load ${load} was cancelled after it was billed.` });
+      continue;
+    }
+    const billed = Math.round(Number(l.amount) * 100);
+    const now = Math.round(Number(c.fee) * 100);
+    if (invoiceStatus !== "draft" && billed !== now) {
+      out.push({ lineId: l.id, message: `Load ${load}: the rate changed after this invoice was sent. Billed $${(billed / 100).toFixed(2)}, the fee is now $${(now / 100).toFixed(2)}.` });
+    }
+  }
+  return out;
+}
