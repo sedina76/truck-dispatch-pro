@@ -42,11 +42,25 @@ function loadValues(formData: FormData) {
 // has no row yet for this load_id; on update, it already does (backfilled
 // by 0067, or created by a prior call to this same function).
 async function writeLoadFinancials(supabase: Awaited<ReturnType<typeof createClient>>, loadId: string, organizationId: string, formData: FormData) {
-  const rate = toNumber(formData.get("rate")) ?? 0;
+  const rate = toNumber(formData.get("rate"));
+  // A blank/invalid rate is refused, never silently saved as $0.00.
+  if (rate === null || rate < 0) throw new Error("Enter a valid rate.");
+  const { data: previous } = await supabase.from("load_financials").select("rate").eq("load_id", loadId).maybeSingle();
   const { error } = await supabase
     .from("load_financials")
     .upsert({ load_id: loadId, organization_id: organizationId, rate }, { onConflict: "load_id" });
   if (error) throw new Error(error.message);
+  // Change history: every rate change is recorded with old and new amount
+  // and who made it (activity log), so any change can be traced.
+  if (previous && Number(previous.rate) !== rate) {
+    await supabase.rpc("log_activity", {
+      p_entity_type: "load",
+      p_entity_id: loadId,
+      p_action: "rate_changed",
+      p_changes: { field: "rate", old_value: Number(previous.rate), new_value: rate },
+      p_organization_id: organizationId,
+    });
+  }
 }
 
 // REMOVED (0114 hardening pass): this file used to also export a plain

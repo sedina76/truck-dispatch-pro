@@ -358,7 +358,7 @@ export default async function LoadDetailPage({
                     here to accidentally leak even if this condition were
                     removed. */}
                 {canSeeFinancials && (
-                  <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadFinancialsRow?.rate} required />
+                  <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadFinancialsRow?.rate} required confirmChange="The load rate" />
                 )}
                 {/* Phase 2G.9 item 2: reclassified operational/safe -- see
                     LOAD_SAFE_COLUMNS' header comment. Always rendered. */}
