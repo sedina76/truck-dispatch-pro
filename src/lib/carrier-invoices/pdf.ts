@@ -5,7 +5,7 @@ import { buildInvoiceDoc, drawInvoice, drawPacketCover, embedBrandFonts, PAGE_H,
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { computePodStatus } from "@/lib/documents/pod-status";
 import { appendDocumentPages, downloadDocumentBytes } from "@/lib/billing-packet/generate";
-import { carrierInvoiceSource, type CarrierInvoiceSnapshot, type FactorContact } from "./source";
+import { carrierInvoiceSource, normalizeIssuedSnapshot, type CarrierInvoiceSnapshot, type FactorContact } from "./source";
 
 type Supabase = Awaited<ReturnType<typeof createClient>>;
 
@@ -29,12 +29,11 @@ export async function loadIssuedCarrierInvoice(supabase: Supabase, id: string): 
   if (!inv || inv.invoice_document_type !== "carrier_freight_invoice") return null;
   const { data: snap } = await supabase.from("carrier_invoice_issuance_snapshots").select("snapshot_payload").eq("invoice_id", id).maybeSingle();
   if (!snap) return null;
-  const raw = snap.snapshot_payload as CarrierInvoiceSnapshot & { factoring?: { factoring_company_id?: string | null } | null };
-  // The issued snapshot stores its loads as "source_loads" (0146, schema 2);
-  // everything here reads "loads". Without this the billing packet had no
-  // loads to fetch documents for (invoice-only packet) and the PDF/email had
-  // no load numbers.
-  const payload = { ...raw, loads: raw.loads ?? raw.source_loads ?? [] };
+  // The issued snapshot saves loads as "source_loads" and factoring nested
+  // (0146, schema 2); normalizeIssuedSnapshot maps them to what the PDF,
+  // packet and email read. Without it the packet had no loads (invoice-only)
+  // and a factored invoice lost its factor name, remit-to and email.
+  const payload = normalizeIssuedSnapshot(snap.snapshot_payload as CarrierInvoiceSnapshot);
   let factor: FactorContact = null;
   const companyId = payload.factoring?.factoring_company_id;
   if (companyId) {

@@ -561,6 +561,12 @@ export default async function InvoiceDetailPage({
         historicalFactoredInvoices={historicalFactoredInvoices}
         events={factoringEvents}
       />
+      {!activeFactoredInvoice && (
+        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground" data-testid="factoring-how-to">
+          This is your own invoice (the broker pays you), so it isn&apos;t factored. Factoring is set up per carrier: when a carrier factors, set it to
+          &quot;Broker pays the carrier&quot; on its page. Its loads are then invoiced in the carrier&apos;s name, and the invoice&apos;s Factoring box sets up the factoring company, NOA and remit-to.
+        </p>
+      )}
 
       {pendingCount > 0 && (
         <div className="flex items-center justify-between rounded-xl border border-warning/30 bg-warning/5 px-4 py-3">

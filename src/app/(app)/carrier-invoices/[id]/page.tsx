@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { CarrierBillingPacketSection } from "@/components/carrier-invoices/carrier-billing-packet-section";
+import { CarrierFactoringBox, type FactoringCompanyOption } from "@/components/carrier-invoices/carrier-factoring-box";
 import { CarrierInvoiceFactoringPanel } from "@/components/carrier-invoices/carrier-invoice-factoring-panel";
 import { CarrierInvoiceLifecyclePanel } from "@/components/carrier-invoices/carrier-invoice-lifecycle-panel";
 import { isCarrierInvoicePilotOperator, lifecycleActions, type IssuancePreview } from "@/lib/factoring/carrier-invoice-issuance";
@@ -78,6 +79,31 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
   const issued = invoice.issuance_status === "issued" && invoice.invoice_document_type === "carrier_freight_invoice";
   const issuedInv = issued ? await loadIssuedCarrierInvoice(supabase, id) : null;
   const sender = names.carriers?.factor_package_sent_by === "carrier" ? "carrier" : "dispatcher";
+  // Factoring box: who the broker pays for this carrier, and (owner/admin) setup right here
+  const [{ data: defaultRel }, { data: companyRows }] = await Promise.all([
+    supabase
+      .from("factoring_relationships")
+      .select("remittance_instructions, submission_method, submission_destination_email, noa_reference, default_advance_percentage, default_factoring_fee_percentage, factoring_companies(name)")
+      .eq("carrier_id", invoice.carrier_id)
+      .eq("is_default", true)
+      .eq("is_active", true)
+      .maybeSingle(),
+    isCarrierInvoicePilotOperator(role)
+      ? supabase.from("factoring_companies").select("id, name, email, phone, address_line1, city, state, postal_code").eq("is_active", true).order("name")
+      : Promise.resolve({ data: [] as { id: string; name: string; email: string | null; phone: string | null; address_line1: string | null; city: string | null; state: string | null; postal_code: string | null }[] }),
+  ]);
+  const rel = defaultRel as unknown as {
+    remittance_instructions: string | null; submission_method: string | null; submission_destination_email: string | null; noa_reference: string | null;
+    default_advance_percentage: number | null; default_factoring_fee_percentage: number | null; factoring_companies: { name: string } | null;
+  } | null;
+  const factors = names.carriers?.factoring_mode === "factored";
+  const currentFactor = factors && rel?.factoring_companies
+    ? { companyName: rel.factoring_companies.name, remittance: rel.remittance_instructions, method: rel.submission_method, destination: rel.submission_destination_email, noaReference: rel.noa_reference, advancePct: rel.default_advance_percentage != null ? Number(rel.default_advance_percentage) : null, feePct: rel.default_factoring_fee_percentage != null ? Number(rel.default_factoring_fee_percentage) : null }
+    : null;
+  const factoringCompanies: FactoringCompanyOption[] = ((companyRows ?? []) as { id: string; name: string; email: string | null; phone: string | null; address_line1: string | null; city: string | null; state: string | null; postal_code: string | null }[]).map((c) => ({
+    id: c.id, name: c.name, email: c.email, phone: c.phone, address: c.address_line1, city: c.city, state: c.state, zip: c.postal_code,
+  }));
+
   // the saved billing packet (Generate Billing Packet), if any
   const { data: orgId } = issued ? await supabase.rpc("current_org_id") : { data: null };
   const savedPacket = issuedInv && orgId ? await latestCarrierPacket(supabase, String(orgId), id) : null;
@@ -293,6 +319,19 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
           lastSent={lastSent ? { recipient: lastSent.recipient, sentAt: lastSent.sent_at } : null}
           lastError={emails[0] && emails[0].status !== "sent" ? (emails[0].error ?? emails[0].status) : null}
           packet={savedPacket}
+        />
+      )}
+
+      {freight && invoice.issuance_status !== "voided" && (
+        <CarrierFactoringBox
+          invoiceId={id}
+          carrierId={String(invoice.carrier_id)}
+          carrierName={carrierName}
+          factors={factors}
+          current={currentFactor}
+          canEdit={isCarrierInvoicePilotOperator(role)}
+          issuedBeforeFactoring={factors && !!issuedInv && !issuedInv.snapshot.factoring}
+          companies={factoringCompanies}
         />
       )}
 

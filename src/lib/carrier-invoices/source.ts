@@ -41,6 +41,38 @@ export type CarrierInvoiceSnapshot = {
 
 export type FactorContact = { address: string | null; phone: string | null; email: string | null } | null;
 
+type SavedFactoring = {
+  mode?: string | null;
+  company?: { id?: string | null; name?: string | null; legal_name?: string | null } | null;
+  noa?: { reference?: string | null } | null;
+  submission?: { method?: string | null; destination?: string | null } | null;
+  remittance_instructions?: string | null;
+};
+
+/**
+ * The issued snapshot (issue_carrier_invoice, 0146, schema 2) saves its loads
+ * as "source_loads" and its factoring nested (company / noa / submission).
+ * The PDF, billing packet and email read "loads" and flat factoring fields --
+ * this maps the saved shape onto them (an older flat shape passes through).
+ */
+export function normalizeIssuedSnapshot<T extends CarrierInvoiceSnapshot>(raw: T): T & { factoring: (CarrierInvoiceSnapshot["factoring"] & { factoring_company_id?: string | null }) | null } {
+  const f = (raw.factoring ?? null) as (SavedFactoring & NonNullable<CarrierInvoiceSnapshot["factoring"]> & { factoring_company_id?: string | null }) | null;
+  let factoring: (CarrierInvoiceSnapshot["factoring"] & { factoring_company_id?: string | null }) | null = null;
+  if (f && f.factoring_company_legal_name) {
+    factoring = f;
+  } else if (f && f.company && (f.mode == null || f.mode === "factored")) {
+    factoring = {
+      factoring_company_id: f.company.id ?? null,
+      factoring_company_legal_name: f.company.legal_name || f.company.name || null,
+      remittance_instructions: f.remittance_instructions ?? null,
+      noa_reference: f.noa?.reference ?? null,
+      submission_method: f.submission?.method ?? null,
+      submission_destination: f.submission?.destination ?? null,
+    };
+  }
+  return { ...raw, loads: raw.loads ?? raw.source_loads ?? [], factoring };
+}
+
 function cityLine(city?: string | null, state?: string | null, zip?: string | null): string {
   return [city, [state, zip].filter(Boolean).join(" ")].filter((s) => s && String(s).trim()).join(", ");
 }

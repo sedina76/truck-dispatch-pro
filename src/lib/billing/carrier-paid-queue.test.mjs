@@ -109,3 +109,25 @@ test("Invoices list is accurate for the carrier's invoices: Issued until emailed
   assert.match(page, /return emailed \? "sent" : "issued";/);
   assert.match(page, /emailed\.has\(c\.id\) \? "Sent" : generated\.has\(c\.id\) \? "Generated" : "Ready"/);
 });
+
+test("factoring is set up right on the carrier's invoice page (owner/admin), through the same database-checked steps", () => {
+  const actions = src("../../app/(app)/carrier-invoices/factoring-setup-actions.ts");
+  // the six steps, in order, each through the database's own checks
+  const order = ['from("factoring_companies")', 'from("factoring_relationships")', "validateSubmissionSetup(", 'rpc("approve_factoring_relationship_noa"', 'rpc("set_default_factoring_relationship"', 'rpc("set_carrier_factoring_policy"'];
+  let at = -1;
+  for (const step of order) {
+    const i = actions.indexOf(step, at + 1);
+    assert.ok(i > at, `step out of order or missing: ${step}`);
+    at = i;
+  }
+  assert.match(actions, /profile\?\.role !== "owner" && profile\?\.role !== "admin"/);
+  assert.match(actions, /if \(formData\.get\("noa_confirmed"\) !== "on"\) return/);
+  assert.match(actions, /p_mode: "direct"/, "Stop factoring");
+  const box = src("../../components/carrier-invoices/carrier-factoring-box.tsx");
+  for (const part of ["Set up factoring", "Stop factoring", "Where brokers send payment", "How the factor takes paperwork", "I have the signed Notice of Assignment", "Reissue invoice"]) assert.ok(box.includes(part), part);
+  const detail = src("../../app/(app)/carrier-invoices/[id]/page.tsx");
+  assert.match(detail, /<CarrierFactoringBox/);
+  assert.match(detail, /canEdit=\{isCarrierInvoicePilotOperator\(role\)\}/);
+  // your own invoices explain where factoring lives (their DB message is unchanged)
+  assert.match(src("../../app/(app)/invoices/[id]/page.tsx"), /data-testid="factoring-how-to"/);
+});
