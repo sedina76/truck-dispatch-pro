@@ -8,6 +8,8 @@ import { LoadPicker, type InvoiceLoadCandidate, type AlreadyInvoicedLoad } from 
 import { INVOICEABLE_LOAD_STATUSES, resolveBillingPartyDisplay, suggestedDueDate } from "@/lib/billing/party";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { createInvoice } from "../actions";
+import { createCarrierInvoiceForLoad } from "../carrier-invoice-actions";
+import { carrierPaidLoadIds, liveCarrierInvoicesByLoad } from "@/lib/billing/carrier-paid-loads";
 
 // Shape of one candidateLoads row per the enriched select() above --
 // broker_id/customer_id determine which embed (if either) is populated,
@@ -111,13 +113,13 @@ export default async function NewInvoicePage({
   const allEligibleRows = (candidateLoads ?? []) as unknown as (CandidateLoadRow & {
     invoices: { id: string; invoice_number: string; status: string }[] | null;
   })[];
-  // "Broker pays the carrier" loads (0167) are never invoiced to the broker by you.
+  // "Broker pays the carrier" loads (0167): the invoice to the broker is the
+  // carrier's own invoice. They are offered here too (marked as such); one
+  // already on a carrier invoice opens that invoice instead.
   const eligibleIds = allEligibleRows.filter((load) => !load.invoices?.length).map((l) => l.id);
-  const { data: carrierPaidRows } = eligibleIds.length
-    ? await supabase.from("dispatches").select("load_id").in("load_id", eligibleIds).eq("proceeds_model", "carrier_paid_directly").neq("status", "cancelled")
-    : { data: [] as { load_id: string }[] };
-  const carrierPaid = new Set((carrierPaidRows ?? []).map((r) => String(r.load_id)));
-  const candidateLoadRows = allEligibleRows.filter((load) => !load.invoices?.length && !carrierPaid.has(load.id));
+  const carrierPaid = await carrierPaidLoadIds(supabase, eligibleIds);
+  const onCarrierInvoice = await liveCarrierInvoicesByLoad(supabase, [...carrierPaid]);
+  const candidateLoadRows = allEligibleRows.filter((load) => !load.invoices?.length && !onCarrierInvoice.has(load.id));
   // Delivered loads that already have an invoice (usually the one created
   // automatically on delivery). They can't get a second invoice
   // (invoices_load_id_unique_idx), but searching for one in the picker
@@ -129,7 +131,16 @@ export default async function NewInvoicePage({
       const inv = load.invoices![0];
       const partyName = load.broker_id ? (load.brokers?.company_name ?? null) : load.customer_id ? (load.customers?.company_name ?? null) : null;
       return { loadId: load.id, load_number: load.load_number, partyName, invoiceId: inv.id, invoiceNumber: inv.invoice_number, invoiceStatus: inv.status };
-    });
+    })
+    .concat(
+      allEligibleRows
+        .filter((load) => onCarrierInvoice.has(load.id))
+        .map((load) => {
+          const ci = onCarrierInvoice.get(load.id)!;
+          const partyName = load.broker_id ? (load.brokers?.company_name ?? null) : load.customer_id ? (load.customers?.company_name ?? null) : null;
+          return { loadId: load.id, load_number: load.load_number, partyName, invoiceId: ci.invoiceId, invoiceNumber: ci.invoiceNumber ?? "Draft", invoiceStatus: ci.issuanceStatus, href: `/carrier-invoices/${ci.invoiceId}` };
+        })
+    );
   // No load selected: existing fully-manual workflow, unchanged, just with
   // the load picker added above it (spec 3's "If no load is selected,
   // allow the existing manual billing-party workflow").
@@ -140,7 +151,10 @@ export default async function NewInvoicePage({
       : { data: [] as { load_id: string; rate: number }[] };
     const rateByLoadId = new Map((candidateLoadFinancials ?? []).map((r) => [r.load_id, Number(r.rate)]));
 
-    const pickerLoads: InvoiceLoadCandidate[] = candidateLoadRows.map((l) => resolveLoadCandidate(l, rateByLoadId.get(l.id) ?? 0));
+    const pickerLoads: InvoiceLoadCandidate[] = candidateLoadRows.map((l) => ({
+      ...resolveLoadCandidate(l, rateByLoadId.get(l.id) ?? 0),
+      note: carrierPaid.has(l.id) ? "Carrier's invoice" : undefined,
+    }));
 
     return (
       <div className="space-y-3">
@@ -261,24 +275,57 @@ export default async function NewInvoicePage({
     );
   }
 
-  // "Broker pays the carrier" (0167): say so up front instead of a form that can't be saved.
+  // "Broker pays the carrier" (0167): the invoice to the broker is the
+  // carrier's own invoice -- same screen, made in the carrier's name.
   const { data: billsBroker } = await supabase.rpc("load_bills_broker", { p_load_id: load_id });
   if (billsBroker === false) {
+    const existing = (await liveCarrierInvoicesByLoad(supabase, [load_id])).get(load_id);
+    if (existing) {
+      return (
+        <DesktopPanel>
+          <DesktopPanelHeader title="Invoice Already Exists" />
+          <DesktopPanelBody className="space-y-3">
+            <p className="flex items-start gap-2 text-sm text-desktop-text">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+              This load is already on the carrier&apos;s invoice <span className="font-semibold">{existing.invoiceNumber ?? "(draft)"}</span>.
+            </p>
+            <div className="flex gap-2">
+              <Link href={`/carrier-invoices/${existing.invoiceId}`} className="inline-flex h-8 items-center rounded-sm bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary-hover">View Invoice</Link>
+              <Link href="/invoices/new" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">Choose a different load</Link>
+            </div>
+          </DesktopPanelBody>
+        </DesktopPanel>
+      );
+    }
+    const [{ data: cpLoad }, { data: cpFin }] = await Promise.all([
+      supabase.from("loads").select("load_number, carriers(legal_name, dba_name, factoring_mode), brokers(company_name), customers(company_name)").eq("id", load_id).maybeSingle(),
+      supabase.from("load_financials").select("rate").eq("load_id", load_id).maybeSingle(),
+    ]);
+    const cp = cpLoad as unknown as { load_number: string; carriers: { legal_name: string; dba_name: string | null; factoring_mode: string | null } | null; brokers: { company_name: string } | null; customers: { company_name: string } | null } | null;
+    const carrierName = cp?.carriers?.dba_name || cp?.carriers?.legal_name || "the carrier";
+    const factors = cp?.carriers?.factoring_mode === "factored";
     return (
-      <DesktopPanel>
-        <DesktopPanelHeader title="Not invoiced to the broker" />
-        <DesktopPanelBody className="space-y-3">
-          <p className="flex items-start gap-2 text-sm text-desktop-text">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-            The broker pays the carrier directly for this load (the carrier is set to &quot;Broker pays the carrier&quot;), so you don&apos;t invoice the broker. Your dispatch fee goes on the carrier&apos;s Dispatch Fee Invoice; the carrier&apos;s own invoice (for its factor) is under Carrier Invoices.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Link href="/dispatch-fee-invoices/new" className="inline-flex h-8 items-center rounded-sm bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary-hover">New Dispatch Fee Invoice</Link>
-            <Link href="/carrier-invoices/new" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">New Carrier Invoice</Link>
-            <Link href="/invoices/new" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">Choose a different load</Link>
+      <div className="space-y-3">
+        {errorBanner}
+        <FormCard
+          title={`New Invoice -- Load ${cp?.load_number ?? ""}`}
+          description={`The broker pays ${carrierName} for this load, so the invoice is made in ${carrierName}'s name.`}
+          action={createCarrierInvoiceForLoad}
+          cancelHref="/invoices/new"
+          submitLabel="Create Invoice"
+        >
+          <input type="hidden" name="load_id" value={load_id} />
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px] sm:grid-cols-4">
+            <Field label="From" value={carrierName} />
+            <Field label="Bill To" value={cp?.brokers?.company_name ?? cp?.customers?.company_name ?? "--"} />
+            <Field label="Amount" value={`$${Number(cpFin?.rate ?? 0).toLocaleString()}`} />
+            <Field label="Payment goes to" value={factors ? `${carrierName}'s factoring company` : carrierName} />
           </div>
-        </DesktopPanelBody>
-      </DesktopPanel>
+          <p className="mt-3 text-[12px] text-muted-foreground">
+            Next you issue it (that gives it its number), then send the billing packet: the invoice with the rate confirmation, BOL and POD. Your dispatch fee is billed to the carrier separately, on a Dispatch Fee Invoice.
+          </p>
+        </FormCard>
+      </div>
     );
   }
 

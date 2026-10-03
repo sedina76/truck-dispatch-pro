@@ -41,7 +41,7 @@ export type NavItem = { label: string; href: string; icon: React.ComponentType<{
 export type NavSection = { title: string; items: NavItem[]; roles?: OrgRole[] };
 
 // Every route BillingSubnav links to (src/components/desktop/billing-subnav.tsx).
-export const BILLING_WORKSPACE_PREFIXES = ["/billing", "/invoices", "/payments", "/accounts-receivable", "/collections", "/statements"];
+export const BILLING_WORKSPACE_PREFIXES = ["/billing", "/invoices", "/carrier-invoices", "/payments", "/accounts-receivable", "/collections", "/statements"];
 
 // Phase 2G.5 -- consolidated per the Master Product Consolidation review.
 // Every route below already existed before that pass; only the GROUPING
@@ -130,9 +130,6 @@ export const SECTIONS: NavSection[] = [
       // Dispatch company -> carrier: dispatch fees plus advances, fuel and
       // repairs the dispatch company paid. Billing roles only.
       { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText, roles: ["owner", "admin", "accountant"] },
-      // The carrier's own invoice + paperwork package for its factoring company
-      // ("broker pays the carrier" loads). Billing roles only.
-      { label: "Carrier Invoices", href: "/carrier-invoices", icon: ReceiptText, roles: ["owner", "admin", "accountant"] },
       { label: "Advances", href: "/advances", icon: Wallet },
       { label: "Expenses", href: "/expenses", icon: ReceiptText },
     ],

@@ -19,7 +19,11 @@ test("createInvoice redirects back with the reason instead of throwing", () => {
 test("the new-invoice page shows the reason and handles broker-pays-carrier loads", () => {
   const page = src("../../app/(app)/invoices/new/page.tsx");
   assert.match(page, /error: saveError/);
-  assert.equal((page.match(/\{errorBanner\}/g) ?? []).length, 2);
-  assert.match(page, /\.eq\("proceeds_model", "carrier_paid_directly"\)/);
+  assert.equal((page.match(/\{errorBanner\}/g) ?? []).length, 3);
+  // "broker pays the carrier" loads are offered (marked) and invoiced in the carrier's name
+  assert.match(page, /carrierPaidLoadIds\(supabase, eligibleIds\)/);
+  assert.match(page, /note: carrierPaid\.has\(l\.id\) \? "Carrier's invoice"/);
   assert.match(page, /if \(billsBroker === false\)/);
+  assert.match(page, /action=\{createCarrierInvoiceForLoad\}/);
+  assert.match(page, /href=\{`\/carrier-invoices\/\$\{existing\.invoiceId\}`\}/);
 });

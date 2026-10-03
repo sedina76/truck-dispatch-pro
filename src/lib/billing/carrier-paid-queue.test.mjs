@@ -1,7 +1,6 @@
-// "Broker pays the carrier" loads stay visible in the Billing workspace:
-// the overview counts what still needs a fee invoice / carrier invoice, the
-// Billing tabs include both invoice kinds, and every invoice kind shows up in
-// Recent Financial Activity.
+// One Invoices tab: "broker pays the carrier" loads are invoiced from
+// Invoices -> Create Invoice (in the carrier's name), listed in the Invoices
+// table, counted in Ready to Bill; there is no separate Carrier Invoices tab.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -28,20 +27,51 @@ test("a load counts once even with two dispatches", () => {
   assert.deepEqual(carrierPaidQueue(delivered, [], []), { needFeeInvoice: 2, needCarrierInvoice: 1 });
 });
 
-test("Billing tabs include Dispatch Fee Invoices and Carrier Invoices", () => {
+test("no separate Carrier Invoices tab: Billing's Invoices tab covers the carrier's invoices", () => {
   const nav = src("../../components/desktop/billing-subnav.tsx");
-  assert.match(nav, /label: "Dispatch Fee Invoices", href: "\/dispatch-fee-invoices"/);
-  assert.match(nav, /label: "Carrier Invoices", href: "\/carrier-invoices"/);
-  for (const page of ["../../app/(app)/dispatch-fee-invoices/page.tsx", "../../app/(app)/carrier-invoices/page.tsx"]) {
-    assert.match(src(page), /<BillingSubnav \/>/, page);
+  assert.match(nav, /label: "Invoices", href: "\/invoices", alsoActiveFor: \["\/carrier-invoices"\]/);
+  assert.ok(!/label: "Carrier Invoices"/.test(nav));
+  for (const f of ["../../components/nav/nav-config.ts", "../../components/desktop/menu-bar.tsx", "../../components/nav/command-palette.tsx"]) {
+    assert.ok(!/label: "Carrier Invoices"/.test(src(f)), f);
   }
+  assert.match(src("../../app/(app)/carrier-invoices/page.tsx"), /redirect\("\/invoices"\)/);
+  assert.match(src("../../app/(app)/carrier-invoices/[id]/page.tsx"), /<BillingSubnav \/>/);
 });
 
-test("Billing Overview shows every invoice kind, but only to billing roles", () => {
-  const page = src("../../app/(app)/billing/page.tsx");
-  assert.match(page, /from\("carrier_fee_invoices"\)/);
+test("the Invoices list includes the carrier's invoices, marked, opening their own page, never deletable from the list", () => {
+  const page = src("../../app/(app)/invoices/page.tsx");
   assert.match(page, /from\("carrier_invoices"\)/);
-  assert.match(page, /canUseBilling\(role\)/);
-  assert.match(page, /\/dispatch-fee-invoices\/\$\{/);
-  assert.match(page, /\/carrier-invoices\/\$\{/);
+  assert.match(page, /\.eq\("invoice_document_type", "carrier_freight_invoice"\)/);
+  assert.match(page, /Carrier&apos;s invoice/);
+  assert.match(page, /row\.kind === "carrier" \? `\/carrier-invoices\/\$\{row\.id\}`/);
+  assert.match(page, /row\.kind === "carrier" \? undefined : deleteRecord/);
+});
+
+test("Create Invoice for a broker-pays-carrier load goes through the reviewed draft action with the load's own carrier and broker", () => {
+  const act = src("../../app/(app)/invoices/carrier-invoice-actions.ts");
+  assert.match(act, /createCarrierInvoiceDraft\(/);
+  assert.match(act, /carrierId: String\(load\.carrier_id\), loadIds: \[loadId\]/);
+  assert.ok(!/formData\.get\("(carrier_id|broker_id|amount|rate)"\)/.test(act), "only the load id comes from the form");
+  assert.match(act, /redirect\(`\/carrier-invoices\/\$\{outcome\.invoiceId\}`\)/);
+});
+
+test("Ready to Bill and the overview count broker-pays-carrier loads; billing roles only", () => {
+  const ready = src("../../app/(app)/billing/ready-to-bill/page.tsx");
+  assert.match(ready, /canInvoice \? await carrierPaidLoadsToInvoice\(supabase\) : \[\]/);
+  const overview = src("../../app/(app)/billing/page.tsx");
+  assert.match(overview, /canUseBilling\(role\)/);
+  assert.match(overview, /carrierPaid\?\.toInvoiceReady/);
+  assert.match(overview, /from\("carrier_fee_invoices"\)/);
+});
+
+test("issuing: one click for owner/admin on a draft, prefilled note, plain wording", () => {
+  const panel = src("../../components/carrier-invoices/carrier-invoice-lifecycle-panel.tsx");
+  assert.match(panel, /issueDraftCarrierInvoice\(invoiceId, updatedAt, reason, key\)/);
+  assert.match(panel, /const ISSUE_REASON = "Load delivered, ready to bill"/);
+  const quick = src("../../app/(app)/carrier-invoices/quick-issue-actions.ts");
+  assert.match(quick, /await markCarrierInvoiceReady\(invoiceId, expectedUpdatedAt, idempotencyKey\)/);
+  assert.match(quick, /issueCarrierInvoice\(invoiceId, updatedAt, reason, newWorkflowKey\(\)\)/);
+  assert.ok(!/supabase\.rpc\(/.test(quick), "only the reviewed actions touch the workflow");
+  const detail = src("../../app/(app)/carrier-invoices/[id]/page.tsx");
+  assert.match(detail, /canIssueDraft=\{actions\.markReady && isCarrierInvoicePilotOperator\(role\)\}/);
 });

@@ -54,7 +54,7 @@ export function BrokerPaysSection({
         <div className="mt-4 border-t border-desktop-border pt-3">
           <p className="text-[13px] font-semibold">Who sends the paperwork to the factor?</p>
           <p className="mt-0.5 text-[12px] text-muted-foreground">
-            The carrier&apos;s invoice with the rate confirmation, BOL and POD (Carrier Invoices). If the carrier doesn&apos;t factor, &quot;We send it&quot; goes to the broker.
+            The billing packet: the carrier&apos;s invoice with the rate confirmation, BOL and POD. If the carrier doesn&apos;t factor, &quot;We send it&quot; goes to the broker.
           </p>
           {canEditSender ? (
             <form action={setCarrierFactorPackageSender.bind(null, carrierId)} className="mt-2 flex flex-wrap items-center gap-3 text-[13px]">

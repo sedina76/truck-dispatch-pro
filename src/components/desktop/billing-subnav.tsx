@@ -23,14 +23,12 @@ import { hrefAllowedForRole } from "@/lib/auth/billing-access";
 // is party/AR-focused (open balance, period activity, aging) -- it is the
 // same financial workspace, not a separate module, and omitting a real,
 // already-built page here would just hide it instead of organizing it.
-const BILLING_TABS = [
+const BILLING_TABS: { label: string; href: string; alsoActiveFor?: string[] }[] = [
   { label: "Overview", href: "/billing" },
   { label: "Ready to Bill", href: "/billing/ready-to-bill" },
-  { label: "Invoices", href: "/invoices" },
-  // "Broker pays the carrier" loads: our fee bill to the carrier, and the
-  // carrier's own invoice to the broker / factoring company.
-  { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
-  { label: "Carrier Invoices", href: "/carrier-invoices" },
+  // Every invoice to a broker: yours, and the carrier's own invoice for
+  // "broker pays the carrier" loads (opened at /carrier-invoices/<id>).
+  { label: "Invoices", href: "/invoices", alsoActiveFor: ["/carrier-invoices"] },
   { label: "Payments", href: "/payments" },
   { label: "Accounts Receivable", href: "/accounts-receivable" },
   { label: "Collections", href: "/collections" },
@@ -49,7 +47,7 @@ export function BillingSubnav() {
     // to 390px -- verified via screenshot).
     <div className="flex h-7 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-desktop-border bg-desktop-bg px-1.5 pt-1">
       {BILLING_TABS.filter((tab) => hrefAllowedForRole(tab.href, role)).map((tab) => {
-        const active = tab.href === "/billing" ? pathname === "/billing" : pathname.startsWith(tab.href);
+        const active = tab.href === "/billing" ? pathname === "/billing" : [tab.href, ...(tab.alsoActiveFor ?? [])].some((p) => pathname.startsWith(p));
         return (
           <Link
             key={tab.href}

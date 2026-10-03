@@ -35,6 +35,8 @@ export type InvoiceLoadCandidate = {
   rate: number;
   partyName: string | null;
   deliveredAt: string | null;
+  /** e.g. "Carrier's invoice" for a "broker pays the carrier" load. */
+  note?: string;
 };
 
 // A delivered load that already has an invoice (normally the one created
@@ -47,6 +49,8 @@ export type AlreadyInvoicedLoad = {
   invoiceId: string;
   invoiceNumber: string;
   invoiceStatus: string;
+  /** Where the existing invoice opens (a carrier's invoice lives at /carrier-invoices/...). */
+  href?: string;
 };
 
 // ~6 rows visible before scrolling, per spec -- one named constant so the
@@ -80,10 +84,10 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
       .slice(0, 20);
   }, [alreadyInvoiced, query]);
 
-  function openInvoice(invoiceId: string) {
+  function openInvoice(l: AlreadyInvoicedLoad) {
     setOpen(false);
     setQuery("");
-    router.push(`/invoices/${invoiceId}`);
+    router.push(l.href ?? `/invoices/${l.invoiceId}`);
   }
 
   function selectLoad(id: string) {
@@ -165,7 +169,10 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
                   style={{ minHeight: `${ROW_HEIGHT_REM}rem` }}
                 >
                   <span className="w-20 shrink-0 truncate font-medium">{l.load_number}</span>
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{l.partyName ?? "No broker/customer"}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {l.partyName ?? "No broker/customer"}
+                    {l.note && <span className="ml-1.5 rounded-sm bg-muted px-1 py-px text-[10.5px] font-medium text-desktop-text">{l.note}</span>}
+                  </span>
                   <span className="w-24 shrink-0 text-right tabular-nums">{formatRate(l.rate)}</span>
                   <span className={cn("w-32 shrink-0 text-right text-xs", l.deliveredAt ? "text-muted-foreground" : "font-medium text-warning")}>
                     {l.deliveredAt ? formatDeliveryDate(l.deliveredAt) : "Delivery date missing"}
@@ -178,7 +185,7 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
                     <CommandItem
                       key={l.loadId}
                       value={`invoiced-${l.loadId}`}
-                      onSelect={() => openInvoice(l.invoiceId)}
+                      onSelect={() => openInvoice(l)}
                       className="flex items-center gap-3"
                       style={{ minHeight: `${ROW_HEIGHT_REM}rem` }}
                     >

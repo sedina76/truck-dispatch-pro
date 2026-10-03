@@ -38,6 +38,7 @@ function refresh(...invoiceIds: Array<string | undefined>) {
   for (const id of invoiceIds) if (id) revalidatePath(`/carrier-invoices/${id}`);
   revalidatePath("/carrier-invoices");
   revalidatePath("/carrier-invoices/new");
+  revalidatePath("/invoices");
 }
 
 export type BillableCarrier = { id: string; name: string };

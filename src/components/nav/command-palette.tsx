@@ -59,7 +59,6 @@ const NAV_ITEMS = [
   { label: "Payments", href: "/payments", icon: Wallet },
   { label: "Carrier Settlements", href: "/settlements", icon: HandCoins },
   { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText },
-  { label: "Carrier Invoices", href: "/carrier-invoices", icon: FileText },
   { label: "Advances", href: "/advances", icon: BadgeDollarSign },
   { label: "Expenses", href: "/expenses", icon: ReceiptText },
   { label: "Reports", href: "/reports", icon: BarChart3 },

@@ -101,7 +101,6 @@ export function DesktopMenuBar() {
       { label: "Driver Settlements", href: "/driver-settlements" },
       { label: "Carrier Settlements", href: "/settlements" },
       { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
-      { label: "Carrier Invoices", href: "/carrier-invoices" },
     ]),
     menu("Help", [
       { label: "Keyboard Shortcuts / Search", action: () => openCommandPalette() },

@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 import { canUseBilling } from "@/lib/auth/billing-access";
 import { carrierPaidQueue } from "@/lib/billing/carrier-paid-queue";
+import { carrierPaidLoadsToInvoice, liveCarrierDraftIds } from "@/lib/billing/carrier-paid-loads";
 
 // Phase 2G.5: Billing Overview -- the financial command center the spec
 // asks for. Every number here is read from the SAME canonical RPCs the
@@ -32,7 +33,7 @@ type CollectionsSummary = {
 
 type ActivityRow = {
   id: string;
-  kind: "invoice" | "payment" | "dispatch fee invoice" | "carrier invoice";
+  kind: "invoice" | "payment" | "dispatch fee invoice";
   label: string;
   amount: number;
   date: string;
@@ -79,8 +80,9 @@ export default async function BillingOverviewPage() {
   const ar = arSummaryData as ArSummary | null;
   const collections = collectionsSummaryData as CollectionsSummary | null;
   const readyToBillRows = (readyRows ?? []) as { ready_to_bill: boolean }[];
-  const readyCount = readyToBillRows.filter((r) => r.ready_to_bill).length;
-  const missingDocsCount = readyToBillRows.length - readyCount;
+  // Ready to Bill includes "broker pays the carrier" loads (invoiced in the carrier's name).
+  const readyCount = readyToBillRows.filter((r) => r.ready_to_bill).length + (carrierPaid?.toInvoiceReady ?? 0);
+  const missingDocsCount = readyToBillRows.filter((r) => !r.ready_to_bill).length + (carrierPaid?.toInvoiceMissingPod ?? 0);
 
   const activity: ActivityRow[] = [
     ...(recentInvoices ?? []).map((inv) => ({
@@ -133,21 +135,20 @@ export default async function BillingOverviewPage() {
           <WorkQueueTile label="Overdue Invoices" count={ar?.overdue_invoice_count ?? 0} href="/accounts-receivable" tone={(ar?.overdue_invoice_count ?? 0) ? "danger" : "neutral"} />
           <WorkQueueTile label="Partial Payments" count={partialPaymentCount ?? 0} href="/invoices" tone={(partialPaymentCount ?? 0) ? "warning" : "neutral"} />
           <WorkQueueTile label="Collections Follow-Up" count={collections?.overdue_invoices ?? 0} href="/collections" tone={(collections?.overdue_invoices ?? 0) ? "danger" : "neutral"} />
+          {carrierPaid && carrierPaid.carrierDrafts > 0 && <WorkQueueTile label="Carrier's Invoices to Issue" count={carrierPaid.carrierDrafts} href="/invoices" tone="warning" />}
         </DesktopPanelBody>
       </DesktopPanel>
 
       {carrierPaid && (
         <DesktopPanel>
-          <DesktopPanelHeader title={'"Broker pays the carrier" loads'} />
+          <DesktopPanelHeader title="Dispatch fees (what carriers owe you)" />
           <DesktopPanelBody className="space-y-2">
             <p className="text-[12px] text-muted-foreground">
-              These loads are not in Ready to Bill: the broker pays the carrier, so you bill the carrier for your fee, and the carrier invoices the broker or their factoring company.
+              When the broker pays the carrier, you bill the carrier for your dispatch fee (plus advances, fuel and repairs you paid) on a Dispatch Fee Invoice.
             </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <WorkQueueTile label="Fees Not Yet Billed (loads)" count={carrierPaid.needFeeInvoice} href="/dispatch-fee-invoices/new" tone={carrierPaid.needFeeInvoice ? "success" : "neutral"} />
               <DesktopKpiBox label="Fees Owed by Carriers" value={money(carrierPaid.feeOutstanding)} href="/dispatch-fee-invoices?status=open" tone={carrierPaid.feeOutstanding > 0 ? "warning" : "neutral"} />
-              <WorkQueueTile label="Need a Carrier Invoice (loads)" count={carrierPaid.needCarrierInvoice} href="/carrier-invoices/new" tone={carrierPaid.needCarrierInvoice ? "success" : "neutral"} />
-              <WorkQueueTile label="Carrier Invoices Not Issued" count={carrierPaid.carrierDrafts} href="/carrier-invoices" tone={carrierPaid.carrierDrafts ? "warning" : "neutral"} />
             </div>
           </DesktopPanelBody>
         </DesktopPanel>
@@ -208,6 +209,9 @@ async function loadCarrierPaidBilling(supabase: Supabase) {
     supabase.from("carrier_invoices").select("id, invoice_number, issuance_status, total_amount, issued_at, created_at, carriers(legal_name)").eq("invoice_document_type", "carrier_freight_invoice").order("created_at", { ascending: false }).limit(200),
   ]);
 
+  const toInvoice = await carrierPaidLoadsToInvoice(supabase);
+  const toInvoiceReady = toInvoice.filter((l) => l.hasVerifiedPod).length;
+  const toInvoiceMissingPod = toInvoice.length - toInvoiceReady;
   const queue = carrierPaidQueue(
     (delivered ?? []) as { id: string; load_id: string }[],
     (feeLines ?? []).map((l) => (l as { dispatch_id: string | null }).dispatch_id).filter((id): id is string => !!id),
@@ -220,7 +224,8 @@ async function loadCarrierPaidBilling(supabase: Supabase) {
   const carriers = (carrierInvoices ?? []) as unknown as CarrierRow[];
 
   const feeOutstanding = fees.filter((f) => f.status === "sent" || f.status === "partially_paid").reduce((s, f) => s + Number(f.balance_due), 0);
-  const carrierDrafts = carriers.filter((c) => c.issuance_status === "draft" || c.issuance_status === "ready_for_issue").length;
+  const liveDrafts = await liveCarrierDraftIds(supabase);
+  const carrierDrafts = carriers.filter((c) => liveDrafts.has(c.id)).length;
 
   const recent: ActivityRow[] = [
     ...fees.filter((f) => f.status !== "void").slice(0, 6).map((f) => ({
@@ -231,15 +236,15 @@ async function loadCarrierPaidBilling(supabase: Supabase) {
       date: f.issue_date ?? f.created_at,
       href: `/dispatch-fee-invoices/${f.id}`,
     })),
-    ...carriers.filter((c) => c.issuance_status !== "voided").slice(0, 6).map((c) => ({
+    ...carriers.filter((c) => c.issuance_status === "issued" || liveDrafts.has(c.id)).slice(0, 6).map((c) => ({
       id: `carrier-${c.id}`,
-      kind: "carrier invoice" as const,
-      label: `Carrier invoice ${c.invoice_number ?? "(draft)"}${c.carriers ? ` -- ${c.carriers.legal_name}` : ""}`,
+      kind: "invoice" as const,
+      label: `Invoice ${c.invoice_number ?? "(draft)"} (carrier's invoice${c.carriers ? `, ${c.carriers.legal_name}` : ""})`,
       amount: Number(c.total_amount),
       date: c.issued_at ?? c.created_at,
       href: `/carrier-invoices/${c.id}`,
     })),
   ];
 
-  return { ...queue, feeOutstanding, carrierDrafts, recent };
+  return { needFeeInvoice: queue.needFeeInvoice, toInvoiceReady, toInvoiceMissingPod, feeOutstanding, carrierDrafts, recent };
 }

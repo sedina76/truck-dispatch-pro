@@ -26,5 +26,6 @@ test("searching shows matching invoiced loads under 'Already invoiced' and opens
   assert.match(picker, /if \(!q\) return \[\];/); // only while searching
   assert.match(picker, /l\.invoiceNumber\.toLowerCase\(\)\.includes\(q\)/);
   assert.match(picker, /<CommandGroup heading="Already invoiced -- open the existing invoice">/);
-  assert.match(picker, /router\.push\(`\/invoices\/\$\{invoiceId\}`\)/);
+  // a carrier's invoice opens at its own address
+  assert.match(picker, /router\.push\(l\.href \?\? `\/invoices\/\$\{l\.invoiceId\}`\)/);
 });

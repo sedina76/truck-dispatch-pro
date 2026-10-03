@@ -35,11 +35,11 @@ export function BillingSetupChecklist({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[14px] font-semibold">Billing setup {ready ? <span className="ml-1 text-[12px] font-medium text-desktop-success">-- ready</span> : <span className="ml-1 text-[12px] font-medium text-warning">-- {left} step{left === 1 ? "" : "s"} left</span>}</p>
         {ready && (
-          <Link href="/carrier-invoices/new" className="text-[12.5px] font-medium text-primary hover:underline">New Carrier Invoice</Link>
+          <Link href="/invoices/new" className="text-[12.5px] font-medium text-primary hover:underline">Create Invoice</Link>
         )}
       </div>
       <ul className="mt-2 space-y-2 text-[13px]">
-        <Item done label="Broker pays the carrier" note="Your fee goes on the Dispatch Fee Invoice; the carrier's own invoice is under Carrier Invoices." />
+        <Item done label="Broker pays the carrier" note="Invoices -> Create Invoice makes the invoice in the carrier's name. Your fee goes on the Dispatch Fee Invoice." />
         <Item
           done={!!invoiceCode}
           label={invoiceCode ? `Invoice numbers start with ${invoiceCode}` : "Invoice code"}

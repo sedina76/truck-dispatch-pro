@@ -8,7 +8,8 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { EmailCarrierButton } from "@/components/dispatch-fee-invoices/email-carrier-button";
 import { CarrierInvoiceFactoringPanel } from "@/components/carrier-invoices/carrier-invoice-factoring-panel";
 import { CarrierInvoiceLifecyclePanel } from "@/components/carrier-invoices/carrier-invoice-lifecycle-panel";
-import { lifecycleActions, type IssuancePreview } from "@/lib/factoring/carrier-invoice-issuance";
+import { isCarrierInvoicePilotOperator, lifecycleActions, type IssuancePreview } from "@/lib/factoring/carrier-invoice-issuance";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { loadIssuedCarrierInvoice, factorPackageMissing } from "@/lib/carrier-invoices/pdf";
 import { packageRecipient } from "@/lib/carrier-invoices/source";
 import { getCarrierInvoiceFactoringPreview } from "../factoring-actions";
@@ -90,26 +91,28 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
 
   return (
     <div className="space-y-3">
+      <BillingSubnav />
       {issued && (
         <RegisterDesktopActions
           title={`Invoice ${invoice.invoice_number ?? ""}`}
           printHref={`/carrier-invoices/${id}/pdf`}
-          exportOptions={[{ label: "Invoice PDF", href: `/carrier-invoices/${id}/pdf?download=1` }, { label: "Invoice package PDF", href: `/carrier-invoices/${id}/package?download=1` }]}
+          exportOptions={[{ label: "Invoice PDF", href: `/carrier-invoices/${id}/pdf?download=1` }, { label: "Billing packet PDF", href: `/carrier-invoices/${id}/package?download=1` }]}
           email={{ entityType: "carrier_invoice", entityId: id }}
         />
       )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Carrier Invoice {invoice.invoice_number ?? "(draft)"}</h1>
+          <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Invoice {invoice.invoice_number ?? "(draft)"}</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            From {carrierName} to {recipientName}
-            {invoice.invoice_document_type !== "carrier_freight_invoice" ? " -- dispatch-service invoice" : ""}
+            {invoice.invoice_document_type !== "carrier_freight_invoice"
+              ? `Dispatch-service invoice from ${carrierName} to ${recipientName}`
+              : `Carrier's invoice: from ${carrierName} to ${recipientName}. The broker pays ${carrierName} (or its factoring company) for this load.`}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={String(invoice.issuance_status)} />
           <StatusBadge status={String(invoice.payment_status)} />
-          <Link href="/carrier-invoices" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">Back</Link>
+          <Link href="/invoices" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">All invoices</Link>
         </div>
       </div>
 
@@ -150,15 +153,15 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
         </DesktopPanelBody>
       </DesktopPanel>
 
-      <CarrierInvoiceLifecyclePanel invoiceId={id} updatedAt={String(invoice.updated_at)} actions={actions} issuePreview={issuePreview} reissuePreview={reissuePreview} />
+      <CarrierInvoiceLifecyclePanel invoiceId={id} updatedAt={String(invoice.updated_at)} actions={actions} canIssueDraft={actions.markReady && isCarrierInvoicePilotOperator(role)} issuePreview={issuePreview} reissuePreview={reissuePreview} />
 
       {invoice.invoice_document_type === "carrier_freight_invoice" && (
         <DesktopPanel>
-          <DesktopPanelHeader title="Invoice package (for the factor)" />
+          <DesktopPanelHeader title="Billing packet" />
           <DesktopPanelBody>
             {!issuedInv ? (
               <p className="text-[12.5px] text-muted-foreground">
-                {invoice.issuance_status === "voided" ? "This invoice is void." : "Issue the invoice first. The package then contains the invoice plus each load's proof of delivery, rate confirmation and bill of lading."}
+                {invoice.issuance_status === "voided" ? "This invoice is void." : "Issue the invoice first. The billing packet is then the invoice plus the load's proof of delivery, rate confirmation and bill of lading."}
               </p>
             ) : (
               <div className="space-y-2.5 text-[12.5px]">
@@ -181,16 +184,16 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
                   {missing.length === 0 && (
                     <>
                       <a href={`/carrier-invoices/${id}/package`} target="_blank" rel="noopener" className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">
-                        <Package className="size-4" /> View package
+                        <Package className="size-4" /> View billing packet
                       </a>
                       <a href={`/carrier-invoices/${id}/package?download=1`} className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">
-                        Download package
+                        Download billing packet
                       </a>
-                      <EmailCarrierButton label={lastSent ? "Email Again" : dest?.who === "factor_portal" ? "Email Package" : `Email to ${dest?.who === "factor" ? "Factor" : dest?.who === "broker" ? "Broker" : "Carrier"}`} />
+                      <EmailCarrierButton label={lastSent ? "Email Again" : dest?.who === "factor_portal" ? "Email Billing Packet" : `Email to ${dest?.who === "factor" ? "Factor" : dest?.who === "broker" ? "Broker" : "Carrier"}`} />
                     </>
                   )}
                 </div>
-                {dest?.who === "factor_portal" && <p className="text-muted-foreground">This factor takes uploads on its website: download the package and upload it there (or email it to an address you type in).</p>}
+                {dest?.who === "factor_portal" && <p className="text-muted-foreground">This factor takes uploads on its website: download the billing packet and upload it there (or email it to an address you type in).</p>}
                 <p className="text-muted-foreground">
                   {lastSent ? `Emailed to ${lastSent.recipient} on ${new Date(lastSent.sent_at).toLocaleString()}.` : "Not emailed yet."}
                   {emails[0] && emails[0].status !== "sent" && <span className="text-danger"> Last attempt did not send: {emails[0].error ?? emails[0].status}.</span>}
