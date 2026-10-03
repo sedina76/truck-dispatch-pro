@@ -5,6 +5,7 @@ import { DesktopFilterBar, DesktopFilterField, desktopInputClass } from "@/compo
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { BillingSubnav } from "@/components/desktop/billing-subnav";
 
 function money(n: number | string): string {
   return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -61,6 +62,7 @@ export default async function DispatchFeeInvoicesPage({
 
   return (
     <div className="space-y-3">
+      <BillingSubnav />
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Dispatch Fee Invoices</h1>

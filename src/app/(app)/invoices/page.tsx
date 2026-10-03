@@ -119,7 +119,7 @@ export default async function InvoicesPage({
 
       <PageHeader
         title="Invoices"
-        description="Bill brokers and customers for completed dispatches."
+        description={'Your invoices to brokers and customers, for "Broker pays us" loads. For "Broker pays the carrier" loads, use the Dispatch Fee Invoices and Carrier Invoices tabs.'}
         primaryAction={{ label: "Create Invoice", href: "/invoices/new" }}
       />
 

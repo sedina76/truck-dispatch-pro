@@ -27,6 +27,10 @@ const BILLING_TABS = [
   { label: "Overview", href: "/billing" },
   { label: "Ready to Bill", href: "/billing/ready-to-bill" },
   { label: "Invoices", href: "/invoices" },
+  // "Broker pays the carrier" loads: our fee bill to the carrier, and the
+  // carrier's own invoice to the broker / factoring company.
+  { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
+  { label: "Carrier Invoices", href: "/carrier-invoices" },
   { label: "Payments", href: "/payments" },
   { label: "Accounts Receivable", href: "/accounts-receivable" },
   { label: "Collections", href: "/collections" },
