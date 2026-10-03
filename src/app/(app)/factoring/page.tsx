@@ -42,6 +42,10 @@ export default async function FactoringWorkspacePage({
   ]);
 
   return (
+    <div className="space-y-3">
+      <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground" data-testid="legacy-factoring-note">
+        Older factoring records. New factoring is done on each carrier&apos;s invoice (Billing &rarr; Invoices, open the carrier&apos;s invoice, Factoring box).
+      </p>
     <FactoringWorkspace
       filters={filters}
       rows={rows}
@@ -52,5 +56,6 @@ export default async function FactoringWorkspacePage({
       exposure={exposure}
       factoringCompanyOptions={factoringCompanyOptions}
     />
+    </div>
   );
 }

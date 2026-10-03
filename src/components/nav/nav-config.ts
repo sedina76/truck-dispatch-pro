@@ -26,7 +26,6 @@ import {
   LifeBuoy,
   AlertTriangle,
   Radio,
-  Banknote,
 } from "lucide-react";
 
 // Phase 2G.6: pulled out of sidebar.tsx so the new mobile nav (bottom bar +
@@ -116,13 +115,10 @@ export const SECTIONS: NavSection[] = [
     roles: ["owner", "admin", "dispatcher", "accountant"],
     items: [
       { label: "Billing", href: "/billing", icon: Receipt },
-      // Phase 2H.8: the OPERATIONAL factoring workspace (portfolio KPIs,
-      // work queues, factor exposure) -- distinct from Settings ->
-      // Factoring below (configuration only: companies/relationships/
-      // terms/default factor), exactly as that item's own comment always
-      // anticipated. Same FINANCIAL_ROLES tier as every other item here
-      // (inherited from the section, no per-item override needed).
-      { label: "Factoring", href: "/factoring", icon: Banknote },
+      // The old Factoring workspace (/factoring) is no longer in the menu:
+      // it only covers the legacy factored_invoices flow, which the database
+      // now refuses. Factoring lives on each carrier's invoice (Factoring
+      // box); the old page stays reachable for its historical records.
       // Settlements: owner/admin/accountant only (the roles the database lets
       // write settlements) -- see lib/auth/billing-access.ts.
       { label: "Carrier Settlements", href: "/settlements", icon: HandCoins, roles: ["owner", "admin", "accountant"] },
