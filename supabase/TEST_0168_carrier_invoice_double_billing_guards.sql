@@ -116,8 +116,11 @@ begin
   r := pg_temp.as_owner(format($q$select public.issue_prepared_carrier_invoice(%L, (select updated_at from public.carrier_invoices where id = %L), 'First issue for testing', 'g5-issue')::text$q$, v_inv, v_inv));
   if r not like 'ok:%"success": true%' then raise exception 'FAIL G5 issue: %', r; end if;
   select snapshot_payload into snap from public.carrier_invoice_issuance_snapshots where invoice_id = v_inv;
-  if snap->'issuer'->>'legal_name' <> 'Direct Pay Carrier' or snap->'recipient'->>'legal_name' <> 'B168' or snap->'loads'->0->>'load_number' <> 'L168-1'
-     or (snap->>'total_amount')::numeric <> 2000 or snap->>'invoice_number' not like 'DPC-%' then
+  -- null-safe: a missing key must FAIL (the old check passed with no "loads" key at all --
+  -- the issued snapshot names its loads "source_loads", which the billing packet reads)
+  if coalesce(snap->'issuer'->>'legal_name', '') <> 'Direct Pay Carrier' or coalesce(snap->'recipient'->>'legal_name', '') <> 'B168'
+     or coalesce(snap->'source_loads'->0->>'load_number', '') <> 'L168-1' or coalesce(snap->'source_loads'->0->>'load_id', '') <> '16800000-0000-0000-0000-0000000000f1'
+     or coalesce((snap->>'total_amount')::numeric, 0) <> 2000 or coalesce(snap->>'invoice_number', '') not like 'DPC-%' then
     raise exception 'FAIL G5 snapshot: %', snap;
   end if;
   raise notice 'OK G5: issued % for 2000.00; snapshot has carrier, broker and load L168-1.', snap->>'invoice_number';

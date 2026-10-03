@@ -29,7 +29,12 @@ export async function loadIssuedCarrierInvoice(supabase: Supabase, id: string): 
   if (!inv || inv.invoice_document_type !== "carrier_freight_invoice") return null;
   const { data: snap } = await supabase.from("carrier_invoice_issuance_snapshots").select("snapshot_payload").eq("invoice_id", id).maybeSingle();
   if (!snap) return null;
-  const payload = snap.snapshot_payload as CarrierInvoiceSnapshot & { factoring?: { factoring_company_id?: string | null } | null };
+  const raw = snap.snapshot_payload as CarrierInvoiceSnapshot & { factoring?: { factoring_company_id?: string | null } | null };
+  // The issued snapshot stores its loads as "source_loads" (0146, schema 2);
+  // everything here reads "loads". Without this the billing packet had no
+  // loads to fetch documents for (invoice-only packet) and the PDF/email had
+  // no load numbers.
+  const payload = { ...raw, loads: raw.loads ?? raw.source_loads ?? [] };
   let factor: FactorContact = null;
   const companyId = payload.factoring?.factoring_company_id;
   if (companyId) {
@@ -69,6 +74,7 @@ const SUPPORTING = [
 /** Every load on the invoice needs a VERIFIED proof of delivery -- factors will not buy an invoice without it. */
 export async function factorPackageMissing(supabase: Supabase, inv: IssuedCarrierInvoice): Promise<string[]> {
   const missing: string[] = [];
+  if ((inv.snapshot.loads ?? []).length === 0) return ["the invoice's loads (none found on the issued invoice)"];
   for (const l of inv.snapshot.loads ?? []) {
     const pod = await getLatestDocument(supabase, "load", l.load_id, "pod");
     if (computePodStatus(pod) !== "verified") missing.push(`Load ${l.load_number}: verified proof of delivery`);

@@ -28,6 +28,8 @@ export type CarrierInvoiceSnapshot = {
     address_line1?: string | null; address_line2?: string | null; city?: string | null; state?: string | null; postal_code?: string | null;
   };
   loads?: { load_id: string; load_number: string; origin?: Stop; destination?: Stop }[];
+  /** The name the issuance snapshot actually uses for its loads (schema_version 2, 0146). */
+  source_loads?: { load_id: string; load_number: string; origin?: Stop; destination?: Stop }[];
   factoring?: {
     factoring_company_legal_name?: string | null;
     remittance_instructions?: string | null;
