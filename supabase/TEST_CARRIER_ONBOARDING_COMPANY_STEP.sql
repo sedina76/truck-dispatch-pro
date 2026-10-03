@@ -5,6 +5,8 @@
 -- run them (service role, no staff login):
 --   C1 save company info (incl. EIN encryption) on a draft application
 --   C2 the Tax Info (W-9) step can create its draft for that application
+--   C3 a driver (1099 worker) application: the Employment step's Continue
+--      pre-creates the W-9 draft, and it reads straight back by id
 -- =============================================================================
 \set ON_ERROR_STOP 1
 begin;
@@ -17,6 +19,8 @@ select set_config('request.jwt.claims', '{"sub":"17200000-0000-0000-0000-0000000
 set local role authenticated; select public.create_organization_with_owner('T172 Org', 't172-org') is not null; reset role;
 select id as org from public.organizations where slug = 't172-org' \gset
 insert into public.carrier_onboarding_applications (id, organization_id) values ('17200000-0000-0000-0000-0000000000a1', :'org');
+insert into public.driver_applications (id, organization_id, status, first_name, last_name, worker_type, signature_name)
+  values ('17200000-0000-0000-0000-0000000000d1', :'org', 'in_progress', 'Dee', 'River', 'independent_contractor', 'Dee River');
 
 -- the carrier portal's server actions run as service_role
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
@@ -37,7 +41,16 @@ begin
   if v_w9 is null then raise exception 'FAIL C2: no W-9 draft'; end if;
   raise notice 'OK C2: the Tax Info step created its W-9 draft.';
 end $$;
+do $$
+declare v uuid;
+begin
+  v := public.create_driver_w9_draft((select organization_id from public.driver_applications where id = '17200000-0000-0000-0000-0000000000d1'), '17200000-0000-0000-0000-0000000000d1', null);
+  if v is null or not exists (select 1 from public.driver_w9s where id = v and application_id = '17200000-0000-0000-0000-0000000000d1' and status = 'draft') then
+    raise exception 'FAIL C3: driver W-9 draft not readable by id';
+  end if;
+  raise notice 'OK C3: the driver W-9 draft is created ahead of the Tax step and reads back by id.';
+end $$;
 reset role;
 
-do $$ begin raise notice 'ALL CARRIER ONBOARDING COMPANY-STEP CHECKS PASSED'; end $$;
+do $$ begin raise notice 'ALL ONBOARDING W-9 STEP CHECKS PASSED'; end $$;
 rollback;

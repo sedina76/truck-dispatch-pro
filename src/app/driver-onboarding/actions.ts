@@ -240,7 +240,30 @@ export async function saveDriverEmploymentInfo(formData: FormData): Promise<Acti
     .eq("id", identity.applicationId)
     .eq("organization_id", identity.organizationId);
   if (error) return { ok: false, error: error.message };
+  // The next step is Tax (W-9): create its draft now (in this action), so the
+  // W-9 page only has to read it -- it no longer has to write while it renders,
+  // which is what left the page blank until a refresh. Best effort: the page
+  // still creates it itself if this did not happen.
+  await ensureDriverW9Draft(identity, service);
   return { ok: true };
+}
+
+async function ensureDriverW9Draft(identity: { applicationId: string; organizationId: string }, service: ReturnType<typeof createServiceRoleClient>): Promise<string | null> {
+  try {
+    const { data: app } = await service.from("driver_applications").select("worker_type").eq("id", identity.applicationId).eq("organization_id", identity.organizationId).maybeSingle();
+    if (!app || !workerTypeRequiresW9(app.worker_type as DriverWorkerType | null)) return null;
+    const { data: existing } = await service.from("driver_w9s").select("id").eq("application_id", identity.applicationId).limit(1).maybeSingle();
+    if (existing?.id) return String(existing.id);
+    const { data, error } = await service.rpc("create_driver_w9_draft", { p_organization_id: identity.organizationId, p_application_id: identity.applicationId, p_driver_id: null });
+    if (error) {
+      console.error("[driver-onboarding] could not pre-create the W-9 draft:", { application_id: identity.applicationId, error: error.message });
+      return null;
+    }
+    return data ? String(data) : null;
+  } catch (e) {
+    console.error("[driver-onboarding] could not pre-create the W-9 draft:", { application_id: identity.applicationId, error: e instanceof Error ? e.message : String(e) });
+    return null;
+  }
 }
 
 // Appends a scanned/uploaded document to uploaded_documents, replacing any
@@ -380,9 +403,14 @@ export async function submitDriverOnboardingApplication(): Promise<ActionResult>
 // carrier_w9s' own RPCs use. Depends on migration 0109, NOT YET APPLIED.
 // ---------------------------------------------------------------------------
 
-export async function getMyDriverW9(): Promise<DriverW9Row | null> {
+export async function getMyDriverW9(byId?: string): Promise<DriverW9Row | null> {
   const identity = await requireIdentity();
   const service = createServiceRoleClient();
+  if (byId) {
+    // right after creating it: read that exact row back
+    const { data } = await service.from("driver_w9s").select("*").eq("id", byId).eq("application_id", identity.applicationId).maybeSingle();
+    if (data) return data as unknown as DriverW9Row;
+  }
   const { data } = await service
     .from("driver_w9s")
     .select("*")

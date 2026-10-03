@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getDriverOnboardingSession } from "@/lib/driver-onboarding/session";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { DriverOnboardingStepper } from "@/components/driver-onboarding/stepper";
+import { ToastProvider } from "@/components/ui/toast";
 
 // Phase 2Q.2 -- the ONE gate every driver onboarding step page sits
 // behind. Mirrors src/app/carrier-onboarding/(portal)/layout.tsx exactly:
@@ -17,7 +18,10 @@ export default async function DriverOnboardingPortalLayout({ children }: { child
   const service = createServiceRoleClient();
   const { data: org } = await service.from("organizations").select("name").eq("id", identity.organizationId).maybeSingle();
 
+  // ToastProvider: the steps report errors and "Saved." as toasts; without it
+  // those messages were silently dropped.
   return (
+    <ToastProvider>
     <div className="min-h-screen bg-desktop-bg">
       <header className="border-b border-desktop-border bg-card px-4 py-3 sm:px-6">
         <div className="mx-auto max-w-2xl">
@@ -32,5 +36,6 @@ export default async function DriverOnboardingPortalLayout({ children }: { child
         <main className="mt-4">{children}</main>
       </div>
     </div>
+    </ToastProvider>
   );
 }

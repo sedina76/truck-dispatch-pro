@@ -189,7 +189,21 @@ export async function saveCompanyInfo(formData: FormData): Promise<{ ok: true } 
 
   revalidatePath("/carrier-onboarding/company");
   revalidatePath("/carrier-onboarding/review");
+  // The next step is Tax Info (W-9): create its draft now, in this action, so
+  // that page only reads it (best effort; the page still creates it if needed).
+  await ensureCarrierW9Draft(identity, supabase);
   return { ok: true };
+}
+
+async function ensureCarrierW9Draft(identity: CarrierOnboardingIdentity, supabase: ReturnType<typeof createServiceRoleClient>): Promise<void> {
+  try {
+    const { data: existing } = await supabase.from("carrier_w9s").select("id").eq("onboarding_application_id", identity.applicationId).limit(1).maybeSingle();
+    if (existing?.id) return;
+    const { error } = await supabase.rpc("create_carrier_w9_draft", { p_organization_id: identity.organizationId, p_onboarding_application_id: identity.applicationId, p_carrier_id: null });
+    if (error) console.error("[carrier-onboarding] could not pre-create the W-9 draft:", { application_id: identity.applicationId, error: error.message });
+  } catch (e) {
+    console.error("[carrier-onboarding] could not pre-create the W-9 draft:", { application_id: identity.applicationId, error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 export type EquipmentData = {
@@ -575,10 +589,15 @@ async function requireOwnedW9(supabase: ReturnType<typeof createServiceRoleClien
   return (data as unknown as CarrierW9Row) ?? null;
 }
 
-export async function getMyW9(): Promise<CarrierW9Row | null> {
+export async function getMyW9(byId?: string): Promise<CarrierW9Row | null> {
   const identity = await getCarrierActionIdentity();
   if (!identity) return null;
   const supabase = createServiceRoleClient();
+  if (byId) {
+    // right after creating it: read that exact row back
+    const own = await requireOwnedW9(supabase, identity.applicationId, byId);
+    if (own) return own;
+  }
   const { data } = await supabase
     .from("carrier_w9s")
     .select("*")

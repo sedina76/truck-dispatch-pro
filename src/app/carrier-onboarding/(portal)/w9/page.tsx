@@ -3,6 +3,7 @@ import { CheckCircle2, Download, Eye } from "lucide-react";
 import { createMyW9Draft, getMyW9 } from "../../actions";
 import { W9Form } from "./w9-form";
 import { RestartW9Button } from "./restart-w9-button";
+import { PreparingW9 } from "@/components/onboarding/preparing-w9";
 
 // Phase 2N.2 -- carrier onboarding W-9 step. NOT YET LIVE (depends on
 // migration 0099, not applied). Placed between Company and Equipment in
@@ -21,9 +22,10 @@ export default async function OnboardingW9Page() {
         </div>
       );
     }
-    w9 = await getMyW9();
+    w9 = await getMyW9(created.id);
   }
-  if (!w9) return null;
+  // never a blank page: if the draft isn't readable yet, reload this step until it is
+  if (!w9) return <PreparingW9 title="Taxpayer Information (W-9)" />;
 
   if (w9.status === "completed" || w9.status === "superseded") {
     return (

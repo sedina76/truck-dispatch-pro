@@ -3,6 +3,7 @@ import { CheckCircle2 } from "lucide-react";
 import { getMyDriverApplication, getMyDriverW9, createMyDriverW9Draft } from "../../actions";
 import { workerTypeRequiresW9, type DriverWorkerType } from "@/lib/driver-w9/types";
 import { DriverW9Form } from "./driver-w9-form";
+import { PreparingW9 } from "@/components/onboarding/preparing-w9";
 
 // Phase 2Q.2B -- Tax (W-9) step. Required only for 1099-style workers
 // (independent_contractor/owner_operator); a company_driver (W-2) sees a
@@ -41,9 +42,10 @@ export default async function DriverOnboardingTaxW9Page() {
         </div>
       );
     }
-    w9 = await getMyDriverW9();
+    w9 = await getMyDriverW9(created.id);
   }
-  if (!w9) return null;
+  // never a blank page: if the draft isn't readable yet, reload this step until it is
+  if (!w9) return <PreparingW9 />;
 
   if (w9.status === "completed" || w9.status === "superseded") {
     return (
