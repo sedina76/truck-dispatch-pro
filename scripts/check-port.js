@@ -11,6 +11,7 @@
 // disk -- which surfaced in the browser as "Application error: a
 // client-side exception has occurred" on /loads/[id], with no code defect
 // anywhere. See also verify-server.js, which catches that exact symptom.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { execSync } = require("node:child_process");
 
 const PORT = process.env.PORT || 3000;
