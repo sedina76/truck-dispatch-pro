@@ -35,7 +35,12 @@ test("no separate Carrier Invoices tab: Billing's Invoices tab covers the carrie
     assert.ok(!/label: "Carrier Invoices"/.test(src(f)), f);
   }
   assert.match(src("../../app/(app)/carrier-invoices/page.tsx"), /redirect\("\/invoices"\)/);
-  assert.match(src("../../app/(app)/carrier-invoices/[id]/page.tsx"), /<BillingSubnav \/>/);
+  // the carrier's invoice page has the same layout as yours: Invoices > number tabs, tiles, terms, documents, billing packet
+  const detail = src("../../app/(app)/carrier-invoices/[id]/page.tsx");
+  assert.match(detail, /<DesktopWorkspaceTabs tabs=\{\[\{ label: "Invoices", href: "\/invoices" \}/);
+  for (const part of ['label="Subtotal"', 'label="Balance Due"', "Payment Terms", "Billing Documents", "Billing Packet", "Download PDF", "Billing Party"]) assert.ok(detail.includes(part), part);
+  // and /invoices/<id> forwards a carrier's invoice to its page
+  assert.match(src("../../app/(app)/invoices/[id]/page.tsx"), /if \(carriersInvoice\) redirect\(`\/carrier-invoices\/\$\{id\}`\)/);
 });
 
 test("the Invoices list includes the carrier's invoices, marked, opening their own page, never deletable from the list", () => {

@@ -7,7 +7,7 @@
 --       app's "live" check (unreleased ledger row) frees the load
 --   M3  the same load can be drafted again
 --   M4  one-click issue: mark ready, then issue with the updated_at the
---       mark-ready result returned
+--       mark-ready result returned; the issued invoice still lists its load
 -- =============================================================================
 \set ON_ERROR_STOP 1
 begin;
@@ -108,6 +108,8 @@ begin
   r := pg_temp.as_owner(format($q$select public.issue_prepared_carrier_invoice(%L, %L::timestamptz, 'Load delivered, ready to bill', 'cif-00000000-0000-0000-0000-000000000005')::text$q$, v2, upd));
   if r not like 'ok:%"success": true%' then raise exception 'FAIL M4 issue: %', r; end if;
   if (select issuance_status::text from public.carrier_invoices where id = v2) <> 'issued' then raise exception 'FAIL M4: not issued'; end if;
+  -- the invoice page lists an issued invoice's loads from its unreleased ledger rows
+  if not exists (select 1 from public.carrier_invoice_billable_ledger_0157 where invoice_id = v2 and released_at is null) then raise exception 'FAIL M4: issued invoice has no live ledger row (its page would show no loads)'; end if;
   raise notice 'OK M4: one-click issue (mark ready, then issue with the returned updated_at) works: %', (select invoice_number from public.carrier_invoices where id = v2);
 end $$;
 
