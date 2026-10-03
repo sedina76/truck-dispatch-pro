@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getUnreadDriverMessageAlert, getUnreadNotificationAlert } from "@/app/(app)/dispatch/message-alert-actions";
 import { decideMessageAlert } from "@/lib/notify/message-alert";
 import { installChimeUnlock, playMessageChime } from "@/lib/notify/message-chime";
+import { pageInBackground, showDesktopAlert } from "@/lib/notify/desktop-alert";
 import { useToast } from "@/components/ui/toast";
 
 const POLL_MS = 15000;
@@ -39,13 +40,18 @@ export function MessageAlertWatcher() {
           const n = decideMessageAlert(notificationBaseline.current, notification);
           notificationBaseline.current = n.baseline;
           if (m.chime || n.chime) playMessageChime();
+          // In the background (another tab / app) the browser may keep the
+          // page's own sound paused: a system notification gets through.
+          const away = pageInBackground();
           if (m.chime && message.latest) {
             const who = message.latest.driverName ?? "Driver";
             const load = message.latest.loadNumber ? ` (${message.latest.loadNumber})` : "";
             toast.show("info", `New message from ${who}${load}: ${message.latest.preview}`);
+            if (away) showDesktopAlert(`New message from ${who}${load}`, message.latest.preview, { tag: `msg-${message.latestAt}`, href: "/dispatch/board" });
           }
           if (n.chime && notification.latest) {
             toast.show("info", notification.latest.body ? `${notification.latest.title}: ${notification.latest.body}` : notification.latest.title);
+            if (away) showDesktopAlert(notification.latest.title, notification.latest.body ?? "", { tag: `ntf-${notification.latestAt}` });
             router.refresh(); // the bell shows it right away
           }
         })
@@ -56,9 +62,17 @@ export function MessageAlertWatcher() {
     };
     check();
     const interval = setInterval(check, POLL_MS);
+    // background tabs are checked less often by the browser: check right away on coming back
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

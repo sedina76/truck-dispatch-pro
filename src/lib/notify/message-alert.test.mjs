@@ -95,3 +95,17 @@ test("a new rejection alerts once; the same rejection doesn't repeat; a re-rejec
   assert.deepEqual(decideMessageAlert(T0, { count: 0, latestAt: null }), { chime: false, baseline: T0 });
   assert.deepEqual(decideMessageAlert(T0, { count: 1, latestAt: T1 }), { chime: true, baseline: T1 });
 });
+
+test("in the background (another tab / app) the alert also goes out as a system notification", () => {
+  const watcher = src("../../components/notify/message-alert-watcher.tsx");
+  assert.match(watcher, /const away = pageInBackground\(\)/);
+  assert.match(watcher, /if \(away\) showDesktopAlert\(`New message from/);
+  assert.match(watcher, /if \(away\) showDesktopAlert\(notification\.latest\.title/);
+  assert.match(watcher, /addEventListener\("visibilitychange", onVisible\)/);
+  const lib = src("./desktop-alert.ts");
+  assert.match(lib, /if \(desktopAlertState\(\) !== "granted"\) return;/);
+  assert.match(lib, /document\.visibilityState !== "visible" \|\| !document\.hasFocus\(\)/);
+  const toggle = src("../../components/notify/desktop-alert-toggle.tsx");
+  assert.match(toggle, /onClick=\{enable\}/, "permission is asked from a click (Safari requires it)");
+  assert.match(src("../../components/desktop/status-bar.tsx"), /<DesktopAlertToggle \/>/);
+});
