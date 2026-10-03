@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { requireRoleForApi, BILLING_ROLES } from "@/lib/auth/require-role";
 import { loadIssuedCarrierInvoice, renderCarrierFactorPackage } from "@/lib/carrier-invoices/pdf";
+import { saveCarrierPacket, signedPacketUrl } from "@/lib/carrier-invoices/packet-storage";
 
 // The billing packet for a carrier's invoice: cover, the carrier's invoice,
 // then each load's proof of delivery, rate confirmation, BOL and accessorial
@@ -11,7 +12,8 @@ import { loadIssuedCarrierInvoice, renderCarrierFactorPackage } from "@/lib/carr
 // is capped (~4.5 MB on Vercel), so -- like your own invoice's billing packet
 // -- the file is saved to the private billing-packets bucket (org folder,
 // owner/admin/accountant only) and opened through a short-lived signed link.
-// Older copies of this invoice's packet are removed after a new one is saved.
+// Older copies of this invoice's packet are removed after a new one is saved
+// (lib/carrier-invoices/packet-storage.ts, shared with Generate Billing Packet).
 // Route handlers are not wrapped by the segment layout, so roles are checked here; RLS scopes the invoice.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireRoleForApi(BILLING_ROLES);
@@ -35,17 +37,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   const { data: org } = await supabase.rpc("current_org_id");
   if (org) {
-    const folder = `${org}/carrier-invoices/${id}`;
-    const path = `${folder}/${Date.now()}-${filename}`;
-    const { error: uploadError } = await supabase.storage.from("billing-packets").upload(path, bytes, { contentType: "application/pdf", upsert: false });
-    if (!uploadError) {
-      const { data: signed } = await supabase.storage.from("billing-packets").createSignedUrl(path, 300, download ? { download: filename } : undefined);
-      const { data: older } = await supabase.storage.from("billing-packets").list(folder, { limit: 100 });
-      const stale = (older ?? []).map((f) => `${folder}/${f.name}`).filter((p) => p !== path);
-      if (stale.length) await supabase.storage.from("billing-packets").remove(stale);
-      if (signed?.signedUrl) return NextResponse.redirect(signed.signedUrl, 303);
+    const saved = await saveCarrierPacket(supabase, String(org), id, bytes, filename);
+    if ("path" in saved) {
+      const url = await signedPacketUrl(supabase, saved.path, download);
+      if (url) return NextResponse.redirect(url, 303);
     } else {
-      console.error("[carrier-invoice-package] could not save the packet:", { invoice_id: id, error: uploadError.message });
+      console.error("[carrier-invoice-package] could not save the packet:", { invoice_id: id, error: saved.error });
     }
   }
 

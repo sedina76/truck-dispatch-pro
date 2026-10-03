@@ -1,12 +1,17 @@
 import { FileText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { EmailCarrierButton } from "@/components/dispatch-fee-invoices/email-carrier-button";
+import { DocumentLinkButton } from "@/components/drivers/document-link-button";
+import { GenerateCarrierPacketButton } from "@/components/carrier-invoices/generate-carrier-packet-button";
+import { getCarrierPacketUrl } from "@/app/(app)/carrier-invoices/packet-actions";
 import type { PodStatus } from "@/lib/documents/pod-status";
 
 // The carrier's invoice Billing Packet box -- same look, checklist, status and
 // button names as your own invoice's BillingPacketSection. The packet (cover,
 // invoice, POD, rate con, BOL and accessorials) is built fresh from the issued
-// invoice each time, so "Generate Billing Packet" opens the newly built file.
+// invoice: "Generate Billing Packet" builds and saves it on the page, then
+// Preview Packet / Download Packet / Email appear -- exactly like yours.
 
 const POD_LABEL: Record<PodStatus, string> = {
   missing: "Missing",
@@ -34,6 +39,7 @@ export function CarrierBillingPacketSection({
   destination,
   lastSent,
   lastError,
+  packet,
 }: {
   invoiceId: string;
   issued: boolean;
@@ -43,14 +49,17 @@ export function CarrierBillingPacketSection({
   destination: { who: "carrier" | "factor" | "broker" | "factor_portal"; label: string; settingLabel: string; changeHref: string } | null;
   lastSent: { recipient: string; sentAt: string } | null;
   lastError: string | null;
+  /** The saved packet, once generated. */
+  packet: { generatedAt: string | null } | null;
 }) {
   const podOk = loads.length > 0 && loads.every((l) => l.podStatus === "verified");
   const ready = issued && podOk;
-  const displayStatus = voided ? "Void" : !ready ? "Not Ready" : lastSent ? "Sent" : "Ready";
+  const displayStatus = voided ? "Void" : !ready ? "Not Ready" : lastSent ? "Sent" : packet ? "Generated" : "Ready";
   const tone: Record<string, string> = {
     Void: "bg-muted text-muted-foreground",
     "Not Ready": "bg-danger/10 text-danger",
     Ready: "bg-warning/10 text-warning",
+    Generated: "bg-success/10 text-success",
     Sent: "bg-success/10 text-success",
   };
   const many = loads.length > 1;
@@ -86,23 +95,29 @@ export function CarrierBillingPacketSection({
           </div>
         ) : null}
 
+        {packet && (
+          <p className="text-xs text-muted-foreground">
+            Billing Packet &middot; Generated {packet.generatedAt ? new Date(packet.generatedAt).toLocaleString() : ""}
+            {lastSent && ` · Sent ${new Date(lastSent.sentAt).toLocaleString()} to ${lastSent.recipient}`}
+          </p>
+        )}
+
         <div className="flex flex-wrap items-center gap-2">
           {ready ? (
-            <>
-              <a href={`/carrier-invoices/${invoiceId}/package`} target="_blank" rel="noopener" className={`${button} bg-primary text-primary-foreground hover:bg-primary-hover`}>
-                Generate Billing Packet
-              </a>
-              <a href={`/carrier-invoices/${invoiceId}/package?download=1`} className={`${button} border border-desktop-border hover:bg-muted`}>
-                Download Packet
-              </a>
-              <EmailCarrierButton label={lastSent ? "Email Again" : destination?.who === "factor_portal" ? "Email Billing Packet" : `Email to ${destination?.who === "factor" ? "Factor" : destination?.who === "broker" ? "Broker" : "Carrier"}`} />
-            </>
+            <GenerateCarrierPacketButton invoiceId={invoiceId} label={packet ? "Regenerate Packet" : "Generate Billing Packet"} />
           ) : (
             !voided && (
-              <span className={`${button} cursor-not-allowed bg-muted text-muted-foreground`} title={`Missing: ${missing.join("; ")}`}>
+              <Button type="button" size="sm" disabled title={`Missing: ${missing.join("; ")}`}>
                 Generate Billing Packet
-              </span>
+              </Button>
             )
+          )}
+          {ready && packet && (
+            <>
+              <DocumentLinkButton label="Preview Packet" getUrl={getCarrierPacketUrl.bind(null, invoiceId, false)} />
+              <DocumentLinkButton label="Download Packet" getUrl={getCarrierPacketUrl.bind(null, invoiceId, true)} />
+              <EmailCarrierButton label={lastSent ? "Email Again" : destination?.who === "factor_portal" ? "Email Billing Packet" : `Email to ${destination?.who === "factor" ? "Factor" : destination?.who === "broker" ? "Broker" : "Carrier"}`} />
+            </>
           )}
           {issued && (
             <a href={`/carrier-invoices/${invoiceId}/pdf`} target="_blank" rel="noopener" className={`${button} border border-desktop-border hover:bg-muted`}>

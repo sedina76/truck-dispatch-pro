@@ -14,6 +14,7 @@ import { computePodStatus } from "@/lib/documents/pod-status";
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { getPodSignedUrl } from "@/app/(app)/loads/pod-actions";
 import { loadIssuedCarrierInvoice } from "@/lib/carrier-invoices/pdf";
+import { latestCarrierPacket } from "@/lib/carrier-invoices/packet-storage";
 import { packageRecipient } from "@/lib/carrier-invoices/source";
 import { getCarrierInvoiceFactoringPreview } from "../factoring-actions";
 import { previewCarrierInvoiceIssuance, previewCarrierInvoiceReissue } from "../issuance-actions";
@@ -77,6 +78,9 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
   const issued = invoice.issuance_status === "issued" && invoice.invoice_document_type === "carrier_freight_invoice";
   const issuedInv = issued ? await loadIssuedCarrierInvoice(supabase, id) : null;
   const sender = names.carriers?.factor_package_sent_by === "carrier" ? "carrier" : "dispatcher";
+  // the saved billing packet (Generate Billing Packet), if any
+  const { data: orgId } = issued ? await supabase.rpc("current_org_id") : { data: null };
+  const savedPacket = issuedInv && orgId ? await latestCarrierPacket(supabase, String(orgId), id) : null;
   const dest = issuedInv ? packageRecipient(issuedInv.snapshot, sender, names.carriers?.email ?? null) : null;
   const { data: emailsRaw } = issued
     ? await supabase.from("email_send_log").select("recipient, status, sent_at, error").eq("entity_type", "carrier_invoice").eq("entity_id", id).order("sent_at", { ascending: false }).limit(5)
@@ -288,6 +292,7 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
           }
           lastSent={lastSent ? { recipient: lastSent.recipient, sentAt: lastSent.sent_at } : null}
           lastError={emails[0] && emails[0].status !== "sent" ? (emails[0].error ?? emails[0].status) : null}
+          packet={savedPacket}
         />
       )}
 

@@ -41,8 +41,8 @@ test("no separate Carrier Invoices tab: Billing's Invoices tab covers the carrie
   for (const part of ['label="Subtotal"', 'label="Balance Due"', "Payment Terms", "Billing Documents", "<CarrierBillingPacketSection", "Download PDF", "Billing Party"]) assert.ok(detail.includes(part), part);
   // same Billing Packet box as your invoice: checklist, status, "Generate Billing Packet" (shown, greyed out until ready)
   const packet = src("../../components/carrier-invoices/carrier-billing-packet-section.tsx");
-  for (const part of ["<CardTitle>Billing Packet</CardTitle>", "Generate Billing Packet", "Download Packet", "Billing Packet Not Ready", "Rate Confirmation — Optional", "BOL — Optional"]) assert.ok(packet.includes(part), part);
-  assert.ok((packet.match(/>\s*Generate Billing Packet\s*</g) ?? []).length === 2, "the button shows whether or not the packet is ready");
+  for (const part of ["<CardTitle>Billing Packet</CardTitle>", "Generate Billing Packet", "Download Packet", "Preview Packet", "Billing Packet Not Ready", "Rate Confirmation — Optional", "BOL — Optional"]) assert.ok(packet.includes(part), part);
+  assert.match(packet, /<Button type="button" size="sm" disabled title=\{`Missing: \$\{missing\.join\("; "\)\}`\}>\s*Generate Billing Packet/, "the button shows (greyed out, with the reason) until the packet can be built");
   // and /invoices/<id> forwards a carrier's invoice to its page
   assert.match(src("../../app/(app)/invoices/[id]/page.tsx"), /if \(carriersInvoice\) redirect\(`\/carrier-invoices\/\$\{id\}`\)/);
 });
@@ -85,11 +85,21 @@ test("issuing: one click for owner/admin on a draft, prefilled note, plain wordi
   assert.match(detail, /canIssueDraft=\{actions\.markReady && isCarrierInvoicePilotOperator\(role\)\}/);
 });
 
-test("the carrier's billing packet is saved to storage and opened by signed link (large phone photos never hit the response size cap)", () => {
+test("Generate Billing Packet on a carrier's invoice works like yours: builds, saves, then Preview / Download; large photos never hit the response cap", () => {
+  const store = src("../carrier-invoices/packet-storage.ts");
+  assert.match(store, /export const packetFolder = \(orgId: string, invoiceId: string\) => `\$\{orgId\}\/carrier-invoices\/\$\{invoiceId\}`/, "org folder first: the bucket's RLS scopes by it");
+  assert.match(store, /storage\.from\(BUCKET\)\.upload\(path, bytes/);
+  assert.match(store, /createSignedUrl\(path, 300/);
+  const actions = src("../../app/(app)/carrier-invoices/packet-actions.ts");
+  assert.match(actions, /if \(!canUseBilling\(role as string \| null\) \|\| !org\) return null/);
+  assert.match(actions, /if \(!inv\) return \{ ok: false, error: "Issue the invoice first\." \}/);
+  assert.match(actions, /return \{ ok: false, error: message\.startsWith\("The package is not ready"\)/, "errors are returned, not thrown");
+  const section = src("../../components/carrier-invoices/carrier-billing-packet-section.tsx");
+  assert.match(section, /<GenerateCarrierPacketButton invoiceId=\{invoiceId\} label=\{packet \? "Regenerate Packet" : "Generate Billing Packet"\} \/>/);
+  assert.match(section, /label="Preview Packet" getUrl=\{getCarrierPacketUrl\.bind\(null, invoiceId, false\)\}/);
+  assert.match(section, /label="Download Packet" getUrl=\{getCarrierPacketUrl\.bind\(null, invoiceId, true\)\}/);
   const route = src("../../app/(app)/carrier-invoices/[id]/package/route.ts");
   assert.match(route, /requireRoleForApi\(BILLING_ROLES\)/);
-  assert.match(route, /storage\.from\("billing-packets"\)\.upload\(path, bytes/);
-  assert.match(route, /const folder = `\$\{org\}\/carrier-invoices\/\$\{id\}`/, "org folder first: the bucket's RLS scopes by it");
-  assert.match(route, /createSignedUrl\(path, 300/);
-  assert.match(route, /NextResponse\.redirect\(signed\.signedUrl, 303\)/);
+  assert.match(route, /saveCarrierPacket\(supabase, String\(org\), id, bytes, filename\)/);
+  assert.match(route, /NextResponse\.redirect\(url, 303\)/);
 });
