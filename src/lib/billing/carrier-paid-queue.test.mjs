@@ -103,3 +103,9 @@ test("Generate Billing Packet on a carrier's invoice works like yours: builds, s
   assert.match(route, /saveCarrierPacket\(supabase, String\(org\), id, bytes, filename\)/);
   assert.match(route, /NextResponse\.redirect\(url, 303\)/);
 });
+
+test("Invoices list is accurate for the carrier's invoices: Issued until emailed, Generated once a packet is built", () => {
+  const page = src("../../app/(app)/invoices/page.tsx");
+  assert.match(page, /return emailed \? "sent" : "issued";/);
+  assert.match(page, /emailed\.has\(c\.id\) \? "Sent" : generated\.has\(c\.id\) \? "Generated" : "Ready"/);
+});

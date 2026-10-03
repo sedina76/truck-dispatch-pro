@@ -26,6 +26,8 @@ const TONE_BY_STATUS: Record<string, Tone> = {
   booked: "warning",
   assigned: "warning",
   sent: "warning",
+  // a carrier's invoice that is issued but not emailed yet
+  issued: "info",
   open: "warning",
   in_progress: "warning",
   generating: "warning",

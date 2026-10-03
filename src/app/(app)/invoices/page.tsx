@@ -11,6 +11,7 @@ import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { liveCarrierDraftIds } from "@/lib/billing/carrier-paid-loads";
+import { latestCarrierPacket } from "@/lib/carrier-invoices/packet-storage";
 import { matchesSearch, safeFilterTerm } from "@/lib/billing/search-match";
 
 type Invoice = {
@@ -32,12 +33,13 @@ type Invoice = {
 };
 
 // A carrier's invoice in the same list (status mapped onto the invoice statuses shown here).
-function carrierInvoiceStatus(issuance: string, payment: string): string {
+// "Issued" until the billing packet has actually been emailed, then "Sent".
+function carrierInvoiceStatus(issuance: string, payment: string, emailed: boolean): string {
   if (issuance === "voided") return "void";
   if (issuance !== "issued") return "draft";
   if (payment === "paid") return "paid";
   if (payment === "partially_paid" || payment === "partial") return "partially_paid";
-  return "sent";
+  return emailed ? "sent" : "issued";
 }
 
 export default async function InvoicesPage({
@@ -81,6 +83,12 @@ export default async function InvoicesPage({
     ? await supabase.from("email_send_log").select("entity_id").eq("entity_type", "carrier_invoice").eq("status", "sent").in("entity_id", carrierRows.map((c) => c.id))
     : { data: [] as { entity_id: string }[] };
   const emailed = new Set((carrierEmails ?? []).map((e) => String(e.entity_id)));
+  // Billing packets generated for the carrier's invoices (saved under the org's folder).
+  const issuedIds = carrierRows.filter((c) => c.issuance_status === "issued").map((c) => c.id);
+  const { data: orgId } = issuedIds.length ? await supabase.rpc("current_org_id") : { data: null };
+  const generated = new Set(
+    orgId ? (await Promise.all(issuedIds.map(async (cid) => ((await latestCarrierPacket(supabase, String(orgId), cid)) ? cid : null)))).filter((x): x is string => !!x) : []
+  );
   // A discarded draft keeps status "draft" but no longer holds its load: hide it.
   const liveDrafts = carrierRows.some((c) => c.issuance_status !== "issued") ? await liveCarrierDraftIds(supabase) : new Set<string>();
   const carrierPods = await getLatestDocumentsByEntity(supabase, "load", "pod", carrierRows.flatMap((c) => (c.carrier_invoice_loads ?? []).map((l) => l.load_id)));
@@ -96,7 +104,7 @@ export default async function InvoicesPage({
         id: c.id,
         invoice_number: c.invoice_number ?? "Draft",
         bill_to_name: c.brokers?.company_name ?? c.customers?.company_name ?? "--",
-        status: carrierInvoiceStatus(c.issuance_status, c.payment_status),
+        status: carrierInvoiceStatus(c.issuance_status, c.payment_status, emailed.has(c.id)),
         total_amount: total,
         amount_paid: paid,
         balance_due: Math.max(0, Math.round((total - paid) * 100) / 100),
@@ -106,7 +114,7 @@ export default async function InvoicesPage({
         loads: loadsOn.length ? { load_number: loadsOn.map((l) => l.loads?.load_number ?? "").filter(Boolean).join(", ") } : null,
         kind: "carrier" as const,
         carrierName: c.carriers?.dba_name || c.carriers?.legal_name || null,
-        packet: !issued ? "Not issued" : podMissing ? "Missing POD" : emailed.has(c.id) ? "Sent" : "Ready",
+        packet: !issued ? "Not issued" : podMissing ? "Missing POD" : emailed.has(c.id) ? "Sent" : generated.has(c.id) ? "Generated" : "Ready",
       };
     })
     .filter((r) => r.status !== "draft" || liveDrafts.has(r.id))
