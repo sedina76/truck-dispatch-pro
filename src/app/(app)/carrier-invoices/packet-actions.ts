@@ -33,7 +33,7 @@ export async function generateCarrierBillingPacket(invoiceId: string): Promise<C
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[carrier-billing-packet] could not generate:", { invoice_id: invoiceId, error: message });
-    return { ok: false, error: message.startsWith("The package is not ready") || message.startsWith("Could not include") ? message : "Could not generate the billing packet. Please try again." };
+    return { ok: false, error: message.startsWith("The billing packet is not ready") || message.startsWith("Could not include") ? message : "Could not generate the billing packet. Please try again." };
   }
   const safe = inv.snapshot.invoice_number.replace(/[^A-Za-z0-9-]/g, "");
   const saved = await saveCarrierPacket(s.supabase, s.org, invoiceId, rendered.bytes, `billing-packet-${safe}.pdf`);

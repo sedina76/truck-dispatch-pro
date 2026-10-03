@@ -315,12 +315,12 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
           orgName,
         }),
         attachmentType: "carrier_invoice_package_pdf",
-        attachmentLabel: `Invoice package PDF (${inv.snapshot.invoice_number}: invoice, POD, rate con, BOL)`,
+        attachmentLabel: `Billing packet PDF (${inv.snapshot.invoice_number}: invoice, POD, rate con, BOL)`,
         blocked:
           inv.issuanceStatus === "voided"
             ? "This invoice is void and cannot be sent."
             : missing.length
-              ? `The package is not ready. Missing: ${missing.join("; ")}.`
+              ? `The billing packet is not ready. Missing: ${missing.join("; ")}.`
               : null,
         organizationName: orgName,
         numberLabel: inv.snapshot.invoice_number,

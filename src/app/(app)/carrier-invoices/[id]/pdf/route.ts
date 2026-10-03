@@ -18,7 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[carrier-invoice-pdf] could not render:", { invoice_id: id, error: message });
-    return new NextResponse(message.startsWith("The package is not ready") || message.startsWith("Could not include") ? message : "Could not generate the PDF.", { status: message.startsWith("The package is not ready") ? 409 : 500 });
+    return new NextResponse(message.startsWith("The billing packet is not ready") || message.startsWith("Could not include") ? message : "Could not generate the PDF.", { status: message.startsWith("The billing packet is not ready") ? 409 : 500 });
   }
   const download = new URL(req.url).searchParams.get("download") === "1";
   const safe = inv.snapshot.invoice_number.replace(/[^A-Za-z0-9-]/g, "");

@@ -65,7 +65,7 @@ export default async function DispatchFeeInvoicesPage({
         <div>
           <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">Dispatch Fee Invoices</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            What carriers owe you: the dispatch fee on each delivered load, plus advances, fuel and repairs you paid for them. One invoice per carrier per period.
+            What carriers owe you: the dispatch fee on each delivered &quot;Broker pays the carrier&quot; load, plus advances, fuel and repairs you paid for them. One invoice per carrier per period. (On &quot;Broker pays us&quot; loads you keep the fee when you settle with the carrier.)
           </p>
         </div>
         <Link href="/dispatch-fee-invoices/new" className="inline-flex h-8 shrink-0 items-center rounded-sm bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary-hover">

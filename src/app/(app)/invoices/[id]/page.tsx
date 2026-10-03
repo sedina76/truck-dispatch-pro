@@ -553,14 +553,15 @@ export default async function InvoiceDetailPage({
         invoiceStatus={invoice.status}
       />
 
-      <FactoringSection
+      {/* Your own invoices are never factored now; the box only appears to show an older factoring record. */}
+      {activeFactoredInvoice && <FactoringSection
         invoiceId={id}
         eligibility={factoringEligibility}
         activeFactoredInvoice={activeFactoredInvoice}
         canResubmit={canResubmit}
         historicalFactoredInvoices={historicalFactoredInvoices}
         events={factoringEvents}
-      />
+      />}
       {!activeFactoredInvoice && (
         <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground" data-testid="factoring-how-to">
           This is your own invoice (the broker pays you), so it isn&apos;t factored. Factoring is set up per carrier: when a carrier factors, set it to

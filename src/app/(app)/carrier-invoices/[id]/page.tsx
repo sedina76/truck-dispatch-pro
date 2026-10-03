@@ -357,7 +357,8 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
         )}
       </div>
 
-      {actions.factoringPanel ? <CarrierInvoiceFactoringPanel carrierInvoiceId={id} preview={factoringPreview} /> : null}
+      {/* Submit to the factor: only when the carrier factors (the Factoring box above covers "doesn't factor"). */}
+      {factors && <>{actions.factoringPanel ? <CarrierInvoiceFactoringPanel carrierInvoiceId={id} preview={factoringPreview} /> : null}</>}
       {(submissions ?? []).length > 0 ? (
         <section aria-labelledby="fs-heading" className="rounded-md border border-desktop-border bg-card p-3">
           <h2 id="fs-heading" className="text-[13px] font-semibold">Factoring submissions</h2>

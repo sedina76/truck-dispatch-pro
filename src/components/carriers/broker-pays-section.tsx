@@ -62,7 +62,7 @@ export function BrokerPaysSection({
                 <input type="radio" name="factor_package_sent_by" value="dispatcher" defaultChecked={sender !== "carrier"} /> We send it for the carrier
               </label>
               <label className="flex items-center gap-1.5">
-                <input type="radio" name="factor_package_sent_by" value="carrier" defaultChecked={sender === "carrier"} /> The carrier sends it (we email them the package)
+                <input type="radio" name="factor_package_sent_by" value="carrier" defaultChecked={sender === "carrier"} /> The carrier sends it (we email them the billing packet)
               </label>
               <Button type="submit" size="sm" variant="outline">Save</Button>
             </form>

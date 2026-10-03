@@ -60,7 +60,7 @@ export function BillingSetupChecklist({
             )}
             {factor.mode === "factored" && factor.noaApproved && (
               <p className="text-[12px] text-muted-foreground">
-                {factor.submissionMethod === "secure_email" ? "Packages are emailed to the factor." : "The factor takes uploads on its website: download the package from the invoice."}
+                {factor.submissionMethod === "secure_email" ? "Billing packets are emailed to the factor." : "The factor takes uploads on its website: download the billing packet from the invoice."}
               </p>
             )}
             {(!factor.mode || factor.mode === "unconfigured") && (
@@ -77,7 +77,7 @@ export function BillingSetupChecklist({
         </li>
         <Item
           done
-          label={sender === "carrier" ? "The carrier sends its paperwork (we email them the package)" : "We send the paperwork for the carrier"}
+          label={sender === "carrier" ? "The carrier sends its paperwork (we email them the billing packet)" : "We send the paperwork for the carrier"}
           note="Change it in the box above."
         />
         <Item done label="Brokers" note="Added automatically the first time you invoice a broker for this carrier, using the broker's email and terms. You can edit them below." />

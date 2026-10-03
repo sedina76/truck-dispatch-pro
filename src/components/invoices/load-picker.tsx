@@ -205,8 +205,9 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
         </PopoverContent>
       </Popover>
       <p className="text-[11px] text-muted-foreground">
-        Delivered loads without an invoice are listed. Loads are invoiced automatically on delivery -- search a load # to jump to its existing
-        invoice. Picking an un-invoiced load fills in its billing party, rate, and payment terms below.
+        Delivered loads without an invoice are listed. &quot;Broker pays us&quot; loads get your invoice automatically on delivery; loads marked
+        &quot;Carrier&apos;s invoice&quot; (the broker pays the carrier) are invoiced in the carrier&apos;s name from here. Search a load # to jump to its existing
+        invoice.
       </p>
     </div>
   );

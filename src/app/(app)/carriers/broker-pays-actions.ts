@@ -42,7 +42,7 @@ export async function setCarrierFactorPackageSender(carrierId: string, formData:
   const { error } = await supabase.rpc("set_carrier_factor_package_sender", { p_carrier_id: carrierId, p_sender: sender });
   if (error) redirect(`${here}?bp_error=${encodeURIComponent(error.message)}`);
   revalidatePath(here);
-  redirect(`${here}?bp_saved=${encodeURIComponent(sender === "carrier" ? "The carrier sends the paperwork; invoice packages are emailed to the carrier." : "We send the paperwork to the carrier's factor (or the broker).")}`);
+  redirect(`${here}?bp_saved=${encodeURIComponent(sender === "carrier" ? "The carrier sends the paperwork; billing packets are emailed to the carrier." : "We send the paperwork to the carrier's factor (or the broker).")}`);
 }
 
 // "Brokers this carrier invoices": the carrier's billing relationship with a

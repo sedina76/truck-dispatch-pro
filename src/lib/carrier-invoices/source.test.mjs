@@ -57,7 +57,7 @@ test("package email text", async () => {
   const { packageEmailBody } = await import("./source.ts");
   const args = { carrierName: "Road Runner", invoiceNumber: "RRT-2026-00001", loadNumbers: ["LD-1"], total: "$2,000.00", orgName: "Sedina Dispatch" };
   assert.match(packageEmailBody({ ...args, who: "factor" }), /On behalf of our carrier Road Runner, please find attached invoice RRT-2026-00001 for load LD-1 .* for funding\./);
-  assert.match(packageEmailBody({ ...args, who: "carrier", loadNumbers: ["LD-1", "LD-2"] }), /^Hello Road Runner,\n\nHere is your invoice package for loads LD-1, LD-2/);
+  assert.match(packageEmailBody({ ...args, who: "carrier", loadNumbers: ["LD-1", "LD-2"] }), /^Hello Road Runner,\n\nHere is your billing packet for loads LD-1, LD-2/);
   assert.match(packageEmailBody({ ...args, who: "broker" }), /On behalf of Road Runner, please find attached invoice/);
   assert.match(packageEmailBody({ ...args, who: "factor" }), /Invoice total: \$2,000\.00\n\nThank you,\nSedina Dispatch$/);
 });

@@ -24,6 +24,7 @@ import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { verifyPod, getPodSignedUrl } from "../pod-actions";
 import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
 import { canUseBilling } from "@/lib/auth/billing-access";
+import { carrierPaidBillingForLoad } from "@/lib/billing/load-billing-status";
 import { ChangeLoadNumberDialog } from "@/components/loads/change-load-number-dialog";
 
 // Phase POST-0069 finding: rate/detention_rate/layover_rate were dropped
@@ -165,6 +166,8 @@ export default async function LoadDetailPage({
     rate_confirmation_number: string | null;
   };
   const loadFinancialsRow = loadFinancials as { rate: number; detention_rate: number | null; layover_rate: number | null } | null;
+  // "Broker pays the carrier": the invoice is the carrier's, and your fee is billed to the carrier.
+  const carrierPaid = canSeeFinancials ? await carrierPaidBillingForLoad(supabase, id) : null;
   const invoiceRow = invoice as unknown as {
     id: string;
     invoice_number: string;
@@ -241,10 +244,22 @@ export default async function LoadDetailPage({
               <>
                 Load marked delivered. Invoice <span className="font-semibold">{invoiceRow.invoice_number}</span> has been created.
               </>
+            ) : carrierPaid ? (
+              carrierPaid.carrierInvoice
+                ? <>Load marked delivered. It is on the carrier&apos;s invoice <span className="font-semibold">{carrierPaid.carrierInvoice.invoiceNumber ?? "(draft)"}</span>.</>
+                : "Load marked delivered. The broker pays the carrier for this load, so the next step is the carrier's invoice."
             ) : (
               "Load marked delivered. No invoice was created automatically -- add a broker or customer to this load, then create one manually."
             )}
           </p>
+          {!invoiceRow && carrierPaid && canOpenInvoices && (
+            <Link
+              href={carrierPaid.carrierInvoice ? `/carrier-invoices/${carrierPaid.carrierInvoice.invoiceId}` : `/invoices/new?load_id=${id}`}
+              className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary-hover"
+            >
+              {carrierPaid.carrierInvoice ? "View Invoice" : "Create Invoice"}
+            </Link>
+          )}
           {invoiceRow && canOpenInvoices && (
             <div className="flex shrink-0 items-center gap-2">
               <Link
@@ -525,9 +540,65 @@ export default async function LoadDetailPage({
           <DesktopCollapsibleSection
             id="invoice"
             title="Invoice"
-            badge={invoiceRow ? `${invoiceRow.invoice_number} · ${invoiceRow.status.replace(/_/g, " ")}` : undefined}
+            badge={
+              invoiceRow
+                ? `${invoiceRow.invoice_number} · ${invoiceRow.status.replace(/_/g, " ")}`
+                : carrierPaid?.carrierInvoice
+                  ? `${carrierPaid.carrierInvoice.invoiceNumber ?? "Draft"} · carrier's invoice`
+                  : undefined
+            }
           >
-            {!invoiceRow ? (
+            {!invoiceRow && carrierPaid ? (
+              <div className="space-y-2 text-sm" data-testid="carrier-paid-billing">
+                <p className="text-[var(--color-text-muted)]">
+                  The broker pays the carrier for this load, so the invoice to the broker is the carrier&apos;s (in its name), and your dispatch fee is billed to the carrier.
+                </p>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  <span className="text-[var(--color-text-muted)]">Carrier&apos;s invoice</span>
+                  <span className="text-right">
+                    {carrierPaid.carrierInvoice ? (
+                      canOpenInvoices ? (
+                        <Link href={`/carrier-invoices/${carrierPaid.carrierInvoice.invoiceId}`} className="font-medium text-[var(--color-brand)]">
+                          {carrierPaid.carrierInvoice.invoiceNumber ?? "Draft"} ({carrierPaid.carrierInvoice.issuanceStatus.replace(/_/g, " ")})
+                        </Link>
+                      ) : (
+                        `${carrierPaid.carrierInvoice.invoiceNumber ?? "Draft"} (${carrierPaid.carrierInvoice.issuanceStatus.replace(/_/g, " ")})`
+                      )
+                    ) : (
+                      "Not created yet"
+                    )}
+                  </span>
+                  <span className="text-[var(--color-text-muted)]">Your dispatch fee</span>
+                  <span className="text-right">
+                    {carrierPaid.feeInvoice ? (
+                      canOpenInvoices ? (
+                        <Link href={`/dispatch-fee-invoices/${carrierPaid.feeInvoice.id}`} className="font-medium text-[var(--color-brand)]">
+                          {carrierPaid.feeInvoice.invoiceNumber} ({carrierPaid.feeInvoice.status.replace(/_/g, " ")})
+                        </Link>
+                      ) : (
+                        `${carrierPaid.feeInvoice.invoiceNumber} (${carrierPaid.feeInvoice.status.replace(/_/g, " ")})`
+                      )
+                    ) : (
+                      "Not billed yet"
+                    )}
+                  </span>
+                </div>
+                {canOpenInvoices && (
+                  <div className="flex flex-wrap gap-2">
+                    {!carrierPaid.carrierInvoice && ["delivered", "pod_received", "invoiced", "closed"].includes(loadRow.status) && (
+                      <Link href={`/invoices/new?load_id=${id}`} className="inline-flex h-7 items-center rounded-sm bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary-hover">
+                        Create Invoice
+                      </Link>
+                    )}
+                    {!carrierPaid.feeInvoice && (
+                      <Link href="/dispatch-fee-invoices/new" className="inline-flex h-7 items-center rounded-sm border border-desktop-border px-2.5 text-xs font-medium hover:bg-muted">
+                        Bill dispatch fee
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : !invoiceRow ? (
               <div className="space-y-2">
                 <p className="text-sm text-[var(--color-text-muted)]">
                   {loadRow.status === "delivered"

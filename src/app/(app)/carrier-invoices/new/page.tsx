@@ -20,14 +20,14 @@ export default async function NewCarrierInvoicePage() {
       <div>
         <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">New Carrier Invoice</h1>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Select one carrier and its delivered loads (one broker per invoice). The system resolves whether the carrier is billed directly or factored, the recipient and the totals; the dispatch-service fee is a separate receivable.
+          For one load, use Billing &rarr; Invoices &rarr; Create Invoice. Use this page to put several of a carrier&apos;s delivered loads (same broker) on one invoice. The system works out whether the carrier factors, the recipient and the totals; your dispatch fee is billed separately on a Dispatch Fee Invoice.
         </p>
       </div>
       <div className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
         <p className="font-medium text-desktop-text">First invoice for a carrier?</p>
         <p className="mt-0.5">
           On the carrier&apos;s page, set &quot;Who does the broker pay?&quot; to <span className="font-medium">Broker pays the carrier</span>. Its{" "}
-          <span className="font-medium">Billing setup</span> box then shows what&apos;s left (usually just whether it factors). The invoice code and the broker&apos;s billing details are filled in automatically. Loads need a verified proof of delivery before the package can be sent.
+          <span className="font-medium">Billing setup</span> box then shows what&apos;s left (usually just whether it factors). The invoice code and the broker&apos;s billing details are filled in automatically. Loads need a verified proof of delivery before the billing packet can be sent.
         </p>
       </div>
       <NewCarrierInvoiceForm carriers={carriers} />

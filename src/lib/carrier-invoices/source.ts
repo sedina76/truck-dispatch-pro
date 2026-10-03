@@ -170,12 +170,12 @@ export function packageRecipient(snap: CarrierInvoiceSnapshot, sender: PackageSe
   return { to: snap.recipient?.billing_email || snap.recipient?.email || "", who: "broker", label: snap.recipient?.legal_name ?? "the broker" };
 }
 
-/** Default email text for the factor package (editable in the compose dialog). */
+/** Default email text for the billing packet (editable in the compose dialog). */
 export function packageEmailBody(a: { who: "carrier" | "factor" | "broker" | "factor_portal"; carrierName: string; invoiceNumber: string; loadNumbers: string[]; total: string; orgName: string }): string {
   const loads = a.loadNumbers.length === 1 ? `load ${a.loadNumbers[0]}` : `loads ${a.loadNumbers.join(", ")}`;
   const intro =
     a.who === "carrier"
-      ? `Hello ${a.carrierName},\n\nHere is your invoice package for ${loads}: invoice ${a.invoiceNumber} with the rate confirmation, bill of lading and proof of delivery, ready to submit to your factoring company.`
+      ? `Hello ${a.carrierName},\n\nHere is your billing packet for ${loads}: invoice ${a.invoiceNumber} with the rate confirmation, bill of lading and proof of delivery, ready to submit to your factoring company.`
       : a.who === "broker"
         ? `Hello,\n\nOn behalf of ${a.carrierName}, please find attached invoice ${a.invoiceNumber} for ${loads} with the rate confirmation, bill of lading and proof of delivery.`
         : `Hello,\n\nOn behalf of our carrier ${a.carrierName}, please find attached invoice ${a.invoiceNumber} for ${loads} with the rate confirmation, bill of lading and proof of delivery for funding.`;

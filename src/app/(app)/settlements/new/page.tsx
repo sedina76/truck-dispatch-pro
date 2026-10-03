@@ -18,7 +18,7 @@ export default async function NewCarrierSettlementPage() {
   return (
     <FormCard
       title="New Carrier Settlement"
-      description="Select a carrier and period -- eligible delivered loads not already settled will be added automatically, using each dispatch's own snapshotted carrier rate. Review before approving."
+      description={'Select a carrier and period -- eligible delivered loads not already settled will be added automatically, using each dispatch\'s own snapshotted carrier rate. Review before approving. Only "Broker pays us" loads are settled here; when the broker pays the carrier, bill your fee on a Dispatch Fee Invoice instead.'}
       action={createCarrierSettlement}
       cancelHref="/settlements"
       submitLabel="Create Settlement"

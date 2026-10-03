@@ -89,7 +89,7 @@ export async function factorPackageMissing(supabase: Supabase, inv: IssuedCarrie
  */
 export async function renderCarrierFactorPackage(supabase: Supabase, inv: IssuedCarrierInvoice): Promise<{ bytes: Uint8Array; skipped: { label: string; filename: string; reason: string }[] }> {
   const missing = await factorPackageMissing(supabase, inv);
-  if (missing.length) throw new Error(`The package is not ready. Missing: ${missing.join("; ")}.`);
+  if (missing.length) throw new Error(`The billing packet is not ready. Missing: ${missing.join("; ")}.`);
   const pkg = await PDFDocument.create();
   const fonts = await embedBrandFonts(pkg);
   const included: string[] = ["Invoice"];
@@ -120,6 +120,6 @@ export async function renderCarrierFactorPackage(supabase: Supabase, inv: Issued
   drawPacketCover(pkg.insertPage(0, [PAGE_W, PAGE_H]), doc, fonts, included, skipped);
   let at = 1;
   drawInvoice(doc, fonts, () => pkg.insertPage(at++, [PAGE_W, PAGE_H]));
-  pkg.setTitle(pdfSafe(`Invoice package ${inv.snapshot.invoice_number}`));
+  pkg.setTitle(pdfSafe(`Billing packet ${inv.snapshot.invoice_number}`));
   return { bytes: await pkg.save(), skipped };
 }

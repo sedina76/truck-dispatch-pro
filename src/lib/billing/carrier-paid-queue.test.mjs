@@ -93,7 +93,7 @@ test("Generate Billing Packet on a carrier's invoice works like yours: builds, s
   const actions = src("../../app/(app)/carrier-invoices/packet-actions.ts");
   assert.match(actions, /if \(!canUseBilling\(role as string \| null\) \|\| !org\) return null/);
   assert.match(actions, /if \(!inv\) return \{ ok: false, error: "Issue the invoice first\." \}/);
-  assert.match(actions, /return \{ ok: false, error: message\.startsWith\("The package is not ready"\)/, "errors are returned, not thrown");
+  assert.match(actions, /return \{ ok: false, error: message\.startsWith\("The billing packet is not ready"\)/, "errors are returned, not thrown");
   const section = src("../../components/carrier-invoices/carrier-billing-packet-section.tsx");
   assert.match(section, /<GenerateCarrierPacketButton invoiceId=\{invoiceId\} label=\{packet \? "Regenerate Packet" : "Generate Billing Packet"\} \/>/);
   assert.match(section, /label="Preview Packet" getUrl=\{getCarrierPacketUrl\.bind\(null, invoiceId, false\)\}/);

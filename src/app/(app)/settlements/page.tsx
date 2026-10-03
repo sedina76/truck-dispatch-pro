@@ -119,7 +119,7 @@ export default async function CarrierSettlementsPage({
         <DesktopPanelHeader title="Settlements" />
         <DesktopPanelBody className="overflow-auto">
           {rows.length === 0 ? (
-            <EmptyState title="No carrier settlements yet" description="Create a settlement to pay a carrier for their completed loads." action={{ label: "New Settlement", href: "/settlements/new" }} />
+            <EmptyState title="No carrier settlements yet" description={'Create a settlement to pay a carrier for their completed "Broker pays us" loads.'} action={{ label: "New Settlement", href: "/settlements/new" }} />
           ) : (
             <table className="w-full text-[12.5px]">
               <thead>
