@@ -71,7 +71,6 @@ export function CollapsibleSectionsProvider({
     }
     // Only ever read once, on mount -- this is a one-time restore, not a
     // sync loop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
   function persist(next: Record<string, boolean>) {

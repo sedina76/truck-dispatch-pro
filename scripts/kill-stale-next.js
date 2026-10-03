@@ -6,6 +6,7 @@
 // `pkill -f next`, which has previously matched more than intended. Without
 // --yes this just reports what it *would* kill and does nothing, since
 // killing a process is hard to reverse.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { execSync } = require("node:child_process");
 
 const PORT = process.env.PORT || 3000;
