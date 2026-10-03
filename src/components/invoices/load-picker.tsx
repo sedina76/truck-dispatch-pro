@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronsUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { matchesSearch } from "@/lib/billing/search-match";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Command, CommandInput, CommandList, CommandItem, CommandGroup } from "@/components/ui/command";
 
@@ -72,7 +73,7 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return loads;
-    return loads.filter((l) => l.load_number.toLowerCase().includes(q) || (l.partyName ?? "").toLowerCase().includes(q));
+    return loads.filter((l) => matchesSearch(l.load_number, q) || (l.partyName ?? "").toLowerCase().includes(q));
   }, [loads, query]);
 
   // Only while searching -- the default list stays "loads you can invoice".
@@ -80,7 +81,7 @@ export function LoadPicker({ loads, alreadyInvoiced = [] }: { loads: InvoiceLoad
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return alreadyInvoiced
-      .filter((l) => l.load_number.toLowerCase().includes(q) || (l.partyName ?? "").toLowerCase().includes(q) || l.invoiceNumber.toLowerCase().includes(q))
+      .filter((l) => matchesSearch(l.load_number, q) || (l.partyName ?? "").toLowerCase().includes(q) || l.invoiceNumber.toLowerCase().includes(q))
       .slice(0, 20);
   }, [alreadyInvoiced, query]);
 

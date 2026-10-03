@@ -11,6 +11,7 @@ import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { liveCarrierDraftIds } from "@/lib/billing/carrier-paid-loads";
+import { matchesSearch, safeFilterTerm } from "@/lib/billing/search-match";
 
 type Invoice = {
   id: string;
@@ -51,7 +52,13 @@ export default async function InvoicesPage({
     .from("invoices")
     .select("id, invoice_number, bill_to_name, status, total_amount, amount_paid, balance_due, issue_date, due_date, load_id, loads(load_number)")
     .order("issue_date", { ascending: false });
-  if (q) query = query.or(`invoice_number.ilike.%${q}%,bill_to_name.ilike.%${q}%`);
+  // Search: invoice number, bill-to name, or load number (forgiving: "LD-00039" finds LD-100039).
+  const term = safeFilterTerm(q ?? "");
+  if (term) {
+    const { data: loadRows } = await supabase.from("loads").select("id, load_number").order("created_at", { ascending: false }).limit(5000);
+    const loadIds = (loadRows ?? []).filter((l) => matchesSearch(l.load_number, term)).map((l) => l.id).slice(0, 300);
+    query = query.or(`invoice_number.ilike.%${term}%,bill_to_name.ilike.%${term}%${loadIds.length ? `,load_id.in.(${loadIds.join(",")})` : ""}`);
+  }
 
   const { data } = await query;
   const ours = ((data ?? []) as unknown as Invoice[]).map((i) => ({ ...i, kind: "ours" as const }));
@@ -77,7 +84,7 @@ export default async function InvoicesPage({
   // A discarded draft keeps status "draft" but no longer holds its load: hide it.
   const liveDrafts = carrierRows.some((c) => c.issuance_status !== "issued") ? await liveCarrierDraftIds(supabase) : new Set<string>();
   const carrierPods = await getLatestDocumentsByEntity(supabase, "load", "pod", carrierRows.flatMap((c) => (c.carrier_invoice_loads ?? []).map((l) => l.load_id)));
-  const needle = (q ?? "").trim().toLowerCase();
+  const needle = term;
   const theirs: Invoice[] = carrierRows
     .map((c) => {
       const loadsOn = c.carrier_invoice_loads ?? [];
@@ -103,7 +110,7 @@ export default async function InvoicesPage({
       };
     })
     .filter((r) => r.status !== "draft" || liveDrafts.has(r.id))
-    .filter((r) => !needle || r.invoice_number.toLowerCase().includes(needle) || r.bill_to_name.toLowerCase().includes(needle) || (r.carrierName ?? "").toLowerCase().includes(needle));
+    .filter((r) => !needle || matchesSearch(r.invoice_number, needle) || matchesSearch(r.bill_to_name, needle) || matchesSearch(r.carrierName, needle) || (r.loads?.load_number ?? "").split(", ").some((n) => matchesSearch(n, needle)));
 
   const invoices = [...invoicesOurs, ...theirs].sort((a, b) => new Date(b.issue_date).getTime() - new Date(a.issue_date).getTime());
 
@@ -208,7 +215,7 @@ export default async function InvoicesPage({
         <DesktopKpiBox label="Total Invoices" value={(allInvoicesCount ?? 0) + theirs.length} />
       </DesktopKpiStrip>
 
-      <SearchBar placeholder="Search by invoice number or bill-to name..." />
+      <SearchBar placeholder="Search by invoice #, load #, or bill-to name..." />
 
       {invoices.length === 0 ? (
         <EmptyState
