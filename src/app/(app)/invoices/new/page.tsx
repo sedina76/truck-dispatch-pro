@@ -43,9 +43,14 @@ function resolveLoadCandidate(row: CandidateLoadRow, rate: number): InvoiceLoadC
 export default async function NewInvoicePage({
   searchParams,
 }: {
-  searchParams: Promise<{ load_id?: string }>;
+  searchParams: Promise<{ load_id?: string; error?: string }>;
 }) {
-  const { load_id } = await searchParams;
+  const { load_id, error: saveError } = await searchParams;
+  const errorBanner = saveError ? (
+    <div className="flex items-start gap-2 rounded-sm border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {saveError}
+    </div>
+  ) : null;
   const supabase = await createClient();
 
   // "Select Load first" (spec section 3) needs a pool of loads that could
@@ -106,7 +111,13 @@ export default async function NewInvoicePage({
   const allEligibleRows = (candidateLoads ?? []) as unknown as (CandidateLoadRow & {
     invoices: { id: string; invoice_number: string; status: string }[] | null;
   })[];
-  const candidateLoadRows = allEligibleRows.filter((load) => !load.invoices?.length);
+  // "Broker pays the carrier" loads (0167) are never invoiced to the broker by you.
+  const eligibleIds = allEligibleRows.filter((load) => !load.invoices?.length).map((l) => l.id);
+  const { data: carrierPaidRows } = eligibleIds.length
+    ? await supabase.from("dispatches").select("load_id").in("load_id", eligibleIds).eq("proceeds_model", "carrier_paid_directly").neq("status", "cancelled")
+    : { data: [] as { load_id: string }[] };
+  const carrierPaid = new Set((carrierPaidRows ?? []).map((r) => String(r.load_id)));
+  const candidateLoadRows = allEligibleRows.filter((load) => !load.invoices?.length && !carrierPaid.has(load.id));
   // Delivered loads that already have an invoice (usually the one created
   // automatically on delivery). They can't get a second invoice
   // (invoices_load_id_unique_idx), but searching for one in the picker
@@ -133,6 +144,7 @@ export default async function NewInvoicePage({
 
     return (
       <div className="space-y-3">
+        {errorBanner}
         <DesktopPanel>
           <DesktopPanelBody>
             <LoadPicker loads={pickerLoads} alreadyInvoiced={alreadyInvoiced} />
@@ -249,6 +261,27 @@ export default async function NewInvoicePage({
     );
   }
 
+  // "Broker pays the carrier" (0167): say so up front instead of a form that can't be saved.
+  const { data: billsBroker } = await supabase.rpc("load_bills_broker", { p_load_id: load_id });
+  if (billsBroker === false) {
+    return (
+      <DesktopPanel>
+        <DesktopPanelHeader title="Not invoiced to the broker" />
+        <DesktopPanelBody className="space-y-3">
+          <p className="flex items-start gap-2 text-sm text-desktop-text">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            The broker pays the carrier directly for this load (the carrier is set to &quot;Broker pays the carrier&quot;), so you don&apos;t invoice the broker. Your dispatch fee goes on the carrier&apos;s Dispatch Fee Invoice; the carrier&apos;s own invoice (for its factor) is under Carrier Invoices.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/dispatch-fee-invoices/new" className="inline-flex h-8 items-center rounded-sm bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary-hover">New Dispatch Fee Invoice</Link>
+            <Link href="/carrier-invoices/new" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">New Carrier Invoice</Link>
+            <Link href="/invoices/new" className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">Choose a different load</Link>
+          </div>
+        </DesktopPanelBody>
+      </DesktopPanel>
+    );
+  }
+
   const loadRow = load as unknown as {
     id: string;
     load_number: string;
@@ -277,6 +310,7 @@ export default async function NewInvoicePage({
 
   return (
     <div className="space-y-3">
+      {errorBanner}
       <DesktopPanel>
         {/* Compact summary card + Change button (Section 10): this panel
             IS that summary once a load is selected -- rendered instead of
