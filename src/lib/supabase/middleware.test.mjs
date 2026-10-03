@@ -111,8 +111,21 @@ test("D.2.2: exactly ONE new PUBLIC_PATHS entry vs the pre-D.2.2 set", () => {
     "/forgot-email", "/auth/callback", "/driver-portal", "/api/driver-portal",
     "/driver-application", "/api/driver-application", "/carrier-onboarding",
     "/api/webhooks/resend", "/api/webhooks/stripe",
+    // driver invitation links: opened by drivers with no staff account
+    "/driver-onboarding",
   ]);
   assert.deepEqual(new Set(PUBLIC_PATHS), expected);
+});
+
+test("driver invitation links open without a staff login (like carrier invitations)", () => {
+  assert.equal(isPublic("/driver-onboarding/" + "a".repeat(64)), true);
+  assert.equal(isPublic("/driver-onboarding/personal"), true);
+  assert.equal(isPublic("/driver-onboarding/invalid"), true);
+  assert.equal(isPublic("/carrier-onboarding/" + "a".repeat(64)), true);
+  // ...but not a lookalike path
+  assert.equal(isPublic("/driver-onboardingx"), false);
+  // and the staff driver screens still need a login
+  assert.equal(isPublic("/drivers/applications"), false);
 });
 
 // ===========================================================================

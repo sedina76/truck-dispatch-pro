@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, CheckCircle2, XCircle, Star } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Star, Copy, Check, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   addEmailDomain,
@@ -15,6 +15,7 @@ import {
   type EmailActionResult,
 } from "./actions";
 import type { DomainRow, SenderRow } from "./page";
+import { dnsRecordStatusLabel } from "@/lib/email/domain-setup";
 
 const STATUS_LABEL: Record<string, string> = {
   not_started: "Not Started",
@@ -114,15 +115,83 @@ export function AddDomainForm() {
 }
 
 export function EmailDomainsSection({ domains, isAdmin }: { domains: DomainRow[]; isAdmin: boolean }) {
-  if (domains.length === 0) {
+  // A REMOVED domain (disabled_at set) keeps its row for send history, but
+  // its provider registration is gone -- its old DNS records are useless,
+  // so it is listed separately, compactly, with "Set up again".
+  const active = domains.filter((d) => !d.disabled_at);
+  const removed = domains.filter((d) => d.disabled_at);
+  if (domains.length === 0 || (active.length === 0 && removed.length === 0)) {
     return <p className="rounded-md border border-dashed border-[var(--color-border)] p-4 text-sm text-muted-foreground">No sending domain configured yet. Business email will use the Truck Dispatch Pro platform address, branded with your company name.</p>;
   }
   return (
     <div className="space-y-3">
-      {domains.map((d) => (
+      {active.length === 0 && (
+        <p className="rounded-md border border-dashed border-[var(--color-border)] p-4 text-sm text-muted-foreground">No active sending domain. Business email uses the Truck Dispatch Pro platform address, branded with your company name.</p>
+      )}
+      {active.map((d) => (
         <DomainCard key={d.id} domain={d} isAdmin={isAdmin} />
       ))}
+      {removed.length > 0 && <RemovedDomains domains={removed} isAdmin={isAdmin} />}
     </div>
+  );
+}
+
+function RemovedDomains({ domains, isAdmin }: { domains: DomainRow[]; isAdmin: boolean }) {
+  const { run, pendingKey, error } = useAction();
+  return (
+    <div className="rounded-md border border-[var(--color-border)] bg-card p-3">
+      <p className="text-xs font-semibold text-muted-foreground">Removed domains</p>
+      <ul className="mt-1 divide-y divide-[var(--color-border)]">
+        {domains.map((d) => (
+          <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm">
+            <span>
+              <span className="font-medium">{d.domain}</span>
+              <span className="text-xs text-muted-foreground">
+                {" "}· {d.sending_domain} · removed {d.disabled_at ? new Date(d.disabled_at).toLocaleDateString() : ""} -- not used for sending
+              </span>
+            </span>
+            {isAdmin && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pendingKey === d.id}
+                onClick={() => {
+                  const fd = new FormData();
+                  fd.set("domain", d.domain);
+                  fd.set("sending_domain", d.sending_domain);
+                  run(d.id, () => addEmailDomain(fd));
+                }}
+              >
+                {pendingKey === d.id ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
+                Set up again
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+    </div>
+  );
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={`Copy ${label}`}
+      title={`Copy ${label}`}
+      onClick={() => {
+        navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      className="ml-1 inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-desktop-muted hover:text-foreground"
+    >
+      {copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+    </button>
   );
 }
 
@@ -151,9 +220,23 @@ function DomainCard({ domain, isAdmin }: { domain: DomainRow; isAdmin: boolean }
         </div>
       </div>
 
+      {domain.dns_records.length > 0 && !domain.sending_enabled && (
+        <p className="mt-3 rounded-sm bg-desktop-muted/60 px-2.5 py-2 text-xs text-muted-foreground">
+          Add these {domain.dns_records.length} records in the DNS settings where <span className="font-medium text-foreground">{domain.domain}</span> is
+          managed (for example GoDaddy, Namecheap or Cloudflare). Enter each Name/Host exactly as shown -- most providers add
+          <span className="font-mono"> .{domain.domain}</span> automatically. Then click <span className="font-medium text-foreground">Check Verification</span>;
+          DNS changes can take a few minutes to a few hours.
+        </p>
+      )}
       {domain.dns_records.length > 0 && (
         <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full table-fixed text-xs">
+            <colgroup>
+              <col className="w-14" />
+              <col className="w-[26%]" />
+              <col />
+              <col className="w-32" />
+            </colgroup>
             <thead>
               <tr className="text-left text-muted-foreground">
                 <th className="pb-1 pr-3 font-medium">Type</th>
@@ -164,15 +247,28 @@ function DomainCard({ domain, isAdmin }: { domain: DomainRow; isAdmin: boolean }
             </thead>
             <tbody>
               {domain.dns_records.map((r, i) => (
-                <tr key={i} className="border-t border-[var(--color-border)]">
-                  <td className="py-1 pr-3 font-mono">{r.type}</td>
-                  <td className="max-w-[220px] truncate py-1 pr-3 font-mono">{r.name}</td>
-                  <td className="max-w-[280px] truncate py-1 pr-3 font-mono">{r.value}</td>
-                  <td className="py-1">
+                <tr key={i} className="border-t border-[var(--color-border)] align-top">
+                  <td className="py-1.5 pr-3 font-mono">
+                    {r.type}
+                    {r.priority != null && <span className="block text-[10px] text-muted-foreground">priority {r.priority}</span>}
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <span className="flex items-start">
+                      <span className="break-all font-mono">{r.name}</span>
+                      <CopyButton value={r.name} label="name" />
+                    </span>
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <span className="flex items-start">
+                      <span className="break-all font-mono">{r.value}</span>
+                      <CopyButton value={r.value} label="value" />
+                    </span>
+                  </td>
+                  <td className="py-1.5">
                     {r.status === "verified" ? (
                       <span className="inline-flex items-center gap-0.5 text-success"><CheckCircle2 className="size-3" /> Verified</span>
                     ) : (
-                      <span className="inline-flex items-center gap-0.5 text-muted-foreground"><XCircle className="size-3" /> {r.status}</span>
+                      <span className="inline-flex items-center gap-0.5 text-muted-foreground"><XCircle className="size-3" /> {dnsRecordStatusLabel(r.status)}</span>
                     )}
                   </td>
                 </tr>

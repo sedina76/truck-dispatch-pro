@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRoleForApi, BILLING_ROLES } from "@/lib/auth/require-role";
 
 // Print/Export target for a generated statement. The stored PDF lives in a
 // PRIVATE Supabase Storage bucket (0029_statements.sql) -- there is no
@@ -11,7 +11,7 @@ import { requireRoleForApi, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 // Print/Export both point here rather than a static href, so the link
 // never goes stale even if the user waits a while before clicking.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const denied = await requireRoleForApi(FINANCIAL_ROLES);
+  const denied = await requireRoleForApi(BILLING_ROLES);
   if (denied) return denied;
 
   const { id } = await params;

@@ -9,6 +9,12 @@ import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { issueDriverOnboardingInvitation } from "@/lib/driver-onboarding/invitation";
 import { resolveEmailAuthorizationContext } from "@/lib/email/authorization";
 import { sendTenantEmail } from "@/lib/email/send-pipeline";
+import { driverInvitationEmail, driverPortalAccessEmail } from "@/lib/email/templates";
+
+// Whole days until an invitation link expires (for "expires in N days").
+function daysUntil(expiresAt: Date): number {
+  return Math.max(1, Math.round((expiresAt.getTime() - Date.now()) / 86_400_000));
+}
 
 const VALID_STATUSES = [
   "submitted", "under_review", "interview", "approved", "rejected", "converted",
@@ -149,8 +155,7 @@ async function provisionDriverPortalAccess(supabase: Awaited<ReturnType<typeof c
     authContext: auth.context,
     emailPurpose: "driver_portal_access",
     to: [email],
-    subject: `${orgName ?? "Your new employer"} -- Your Driver Portal Access`,
-    text: `Hi ${firstName},\n\nWelcome aboard! You can now sign in to the Driver Portal using your phone number and the PIN below.\n\nPhone: ${phone}\nPIN: ${pin}\n\nSign in here: ${baseUrl}/driver-portal\n\nKeep this PIN private -- it is the only way to access your Driver Portal account.`,
+    ...driverPortalAccessEmail({ orgName: orgName ?? "Your new employer", firstName, phone, pin, portalUrl: `${baseUrl.replace(/\/$/, "")}/driver-portal` }),
     entityType: "driver",
     entityId: driverId,
     sentBy: null,
@@ -308,8 +313,7 @@ export async function inviteDriverApplication(formData: FormData): Promise<{ ok:
         authContext: auth.context,
         emailPurpose: "driver_onboarding_invitation",
         to: [email],
-        subject: `${carrier.legal_name} has invited you to complete Driver Onboarding`,
-        text: `Hi ${firstName},\n\n${carrier.legal_name} would like to bring you on as a driver. Please complete your driver onboarding using the secure link below. This link expires in 14 days.\n\n${invitation.url}\n\nIf you have any questions, contact ${carrier.legal_name} directly.`,
+        ...driverInvitationEmail({ carrierName: carrier.legal_name, firstName, url: invitation.url, expiresInDays: daysUntil(invitation.expiresAt) }),
         entityType: "driver_application",
         entityId: application.id,
         sentBy: user.id,
@@ -366,8 +370,7 @@ export async function resendDriverOnboardingInvitation(applicationId: string): P
       authContext: auth.context,
       emailPurpose: "driver_onboarding_invitation",
       to: [application.email],
-      subject: `${carrierName} has invited you to complete Driver Onboarding`,
-      text: `Hi ${application.first_name},\n\nHere is a fresh secure link to complete your driver onboarding with ${carrierName}. This link expires in 14 days.\n\n${invitation.url}`,
+      ...driverInvitationEmail({ carrierName, firstName: application.first_name, url: invitation.url, expiresInDays: daysUntil(invitation.expiresAt), resend: true }),
       entityType: "driver_application",
       entityId: applicationId,
       sentBy: user.id,

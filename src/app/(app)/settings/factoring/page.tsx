@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { SectionHeading } from "@/components/ui/section-heading";
 import type { OrgRole } from "@/lib/auth/require-role";
-import type { CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, VerifiedNoaDocument } from "@/lib/factoring/types";
+import type { CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, NoaDocumentOption } from "@/lib/factoring/types";
 import { FactoringSettingsClient } from "./factoring-settings-client";
 
 // Graceful pre-migration behavior, same as settings/email/page.tsx -- a
@@ -87,20 +87,27 @@ export default async function FactoringSettingsPage() {
     );
   }
 
+  // Verified Notice-of-Assignment documents per carrier, offered in the
+  // Approve NOA dialog. approve_factoring_relationship_noa (0140) re-checks
+  // every one of these conditions itself; this only avoids offering a
+  // document it would refuse.
+  const noaDocumentsByCarrierId: Record<string, NoaDocumentOption[]> = {};
+  if (carrierScopingApplied) {
+    const { data: noaDocs } = await supabase
+      .from("documents")
+      .select("id, entity_id, file_name, document_type, created_at")
+      .eq("organization_id", orgId)
+      .eq("entity_type", "carrier")
+      .in("document_type", ["notice_of_assignment", "factoring_notice"])
+      .eq("is_verified", true)
+      .order("created_at", { ascending: false });
+    for (const d of (noaDocs ?? []) as { id: string; entity_id: string; file_name: string; document_type: string; created_at: string }[]) {
+      (noaDocumentsByCarrierId[d.entity_id] ??= []).push({ id: d.id, fileName: d.file_name, documentType: d.document_type, createdAt: d.created_at });
+    }
+  }
+
   const companies = (companiesRes.data ?? []) as FactoringCompanyRow[];
   const relationships = (relationshipsRes.data ?? []) as FactoringRelationshipRow[];
-  const carrierIds = carriers.map((carrier) => carrier.id);
-  const { data: noaRows } = carrierIds.length
-    ? await supabase.from("documents")
-        .select("id, entity_id, file_name, document_type")
-        .eq("organization_id", orgId)
-        .eq("entity_type", "carrier")
-        .eq("is_verified", true)
-        .in("entity_id", carrierIds)
-        .in("document_type", ["notice_of_assignment", "factoring_notice"])
-        .order("created_at", { ascending: false })
-    : { data: [] };
-  const verifiedNoaDocuments = (noaRows ?? []) as VerifiedNoaDocument[];
 
   // Phase 3B.1.4 (Section H): "unauthorized mutation buttons are not
   // shown" -- the client needs the viewer's own role to hide them, never
@@ -116,12 +123,12 @@ export default async function FactoringSettingsPage() {
       <FactoringSettingsClient
         companies={companies}
         relationships={relationships}
-        verifiedNoaDocuments={verifiedNoaDocuments}
         carriers={carriers}
         carrierScopingApplied={carrierScopingApplied}
         readinessByCarrierId={Object.fromEntries(readinessByCarrierId)}
         carrierUpdatedAtById={Object.fromEntries(carrierUpdatedAtById)}
         currentRole={currentRole}
+        noaDocumentsByCarrierId={noaDocumentsByCarrierId}
       />
     </div>
   );

@@ -29,7 +29,7 @@ export default async function CarrierOnboardingApplicationPage({ params }: { par
   const [{ data: invitations }, { data: documents }, requirements, { data: signingRows }, { data: activity }, { data: publishedTemplates }, { data: packageRows }, requiredAgreementReadiness, { data: w9Row, error: w9Error }] = await Promise.all([
     supabase.from("carrier_onboarding_invitations").select("id, expires_at, created_at, first_viewed_at, last_viewed_at, revoked_at, submitted_at").eq("application_id", id).order("created_at", { ascending: false }),
     supabase.from("documents").select("id, document_type, file_name, file_path, is_verified, rejected_at, rejection_reason, created_at").eq("entity_type", "carrier_onboarding_application").eq("entity_id", id).order("created_at", { ascending: false }),
-    getEffectiveOnboardingRequirements(supabase, application.organization_id),
+    getEffectiveOnboardingRequirements(supabase, application.organization_id, application.has_factoring === true),
     supabase.from("carrier_agreement_signings").select("id, status, agreement_template_id, signer_name, signer_title, signed_at, evidence_hash, assigned_at, generated_document_id, document_generation_status, document_generation_failure_reason").eq("application_id", id).order("assigned_at", { ascending: false }),
     supabase.from("activity_logs").select("id, action, created_at, changes, actor_id, profiles(full_name)").eq("entity_type", "carrier_onboarding_application").eq("entity_id", id).order("created_at", { ascending: false }),
     supabase.from("carrier_agreement_templates").select("id, template_key, name, version_number").eq("status", "published").order("name"),

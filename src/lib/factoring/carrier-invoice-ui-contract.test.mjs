@@ -97,6 +97,8 @@ function actionHarness(file, role, { exists = true, authenticated = true, billin
     "@/lib/billing/operational-access": { checkOperationalAccess: async () => ({ ok: billing }) },
     "@/lib/factoring/carrier-invoice-issuance": issuance,
     "@/lib/factoring/carrier-invoice-submission": submission,
+    // auto-creates the carrier's billing link with the broker before preview/draft (not used by issue/reissue/submit)
+    "@/lib/carrier-invoices/party-link": { ensureCarrierPartyLink: async () => null },
   };
   const code = ts.transpileModule(read(`../../app/(app)/carrier-invoices/${file}`), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};

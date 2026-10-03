@@ -55,6 +55,16 @@ function invoiceValues(formData: FormData) {
 // choosable concept once a load is linked. This function now matches that
 // exactly: broker_id/customer_id are DERIVED from the load, never read
 // from the submitted form at all, once a load is selected.
+// A refused save returns to the form with the reason shown on the page --
+// a thrown error in a server action shows the generic "Application error"
+// screen in production, which hides why (e.g. "broker pays the carrier").
+function backToNewInvoice(message: string, loadId: string | null): never {
+  const params = new URLSearchParams();
+  if (loadId) params.set("load_id", loadId);
+  params.set("error", message);
+  redirect(`/invoices/new?${params.toString()}`);
+}
+
 export async function createInvoice(formData: FormData) {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const values = invoiceValues(formData);
@@ -78,7 +88,7 @@ export async function createInvoice(formData: FormData) {
       .maybeSingle();
     const eligibleStatuses: readonly string[] = INVOICEABLE_LOAD_STATUSES;
     if (!load || !eligibleStatuses.includes(load.status)) {
-      throw new Error("This load is not ready to invoice.");
+      backToNewInvoice("This load is not ready to invoice.", values.load_id);
     }
 
     // load_id is now confirmed to be this organization's own load, so this
@@ -87,7 +97,14 @@ export async function createInvoice(formData: FormData) {
     // that regardless). Any existing invoice -- including a voided one --
     // occupies this load's slot; see invoices_load_id_unique_idx (0022).
     const { data: existingInvoice } = await supabase.from("invoices").select("id").eq("load_id", values.load_id).maybeSingle();
-    if (existingInvoice) throw new Error("An invoice already exists for this load.");
+    if (existingInvoice) backToNewInvoice("An invoice already exists for this load.", values.load_id);
+
+    // "Who does the broker pay?" (0167): a "broker pays the carrier" load is
+    // never invoiced to the broker by you -- its fee goes on a Dispatch Fee Invoice.
+    const { data: billsBroker } = await supabase.rpc("load_bills_broker", { p_load_id: values.load_id });
+    if (billsBroker === false) {
+      backToNewInvoice("The broker pays the carrier for this load (carrier setting), so it is not invoiced to the broker. Bill your dispatch fee on a Dispatch Fee Invoice, or change the carrier's \"Who does the broker pay?\" setting.", values.load_id);
+    }
 
     // Authoritative rate (Section F): load_financials is the one writer-
     // cutover-confirmed source (2G.12) -- never the client-submitted `rate`
@@ -114,15 +131,15 @@ export async function createInvoice(formData: FormData) {
     // for ownership below, exactly as before this audit.
     if (values.broker_id) {
       const { data: broker } = await supabase.from("brokers").select("id").eq("id", values.broker_id).eq("organization_id", organizationId).maybeSingle();
-      if (!broker) throw new Error("Selected broker is not available.");
+      if (!broker) backToNewInvoice("Selected broker is not available.", null);
     }
     if (values.customer_id) {
       const { data: customer } = await supabase.from("customers").select("id").eq("id", values.customer_id).eq("organization_id", organizationId).maybeSingle();
-      if (!customer) throw new Error("Selected customer is not available.");
+      if (!customer) backToNewInvoice("Selected customer is not available.", null);
     }
   }
 
-  const { data, error } = await supabase
+  const { data: created, error } = await supabase
     .from("invoices")
     .insert({ ...values, broker_id: resolvedBrokerId, customer_id: resolvedCustomerId, organization_id: organizationId })
     .select("id")
@@ -134,9 +151,11 @@ export async function createInvoice(formData: FormData) {
     // actually guarantees only one of the two INSERTs can ever succeed.
     // The loser hits a 23505 unique-violation, translated to the same
     // friendly message rather than a raw Postgres error.
-    if (error.code === "23505") throw new Error("An invoice already exists for this load.");
-    throw new Error(error.message);
+    if (error.code === "23505") backToNewInvoice("An invoice already exists for this load.", values.load_id);
+    backToNewInvoice(error.message, values.load_id);
   }
+  if (!created) backToNewInvoice("Could not create the invoice.", values.load_id);
+  const data = created;
 
   if (values.load_id && authoritativeRate) {
     await supabase.from("invoice_line_items").insert({
@@ -176,10 +195,13 @@ export async function updateInvoice(id: string, formData: FormData) {
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
 
-  const { data: current } = await supabase.from("invoices").select("id, load_id").eq("id", id).maybeSingle();
+  const { data: current } = await supabase.from("invoices").select("id, load_id, status, sent_at").eq("id", id).maybeSingle();
   if (!current) throw new Error("Invoice not found.");
 
   const values = invoiceValues(formData);
+  // Marking an invoice "sent" from the edit form records when it was sent
+  // (the billing-packet email path already does).
+  const sentAt = values.status === "sent" && !current.sent_at ? new Date().toISOString() : undefined;
 
   // Explicit rejection, not silent discard, for a DETECTABLE relink/link
   // attempt: the current UI never submits load_id at all, so this only
@@ -222,7 +244,7 @@ export async function updateInvoice(id: string, formData: FormData) {
 
   const { error } = await supabase
     .from("invoices")
-    .update({ ...values, load_id: current.load_id, broker_id: resolvedBrokerId, customer_id: resolvedCustomerId })
+    .update({ ...values, load_id: current.load_id, broker_id: resolvedBrokerId, customer_id: resolvedCustomerId, ...(sentAt ? { sent_at: sentAt } : {}) })
     .eq("id", id);
   if (error) throw new Error(error.message);
 
@@ -236,12 +258,13 @@ export async function addInvoiceLineItem(invoiceId: string, formData: FormData) 
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const supabase = await createClient();
   const organizationId = await getCurrentOrgId();
-  await supabase.from("invoice_line_items").insert({
+  const { error } = await supabase.from("invoice_line_items").insert({
     organization_id: organizationId,
     invoice_id: invoiceId,
     description: String(formData.get("description")),
     quantity: toNumber(formData.get("quantity")) ?? 1,
     unit_price: toNumber(formData.get("unit_price")) ?? 0,
   });
+  if (error) throw new Error(error.message);
   revalidatePath(`/invoices/${invoiceId}`);
 }

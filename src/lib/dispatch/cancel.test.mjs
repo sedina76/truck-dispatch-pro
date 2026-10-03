@@ -67,8 +67,9 @@ test("cancelDispatch() keeps the paywall + DISPATCH_WRITES_DISABLED kill switch 
   assert.ok(!/error\.message/.test(body), "the raw database message must never be thrown to the UI");
 });
 
-test("cancel form posts one idempotency key per form instance (useState initialiser, hidden input)", () => {
-  assert.ok(/const \[idempotencyKey\] = useState\(\(\) => crypto\.randomUUID\(\)\)/.test(FORM), "key generated once per mounted form, not per render");
+test("cancel form posts one idempotency key per form instance (created once after mount, hidden input)", () => {
+  // Generated in a mount-only effect, not during render, so server and client HTML match (no hydration mismatch).
+  assert.ok(/useEffect\(\(\) => setIdempotencyKey\(crypto\.randomUUID\(\)\), \[\]\)/.test(FORM), "key generated once per mounted form, not per render");
   assert.ok(/<input type="hidden" name="idempotency_key" value=\{idempotencyKey\} \/>/.test(FORM));
   assert.ok(/name="reason"/.test(FORM), "reason input retained");
 });

@@ -246,7 +246,7 @@ export async function updateCompanyProfile(orgId: string, formData: FormData) {
     throw new Error(error.message);
   }
   if (!updated || updated.length === 0) {
-    throw new Error("Company not found, or you are not authorized to edit it. (If this persists, RUN_THIS_FOR_PLATFORM_COMPANY_MANAGEMENT.sql may not have been applied yet.)");
+    throw new Error("Company not found, or you are not authorized to edit it. (If this persists, migration 0046_platform_company_management may not have been applied yet.)");
   }
 
   await supabase.rpc("log_activity", {
@@ -295,7 +295,7 @@ export async function updateAdminProfile(userId: string, orgId: string, formData
     .select("id");
   if (error) throw new Error(error.message);
   if (!updated || updated.length === 0) {
-    throw new Error("Admin not found, or you are not authorized to edit it. (If this persists, RUN_THIS_FOR_PLATFORM_COMPANY_MANAGEMENT.sql may not have been applied yet.)");
+    throw new Error("Admin not found, or you are not authorized to edit it. (If this persists, migration 0046_platform_company_management may not have been applied yet.)");
   }
 
   await supabase.rpc("log_activity", {

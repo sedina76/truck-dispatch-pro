@@ -12,6 +12,20 @@ import { emptyToNull, toNumber } from "@/lib/utils/form";
 // spec section 7/8. Reuses the existing settlements/settlement_line_items
 // tables (0006, extended by 0033) -- not a competing table.
 // ---------------------------------------------------------------------------
+type PayableCarrierLoad = {
+  load_id: string;
+  dispatch_id: string;
+  load_number: string;
+  delivery_date: string | null;
+  miles: number | null;
+  customer_revenue: number | null;
+  carrier_rate: number | null;
+  pickup_city: string | null;
+  pickup_state: string | null;
+  delivery_city: string | null;
+  delivery_state: string | null;
+};
+
 export async function createCarrierSettlement(formData: FormData) {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const carrierId = String(formData.get("carrier_id") || "");
@@ -35,32 +49,39 @@ export async function createCarrierSettlement(formData: FormData) {
     .single();
   if (error) throw new Error(error.message);
 
-  const { data: payable } = await supabase.rpc("get_payable_carrier_loads", {
+  const { data: payable, error: payableError } = await supabase.rpc("get_payable_carrier_loads", {
     p_carrier_id: carrierId,
     p_period_start: periodStart,
     p_period_end: periodEnd,
   });
 
-  for (const row of payable ?? []) {
-    await supabase.from("settlement_line_items").insert({
-      organization_id: organizationId,
-      settlement_id: settlement.id,
-      item_type: "load_pay",
-      description: `Load ${row.load_number}`,
-      amount: row.carrier_rate,
-      load_id: row.load_id,
-      dispatch_id: row.dispatch_id,
-      load_number: row.load_number,
-      delivery_date: row.delivery_date,
-      miles: row.miles,
-      customer_revenue: row.customer_revenue,
-      carrier_rate: row.carrier_rate,
-      pay_basis: "dispatch_fee_snapshot",
-      pickup_city: row.pickup_city,
-      pickup_state: row.pickup_state,
-      delivery_city: row.delivery_city,
-      delivery_state: row.delivery_state,
-    });
+  // One insert for all loads (all-or-nothing). Previously each load was
+  // inserted separately with errors ignored, so a failed load silently
+  // went missing from the settlement and the carrier was underpaid.
+  const items = (payable ?? []).map((row: PayableCarrierLoad) => ({
+    organization_id: organizationId,
+    settlement_id: settlement.id,
+    item_type: "load_pay",
+    description: `Load ${row.load_number}`,
+    amount: row.carrier_rate,
+    load_id: row.load_id,
+    dispatch_id: row.dispatch_id,
+    load_number: row.load_number,
+    delivery_date: row.delivery_date,
+    miles: row.miles,
+    customer_revenue: row.customer_revenue,
+    carrier_rate: row.carrier_rate,
+    pay_basis: "dispatch_fee_snapshot",
+    pickup_city: row.pickup_city,
+    pickup_state: row.pickup_state,
+    delivery_city: row.delivery_city,
+    delivery_state: row.delivery_state,
+  }));
+  const itemsError = payableError ?? (items.length ? (await supabase.from("settlement_line_items").insert(items)).error : null);
+  if (itemsError) {
+    // Never leave a half-built settlement behind: void it (no delete policy; voiding keeps the audit trail).
+    await supabase.rpc("void_carrier_settlement", { p_settlement_id: settlement.id, p_reason: "Could not add the payable loads; created again after the error was fixed." });
+    throw new Error(`Could not add the payable loads to this settlement: ${itemsError.message}`);
   }
 
   await supabase.rpc("log_activity", { p_entity_type: "settlement", p_entity_id: settlement.id, p_action: "created", p_changes: null, p_organization_id: organizationId });

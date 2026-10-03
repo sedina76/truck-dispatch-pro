@@ -54,6 +54,9 @@ export function NewCarrierInvoiceForm({ carriers }: { carriers: BillableCarrier[
       const p = await previewCarrierInvoiceIssuance({ carrierId, loadIds: selected, recipientType: recipient.type, recipientId: recipient.id });
       setPreview(p);
       if (!(p.success === true && p.eligible === true)) setError({ code: String(p.code ?? "UNKNOWN"), message: issuanceMessage(p) });
+    } catch {
+      // Network drop, deploy, or maintenance window: say so instead of failing silently.
+      setError({ code: "TRANSPORT", message: "We couldn't reach the server. Check your connection, then refresh to see whether it went through before trying again." });
     } finally {
       setBusy(false);
     }
@@ -71,6 +74,9 @@ export function NewCarrierInvoiceForm({ carriers }: { carriers: BillableCarrier[
       } else {
         setError({ code: outcome.code, message: outcome.error });
       }
+    } catch {
+      // Network drop, deploy, or maintenance window: say so instead of failing silently.
+      setError({ code: "TRANSPORT", message: "We couldn't reach the server. Check your connection, then refresh to see whether it went through before trying again." });
     } finally {
       guard.current.inFlight = false;
       setBusy(false);

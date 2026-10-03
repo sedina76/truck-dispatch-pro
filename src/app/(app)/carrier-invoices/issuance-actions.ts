@@ -3,6 +3,7 @@
 import { isCarrierInvoicePilotOperator } from "@/lib/factoring/carrier-invoice-issuance";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { ensureCarrierPartyLink } from "@/lib/carrier-invoices/party-link";
 import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import {
   ISSUANCE_GENERIC_FAILURE,
@@ -37,6 +38,7 @@ function refresh(...invoiceIds: Array<string | undefined>) {
   for (const id of invoiceIds) if (id) revalidatePath(`/carrier-invoices/${id}`);
   revalidatePath("/carrier-invoices");
   revalidatePath("/carrier-invoices/new");
+  revalidatePath("/invoices");
 }
 
 export type BillableCarrier = { id: string; name: string };
@@ -55,7 +57,16 @@ export async function listBillableLoads(carrierId: string): Promise<BillableLoad
   const { supabase, user } = await authed();
   if (!user) return [];
   const { data } = await supabase.from("loads").select("id, load_number, status, broker_id, customer_id").eq("carrier_id", carrierId).in("status", ["delivered", "pod_received"]).order("load_number").limit(200);
-  return (data ?? []).map((l) => ({ id: String(l.id), loadNumber: String(l.load_number), status: String(l.status), brokerId: l.broker_id ? String(l.broker_id) : null, customerId: l.customer_id ? String(l.customer_id) : null }));
+  // Only "broker pays the carrier" loads go on the carrier's own invoice
+  // (0167/0168); "broker pays us" loads are invoiced to the broker by you.
+  const ids = (data ?? []).map((l) => String(l.id));
+  const { data: live } = ids.length
+    ? await supabase.from("dispatches").select("load_id, proceeds_model").in("load_id", ids).neq("status", "cancelled")
+    : { data: [] as { load_id: string; proceeds_model: string | null }[] };
+  const carrierPaid = new Set((live ?? []).filter((d) => d.proceeds_model === "carrier_paid_directly").map((d) => String(d.load_id)));
+  return (data ?? [])
+    .filter((l) => carrierPaid.has(String(l.id)))
+    .map((l) => ({ id: String(l.id), loadNumber: String(l.load_number), status: String(l.status), brokerId: l.broker_id ? String(l.broker_id) : null, customerId: l.customer_id ? String(l.customer_id) : null }));
 }
 
 export async function previewCarrierInvoiceIssuance(input: IssuanceInput): Promise<IssuancePreview> {
@@ -63,6 +74,8 @@ export async function previewCarrierInvoiceIssuance(input: IssuanceInput): Promi
   if (bad) return { success: false, eligible: false, code: bad };
   const { supabase, user } = await authed();
   if (!user) return { success: false, eligible: false, code: "FORBIDDEN" };
+  const linkProblem = await ensureCarrierPartyLink(supabase, input);
+  if (linkProblem) return { success: false, eligible: false, code: "RECIPIENT_SETUP", message: linkProblem };
   const { data, error } = await supabase.rpc("preview_carrier_invoice_issuance", { p_carrier_id: input.carrierId, p_load_ids: input.loadIds, p_recipient_type: input.recipientType, p_recipient_id: input.recipientId });
   if (error) return { success: false, eligible: false, code: "TRANSPORT", message: ISSUANCE_GENERIC_FAILURE };
   return (data ?? { success: false, eligible: false, code: "UNKNOWN" }) as IssuancePreview;
@@ -76,6 +89,8 @@ export async function createCarrierInvoiceDraft(input: IssuanceInput, idempotenc
   if (!user) return fail("FORBIDDEN", "Not authenticated.");
   const access = await checkOperationalAccess(); // D.2.11 SaaS paywall, as every operational mutation
   if (!access.ok) return fail("FORBIDDEN", "Your organization's subscription does not permit this action.");
+  const linkProblem = await ensureCarrierPartyLink(supabase, input);
+  if (linkProblem) return fail("RECIPIENT_SETUP", linkProblem);
   const { data, error } = await supabase.rpc("create_carrier_invoice_draft_from_loads", { p_carrier_id: input.carrierId, p_load_ids: input.loadIds, p_recipient_type: input.recipientType, p_recipient_id: input.recipientId, p_idempotency_key: idempotencyKey });
   const outcome = outcomeFromWorkflow(data as WorkflowResult | null, error);
   if (outcome.ok) refresh(outcome.invoiceId);
@@ -149,3 +164,4 @@ export async function reissueCarrierInvoice(invoiceId: string, expectedUpdatedAt
   if (outcome.ok) refresh(invoiceId, outcome.replacementInvoiceId);
   return outcome;
 }
+

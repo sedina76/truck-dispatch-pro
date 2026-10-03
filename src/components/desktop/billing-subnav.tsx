@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useOrgRole } from "@/components/auth/role-context";
+import { hrefAllowedForRole } from "@/lib/auth/billing-access";
 
 // Phase 2G.5: the Billing workspace's own internal navigation, so a user
 // inside any financial page never needs the main sidebar to move between
@@ -21,10 +23,12 @@ import { cn } from "@/lib/utils";
 // is party/AR-focused (open balance, period activity, aging) -- it is the
 // same financial workspace, not a separate module, and omitting a real,
 // already-built page here would just hide it instead of organizing it.
-const BILLING_TABS = [
+const BILLING_TABS: { label: string; href: string; alsoActiveFor?: string[] }[] = [
   { label: "Overview", href: "/billing" },
   { label: "Ready to Bill", href: "/billing/ready-to-bill" },
-  { label: "Invoices", href: "/invoices" },
+  // Every invoice to a broker: yours, and the carrier's own invoice for
+  // "broker pays the carrier" loads (opened at /carrier-invoices/<id>).
+  { label: "Invoices", href: "/invoices", alsoActiveFor: ["/carrier-invoices"] },
   { label: "Payments", href: "/payments" },
   { label: "Accounts Receivable", href: "/accounts-receivable" },
   { label: "Collections", href: "/collections" },
@@ -33,6 +37,7 @@ const BILLING_TABS = [
 
 export function BillingSubnav() {
   const pathname = usePathname();
+  const role = useOrgRole();
   return (
     // Phase 2G.6: `overflow-x-auto` + `shrink-0` on every tab -- at phone
     // widths 7 tabs don't fit, and the instruction was explicit not to
@@ -41,8 +46,8 @@ export function BillingSubnav() {
     // variant needed (a scrollable single row reads clearly enough down
     // to 390px -- verified via screenshot).
     <div className="flex h-7 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-desktop-border bg-desktop-bg px-1.5 pt-1">
-      {BILLING_TABS.map((tab) => {
-        const active = tab.href === "/billing" ? pathname === "/billing" : pathname.startsWith(tab.href);
+      {BILLING_TABS.filter((tab) => hrefAllowedForRole(tab.href, role)).map((tab) => {
+        const active = tab.href === "/billing" ? pathname === "/billing" : [tab.href, ...(tab.alsoActiveFor ?? [])].some((p) => pathname.startsWith(p));
         return (
           <Link
             key={tab.href}

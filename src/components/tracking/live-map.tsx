@@ -88,6 +88,19 @@ const STATUS_LABEL: Record<string, string> = {
   cancelled: "Cancelled",
 };
 
+// Popup content is built as an HTML string, so every user-entered value
+// (driver name, truck unit, load number, raw status) must be escaped.
+// Otherwise a value like `<img src=x onerror=...>` would run as script in
+// every dispatcher's browser that opens the Tracking map.
+export function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function popupHtml(marker: DriverMarker) {
   const minutesAgo = Math.round((Date.now() - new Date(marker.recordedAt).getTime()) / 60_000);
   const agoLabel = minutesAgo <= 0 ? "just now" : minutesAgo < 60 ? `${minutesAgo}m ago` : `${Math.round(minutesAgo / 60)}h ago`;
@@ -97,16 +110,16 @@ function popupHtml(marker: DriverMarker) {
 
   return `
     <div style="font: 500 12px Inter, sans-serif; min-width: 170px;">
-      <div style="font-weight:600; margin-bottom:2px;">${marker.driverName}</div>
-      ${marker.truckUnit ? `<div>Truck ${marker.truckUnit}</div>` : ""}
-      ${marker.loadNumber ? `<div style="margin-top:4px;font-weight:600;">${marker.loadNumber}</div>` : "<div style='margin-top:4px;'>No active dispatch</div>"}
-      ${statusLabel ? `<div>${statusLabel}</div>` : ""}
+      <div style="font-weight:600; margin-bottom:2px;">${escapeHtml(marker.driverName)}</div>
+      ${marker.truckUnit ? `<div>Truck ${escapeHtml(marker.truckUnit)}</div>` : ""}
+      ${marker.loadNumber ? `<div style="margin-top:4px;font-weight:600;">${escapeHtml(marker.loadNumber)}</div>` : "<div style='margin-top:4px;'>No active dispatch</div>"}
+      ${statusLabel ? `<div>${escapeHtml(statusLabel)}</div>` : ""}
       <div style="margin-top:4px;">Speed: ${speedLabel}</div>
       <div>Accuracy: ${accuracyLabel}</div>
       <div style="color:#94a3b8; margin-top:2px;">Last update: ${agoLabel}</div>
       ${
         marker.dispatchId
-          ? `<a href="/dispatch/${marker.dispatchId}" style="display:inline-block;margin-top:6px;font-weight:600;color:#2f5be0;text-decoration:none;">Open Dispatch &rarr;</a>`
+          ? `<a href="/dispatch/${encodeURIComponent(marker.dispatchId)}" style="display:inline-block;margin-top:6px;font-weight:600;color:#2f5be0;text-decoration:none;">Open Dispatch &rarr;</a>`
           : ""
       }
     </div>

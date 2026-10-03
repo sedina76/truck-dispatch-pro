@@ -15,6 +15,12 @@ export async function middleware(request: NextRequest) {
   return updateSession(request);
 }
 
+// Every path EXCEPT Next's own immutable build files (/_next/static/...) and
+// the favicon: those are served straight from the CDN, never accept writes,
+// and running edge middleware on each one only adds latency and cost to
+// every page load. Everything else -- pages, APIs, server actions, the image
+// optimizer, image-suffixed app URLs like /carrier-onboarding/<token>.png --
+// still reaches the maintenance gate.
 export const config = {
-  matcher: ["/:path*"],
+  matcher: ["/((?!_next/static/|favicon\\.ico$).*)"],
 };

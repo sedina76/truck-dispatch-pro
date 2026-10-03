@@ -38,6 +38,10 @@ test("the reassign caller routes RRIDK through rpcDispatchConflict (fixed messag
   const dispatch = readFileSync(new URL("../../app/(app)/dispatch/actions.ts", import.meta.url), "utf8");
   assert.match(dispatch, /const conflict = rpcDispatchConflict\(resourceError\);\s*throw conflict \? new DispatchConflictError\(conflict\.message/);
   const fact = readFileSync(new URL("../../app/(app)/settings/factoring/actions.ts", import.meta.url), "utf8");
-  assert.match(fact, /return resolveStructuredRpcResult\(data, error\);/);
-  assert.match(fact, /error: \{ message: string; code\?: string \| null \}/);
+  // The factoring settings actions hand the RAW Supabase error (which carries
+  // .code) straight to resolveStructuredRpcResult, so FPIDK reaches the
+  // fixed-message mapping in rpc-result.ts.
+  assert.match(fact, /resolveStructuredRpcResult\(data as StructuredRpcResult \| null, error\)/);
+  const rpc = readFileSync(new URL("../factoring/rpc-result.ts", import.meta.url), "utf8");
+  assert.match(rpc, /error\.code === "FPIDK" \? FPIDK_MESSAGE : error\.message/);
 });

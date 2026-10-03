@@ -10,7 +10,7 @@ import { getLatestDocument } from "@/lib/documents/latest-document";
 import { resolveOrgName } from "@/lib/email/resolve-entity";
 import { sendTenantEmail } from "@/lib/email/send-pipeline";
 import { resolveEmailAuthorizationContext } from "@/lib/email/authorization";
-import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRole, BILLING_ROLES } from "@/lib/auth/require-role";
 
 const SUPPORTING_DOC_TYPES = ["rate_confirmation", "bol", "lumper_receipt", "detention_document", "scale_ticket", "other"];
 
@@ -133,7 +133,7 @@ export async function generatePacket(invoiceId: string): Promise<GeneratePacketR
 // signed URL to it, regardless of role. Same class of gap as
 // getPodSignedUrl before getFinancialDocumentSignedUrl was added.
 export async function getBillingPacketSignedUrl(storagePath: string, download: boolean): Promise<string> {
-  await requireRole(FINANCIAL_ROLES);
+  await requireRole(BILLING_ROLES);
   const supabase = await createClient();
   const { data, error } = await supabase.storage
     .from("billing-packets")

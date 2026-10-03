@@ -1,106 +1,115 @@
 import "server-only";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { createClient } from "@/lib/supabase/server";
+import { renderInvoicePdf, type InvoiceSource } from "@/lib/documents/branded-pdf";
+import { formatStopDateTime } from "@/lib/timezone/format";
+import { resolveStopTimezone } from "@/lib/timezone/resolve";
 
-const PAGE_WIDTH = 612; // US Letter, points
-const PAGE_HEIGHT = 792;
-const MARGIN = 54;
+type Supabase = Awaited<ReturnType<typeof createClient>>;
+type InvoiceRow = InvoiceSource["invoice"] & { organization_id: string; load_id: string | null; dispatch_id: string | null };
 
-// Standalone, single-page invoice PDF -- used as the email attachment ONLY
-// for the "no billing packet generated yet" case (/api/email/resolve's
-// invoice case already allows sending then, per its own comment: "the
-// plain invoice PDF is still sendable as long as the invoice itself isn't
-// blocked by POD readiness"). Once a billing packet exists, that stored
-// PDF is attached instead (src/lib/billing-packet/generate.ts) -- this
-// function is never used to bypass or duplicate the packet.
+const ORG_COLUMNS_FULL =
+  "name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code, timezone, mailing_address_line1, mailing_city, mailing_state, mailing_postal_code, remittance_instructions, invoice_footer";
+const ORG_COLUMNS_BASIC = "name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code, timezone";
+
+// Factoring submissions that no longer bind the invoice to the factor.
+const INACTIVE_FACTORING_STATUSES = ["rejected", "cancelled"];
+
+// Gathers everything the branded invoice layout needs, through the caller's
+// own RLS-scoped session. Shared by the standalone invoice PDF (below) and
+// the invoice page inside the billing packet, so the two can never drift
+// apart. Optional pieces (factoring, driver/truck) degrade to "not shown"
+// if the session can't read them -- they never block the invoice.
+export async function loadInvoiceSource(supabase: Supabase, invoice: InvoiceRow, invoiceId: string): Promise<InvoiceSource & { orgTimezone: string | null }> {
+  const fetchOrg = async () => {
+    const full = await supabase.from("organizations").select(ORG_COLUMNS_FULL).eq("id", invoice.organization_id).single();
+    if (!full.error) return full.data as Record<string, string | null>;
+    const basic = await supabase.from("organizations").select(ORG_COLUMNS_BASIC).eq("id", invoice.organization_id).single();
+    return (basic.data ?? null) as Record<string, string | null> | null;
+  };
+
+  const [org, { data: lineItems }, loadRes, dispatchRes, factoredRes] = await Promise.all([
+    fetchOrg(),
+    supabase.from("invoice_line_items").select("description, quantity, unit_price, line_total").eq("invoice_id", invoiceId).order("sort_order"),
+    invoice.load_id
+      ? supabase
+          .from("loads")
+          .select(
+            "load_number, total_miles, equipment_type, weight_lbs, rate_confirmation_number, load_stops(stop_type, stop_sequence, facility_name, city, state, scheduled_at, timezone, reference_number)"
+          )
+          .eq("id", invoice.load_id)
+          .single()
+      : Promise.resolve({ data: null }),
+    invoice.dispatch_id
+      ? supabase.from("dispatches").select("drivers(first_name, last_name), trucks(unit_number)").eq("id", invoice.dispatch_id).single()
+      : Promise.resolve({ data: null }),
+    supabase
+      .from("factored_invoices")
+      .select("status, created_at, factoring_relationships(remittance_instructions), factoring_companies(name, phone, email, address_line1, city, state, postal_code)")
+      .eq("invoice_id", invoiceId)
+      .not("status", "in", `(${INACTIVE_FACTORING_STATUSES.join(",")})`)
+      .order("created_at", { ascending: false })
+      .limit(1),
+  ]);
+
+  const load = loadRes.data as unknown as {
+    load_number: string;
+    total_miles: number | null;
+    equipment_type: string | null;
+    weight_lbs: number | null;
+    rate_confirmation_number: string | null;
+    load_stops: NonNullable<NonNullable<InvoiceSource["load"]>["stops"]>;
+  } | null;
+  const dispatchInfo = dispatchRes.data as unknown as { drivers: { first_name: string; last_name: string } | null; trucks: { unit_number: string } | null } | null;
+  const factored = ((factoredRes.data ?? []) as unknown as {
+    factoring_relationships: { remittance_instructions: string | null } | null;
+    factoring_companies: { name: string; phone: string | null; email: string | null; address_line1: string | null; city: string | null; state: string | null; postal_code: string | null } | null;
+  }[])[0];
+  const company = factored?.factoring_companies ?? null;
+
+  const orgTimezone = org?.timezone ?? null;
+  return {
+    invoice,
+    org,
+    orgTimezone,
+    lineItems: lineItems ?? [],
+    load: load ? { ...load, stops: load.load_stops ?? [] } : null,
+    driverName: dispatchInfo?.drivers ? `${dispatchInfo.drivers.first_name} ${dispatchInfo.drivers.last_name}`.trim() : null,
+    truckUnit: dispatchInfo?.trucks?.unit_number ?? null,
+    factoring: company
+      ? {
+          companyName: company.name,
+          remittanceInstructions: factored?.factoring_relationships?.remittance_instructions ?? null,
+          address: [company.address_line1, [company.city, company.state].filter(Boolean).join(", "), company.postal_code].filter(Boolean).join("\n") || null,
+          phone: company.phone,
+          email: company.email,
+        }
+      : null,
+    formatStopTime: (iso, tz) => {
+      const zone = resolveStopTimezone(tz, orgTimezone).timezone;
+      // A stop saved with a date but no appointment time is stored as local
+      // midnight -- print just the date instead of a misleading "12:00 AM".
+      const time = formatStopDateTime(iso, zone, { timeOnly: true });
+      return time.replace(/\s/g, " ").startsWith("12:00 AM")
+        ? formatStopDateTime(iso, zone, { dateOnly: true, includeYear: true })
+        : formatStopDateTime(iso, zone, { includeYear: true });
+    },
+  };
+}
+
+// Standalone invoice PDF -- used as the email attachment ONLY for the "no
+// billing packet generated yet" case (/api/email/resolve's invoice case
+// already allows sending then: "the plain invoice PDF is still sendable as
+// long as the invoice itself isn't blocked by POD readiness"). Once a
+// billing packet exists, that stored PDF is attached instead
+// (src/lib/billing-packet/generate.ts) -- this function is never used to
+// bypass or duplicate the packet.
 //
-// Same field set/layout as the invoice page drawn inside
-// generateBillingPacket() (org header, bill-to, line items, totals) --
-// deliberately not "a different invoice PDF", just the same content
-// available standalone before a packet is generated.
+// Same layout as the invoice page inside generateBillingPacket(): both draw
+// through src/lib/documents/branded-pdf.ts.
 export async function renderInvoiceOnlyPdf(invoiceId: string): Promise<Uint8Array> {
   const supabase = await createClient();
   const { data: invoice, error } = await supabase.from("invoices").select("*").eq("id", invoiceId).single();
   if (error || !invoice) throw new Error("Invoice not found.");
 
-  const [{ data: org }, { data: lineItems }, loadRes] = await Promise.all([
-    supabase
-      .from("organizations")
-      .select("name, mc_number, dot_number, business_phone, business_email, address_line1, city, state, postal_code")
-      .eq("id", invoice.organization_id)
-      .single(),
-    supabase.from("invoice_line_items").select("*").eq("invoice_id", invoiceId).order("sort_order"),
-    invoice.load_id ? supabase.from("loads").select("load_number, total_miles").eq("id", invoice.load_id).single() : Promise.resolve({ data: null }),
-  ]);
-  const load = loadRes.data as unknown as { load_number: string; total_miles: number | null } | null;
-
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  let y = PAGE_HEIGHT - MARGIN;
-
-  page.drawText("INVOICE", { x: MARGIN, y, size: 20, font: bold });
-  page.drawText(invoice.invoice_number, { x: PAGE_WIDTH - MARGIN - 140, y, size: 12, font: bold });
-  y -= 26;
-  page.drawText(org?.name ?? "Your Company", { x: MARGIN, y, size: 11, font: bold });
-  y -= 13;
-  const orgLine = [org?.address_line1, [org?.city, org?.state, org?.postal_code].filter(Boolean).join(", ")].filter(Boolean).join(" -- ");
-  if (orgLine) {
-    page.drawText(orgLine, { x: MARGIN, y, size: 8.5, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  const orgContact = [org?.business_phone, org?.business_email].filter(Boolean).join("  |  ");
-  if (orgContact) {
-    page.drawText(orgContact, { x: MARGIN, y, size: 8.5, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  y -= 16;
-
-  page.drawText("Bill To:", { x: MARGIN, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-  page.drawText("Invoice Date:", { x: 380, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-  page.drawText(new Date(invoice.issue_date + "T00:00:00").toLocaleDateString(), { x: 470, y, size: 9, font: bold });
-  y -= 14;
-  page.drawText(invoice.bill_to_name, { x: MARGIN, y, size: 11, font: bold });
-  page.drawText("Due Date:", { x: 380, y, size: 9, font, color: rgb(0.5, 0.5, 0.5) });
-  page.drawText(invoice.due_date ? new Date(invoice.due_date + "T00:00:00").toLocaleDateString() : "--", { x: 470, y, size: 9, font: bold });
-  y -= 14;
-  if (load?.load_number) {
-    page.drawText(`Load ${load.load_number}`, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-    y -= 12;
-  }
-  y -= 16;
-
-  page.drawText("Description", { x: MARGIN, y, size: 9, font: bold });
-  page.drawText("Qty", { x: 360, y, size: 9, font: bold });
-  page.drawText("Unit Price", { x: 420, y, size: 9, font: bold });
-  page.drawText("Amount", { x: 500, y, size: 9, font: bold });
-  y -= 6;
-  page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
-  y -= 14;
-  for (const li of lineItems ?? []) {
-    page.drawText(String(li.description), { x: MARGIN, y, size: 9, font });
-    page.drawText(String(Number(li.quantity)), { x: 360, y, size: 9, font });
-    page.drawText(`$${Number(li.unit_price).toLocaleString()}`, { x: 420, y, size: 9, font });
-    page.drawText(`$${Number(li.line_total).toLocaleString()}`, { x: 500, y, size: 9, font });
-    y -= 16;
-  }
-
-  y -= 8;
-  page.drawLine({ start: { x: 380, y: y + 10 }, end: { x: PAGE_WIDTH - MARGIN, y: y + 10 }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
-  page.drawText("Subtotal", { x: 380, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
-  page.drawText(`$${Number(invoice.subtotal_amount).toLocaleString()}`, { x: 500, y, size: 10, font });
-  y -= 16;
-  page.drawText("TOTAL DUE", { x: 380, y, size: 12, font: bold });
-  page.drawText(`$${Number(invoice.total_amount).toLocaleString()}`, { x: 500, y, size: 12, font: bold });
-  y -= 16;
-  page.drawText("Balance Due", { x: 380, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
-  page.drawText(`$${Number(invoice.balance_due).toLocaleString()}`, { x: 500, y, size: 10, font: bold });
-
-  if (load?.total_miles) {
-    y -= 30;
-    page.drawText(`Miles: ${Number(load.total_miles).toLocaleString()}`, { x: MARGIN, y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-  }
-
-  return pdf.save();
+  return renderInvoicePdf(await loadInvoiceSource(supabase, invoice as InvoiceRow, invoiceId));
 }

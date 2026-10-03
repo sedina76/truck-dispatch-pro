@@ -9,6 +9,9 @@ import { updateCarrier } from "../actions";
 import { CarrierSettlementSummarySection } from "@/components/carriers/carrier-settlement-summary-section";
 import { CarrierCompanyProfitabilitySection } from "@/components/carriers/carrier-company-profitability-section";
 import { CarrierExpenseSummarySection } from "@/components/carriers/carrier-expense-summary-section";
+import { BrokerPaysSection } from "@/components/carriers/broker-pays-section";
+import { CarrierBrokersSection, type CarrierBrokerRow } from "@/components/carriers/carrier-brokers-section";
+import { BillingSetupChecklist, type FactorStatus } from "@/components/carriers/billing-setup-checklist";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
 import { ComplianceTab } from "@/components/carrier-compliance/compliance-tab";
 import { CarrierDocumentsSection, type CarrierDocumentRow } from "@/components/carriers/carrier-documents-section";
@@ -23,10 +26,10 @@ export default async function CarrierDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; bp_saved?: string; bp_error?: string }>;
 }) {
   const { id } = await params;
-  const { tab } = await searchParams;
+  const { tab, bp_saved, bp_error } = await searchParams;
   const supabase = await createClient();
 
   const { data: roleData } = await supabase.rpc("current_role");
@@ -73,6 +76,25 @@ export default async function CarrierDetailPage({
     .eq("entity_type", "carrier")
     .eq("entity_id", id)
     .order("created_at", { ascending: false });
+
+  // "Broker pays the carrier" carriers: where their own invoices go, per broker.
+  const brokerPaysCarrier = (carrier as { load_proceeds_model?: string | null }).load_proceeds_model === "carrier_paid_directly";
+  const [{ data: carrierBrokersRaw }, { data: allBrokers }, { data: defaultRelationship }] = canSeeFinancials && brokerPaysCarrier
+    ? await Promise.all([
+        supabase.from("carrier_brokers").select("broker_id, status, billing_email, payment_terms_days, factoring_eligible, brokers(company_name)").eq("carrier_id", id),
+        supabase.from("brokers").select("id, company_name, email").order("company_name").limit(500),
+        supabase.from("factoring_relationships").select("noa_approved, submission_method, factoring_companies(name, legal_name)").eq("carrier_id", id).eq("is_default", true).eq("is_active", true).limit(1).maybeSingle(),
+      ])
+    : [{ data: [] }, { data: [] }, { data: null }];
+  const rel = defaultRelationship as unknown as { noa_approved: boolean | null; submission_method: string | null; factoring_companies: { name: string | null; legal_name: string | null } | null } | null;
+  const factorStatus: FactorStatus = {
+    mode: (carrier as { factoring_mode?: string | null }).factoring_mode ?? null,
+    factorName: rel?.factoring_companies?.legal_name || rel?.factoring_companies?.name || null,
+    noaApproved: !!rel?.noa_approved,
+    submissionMethod: rel?.submission_method ?? null,
+  };
+  const carrierBrokerRows: CarrierBrokerRow[] = ((carrierBrokersRaw ?? []) as unknown as { broker_id: string; status: string; billing_email: string | null; payment_terms_days: number | null; factoring_eligible: boolean; brokers: { company_name: string } | null }[])
+    .map((r) => ({ broker_id: r.broker_id, broker_name: r.brokers?.company_name ?? "--", status: r.status, billing_email: r.billing_email, payment_terms_days: r.payment_terms_days, factoring_eligible: r.factoring_eligible }));
 
   const pendingAdvanceTotal = (pendingAdvances ?? []).reduce((sum, a) => sum + Number(a.amount), 0);
 
@@ -143,10 +165,47 @@ export default async function CarrierDetailPage({
                 type="number"
                 defaultValue={carrierFinancials?.payment_terms_days}
               />
+              <FormField
+                label="Invoice code (prefix of the carrier's invoice numbers, e.g. RRT)"
+                name="invoice_code"
+                defaultValue={(carrier as { invoice_code?: string | null }).invoice_code ?? ""}
+                placeholder="A-Z, 0-9 and -, up to 16"
+              />
             </>
           )}
         </FormGrid>
       </FormCard>
+
+      {canSeeFinancials && (
+        <BrokerPaysSection
+          carrierId={id}
+          value={(carrier as { load_proceeds_model?: string | null }).load_proceeds_model ?? null}
+          canEdit={!!role && OWNER_ADMIN_ROLES.includes(role)}
+          sender={(carrier as { factor_package_sent_by?: string | null }).factor_package_sent_by ?? null}
+          canEditSender={!!role && (["owner", "admin", "accountant"] as OrgRole[]).includes(role)}
+          saved={bp_saved}
+          error={bp_error}
+        />
+      )}
+
+      {canSeeFinancials && brokerPaysCarrier && (
+        <BillingSetupChecklist
+          carrierId={id}
+          invoiceCode={(carrier as { invoice_code?: string | null }).invoice_code ?? null}
+          factor={factorStatus}
+          sender={(carrier as { factor_package_sent_by?: string | null }).factor_package_sent_by ?? null}
+          canEdit={!!role && OWNER_ADMIN_ROLES.includes(role)}
+        />
+      )}
+
+      {canSeeFinancials && brokerPaysCarrier && (
+        <CarrierBrokersSection
+          carrierId={id}
+          rows={carrierBrokerRows}
+          brokers={((allBrokers ?? []) as { id: string; company_name: string; email: string | null }[]).map((b) => ({ id: b.id, name: b.company_name, email: b.email }))}
+          canEdit={!!role && (["owner", "admin", "accountant"] as OrgRole[]).includes(role)}
+        />
+      )}
 
       {canSeeFinancials && <CarrierSettlementSummarySection carrierId={id} />}
 

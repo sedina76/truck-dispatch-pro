@@ -7,7 +7,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { computeStatementData, renderStatementPdf, type StatementKind, type StatementPartyType } from "@/lib/statements/generate";
-import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRole, BILLING_ROLES } from "@/lib/auth/require-role";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -100,7 +100,7 @@ export async function generateStatement(formData: FormData) {
 // document (open balance, aging, transaction history); this had no role
 // check.
 export async function getStatementSignedUrl(storagePath: string, download: boolean): Promise<string> {
-  await requireRole(FINANCIAL_ROLES);
+  await requireRole(BILLING_ROLES);
   const supabase = await createClient();
   const { data, error } = await supabase.storage.from("statements").createSignedUrl(storagePath, 300, download ? { download: true } : undefined);
   if (error || !data) throw new Error(error?.message ?? "Could not generate a document link.");

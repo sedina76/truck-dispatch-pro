@@ -191,7 +191,13 @@ test("middleware covers image-suffixed application URLs and preserves session ro
   const previous = process.env.MAINTENANCE_MODE;
   try {
     const middlewareModule = await import("data:text/javascript;base64," + Buffer.from(executable).toString("base64"));
-    assert.deepEqual(middlewareModule.config.matcher, ["/:path*"], "framework matcher covers every path");
+    // Framework matcher: everything except Next's immutable build files and the favicon.
+    const frameworkMatcher = new RegExp("^" + middlewareModule.config.matcher[0] + "$");
+    for (const p of ["/", "/login", "/api/example", "/_next/image", "/_next/staticx/token", "/favicon.ico/child",
+                     "/carrier-onboarding/token.png", "/driver-onboarding/token.svg", "/logo.png"])
+      assert.equal(frameworkMatcher.test(p), true, `matcher covers ${p}`);
+    for (const p of ["/_next/static/chunks/main.js", "/_next/static/css/app.css", "/favicon.ico"])
+      assert.equal(frameworkMatcher.test(p), false, `matcher skips immutable asset ${p}`);
     process.env.MAINTENANCE_MODE = "1";
     for (const p of ["/carrier-onboarding/token.png", "/driver-onboarding/token.svg", "/api/example.webp",
                      "/_next/staticx/token", "/_next/image", "/favicon.ico/child"]) {

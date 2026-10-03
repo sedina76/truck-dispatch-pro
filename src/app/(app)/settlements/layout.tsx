@@ -1,4 +1,4 @@
-import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRole, BILLING_ROLES } from "@/lib/auth/require-role";
 
 // Guards /settlements, /settlements/new, /settlements/[id], and
 // /settlements/[id]/pdf (a page.tsx print-view nested under this segment,
@@ -6,6 +6,6 @@ import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 // are exactly the "settlements belonging to others" the Financial Data
 // Rule says a driver must never see.
 export default async function SettlementsLayout({ children }: { children: React.ReactNode }) {
-  await requireRole(FINANCIAL_ROLES);
+  await requireRole(BILLING_ROLES);
   return <>{children}</>;
 }

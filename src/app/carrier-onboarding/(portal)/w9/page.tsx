@@ -2,6 +2,7 @@ import Link from "next/link";
 import { CheckCircle2, Download, Eye } from "lucide-react";
 import { createMyW9Draft, getMyW9 } from "../../actions";
 import { W9Form } from "./w9-form";
+import { RestartW9Button } from "./restart-w9-button";
 
 // Phase 2N.2 -- carrier onboarding W-9 step. NOT YET LIVE (depends on
 // migration 0099, not applied). Placed between Company and Equipment in
@@ -57,7 +58,8 @@ export default async function OnboardingW9Page() {
   if (w9.status === "failed") {
     return (
       <div className="rounded-md border border-warning/40 bg-warning/10 p-4 text-[13px] text-desktop-text">
-        We could not generate your W-9 document. Please contact your dispatch company to start a new one.
+        We could not generate your W-9 document. Start a new W-9 to try again.
+        <RestartW9Button />
       </div>
     );
   }

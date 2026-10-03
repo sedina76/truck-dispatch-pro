@@ -130,7 +130,7 @@ export function outcomeFromRpc(data: FactoringSubmitResult | null | undefined, e
   return { ok: true, submissionId: String(data.submission_id), status: String(data.status), replay: data.idempotent_replay === true };
 }
 
-const money = (v: number | string | undefined, cur = "USD") => (v === undefined ? "--" : `${cur} ${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const money = (v: number | string | null | undefined, cur = "USD") => (v === undefined || v === null ? "--" : `${cur} ${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
 /** The confirmation lines shown to the user: the server-resolved destination and terms, read-only. There is no picker and no editable field. */
 export function confirmationLines(p: FactoringPreview): Array<{ label: string; value: string }> {

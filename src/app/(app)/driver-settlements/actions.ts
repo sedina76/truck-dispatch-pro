@@ -43,6 +43,18 @@ export async function addDriverPayRate(driverId: string, formData: FormData) {
 // ---------------------------------------------------------------------------
 // Settlement creation / draft editing
 // ---------------------------------------------------------------------------
+type PayableDriverLoad = {
+  load_id: string;
+  dispatch_id: string;
+  load_number: string;
+  delivery_date: string | null;
+  miles: number | null;
+  load_rate: number | null;
+  pay_method: string | null;
+  pay_rate: number | null;
+  gross_pay: number | null;
+};
+
 export async function createDriverSettlement(formData: FormData) {
   await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
   const driverId = String(formData.get("driver_id") || "");
@@ -77,27 +89,33 @@ export async function createDriverSettlement(formData: FormData) {
   // (spec section 15: "System automatically finds eligible delivered loads
   // ... that have NOT already been settled"). Each insert re-validates
   // duplicate-protection itself (guard_driver_settlement_item_duplicate).
-  const { data: payable } = await supabase.rpc("get_payable_loads", {
+  const { data: payable, error: payableError } = await supabase.rpc("get_payable_loads", {
     p_driver_id: driverId,
     p_period_start: periodStart,
     p_period_end: periodEnd,
   });
 
-  for (const row of payable ?? []) {
-    await supabase.from("driver_settlement_items").insert({
-      organization_id: organizationId,
-      driver_settlement_id: settlement.id,
-      load_id: row.load_id,
-      dispatch_id: row.dispatch_id,
-      load_number: row.load_number,
-      delivery_date: row.delivery_date,
-      miles: row.miles,
-      load_rate: row.load_rate,
-      pay_method: row.pay_method,
-      pay_rate: row.pay_rate,
-      gross_pay: row.gross_pay,
-      created_by: user?.id ?? null,
-    });
+  // One insert for all loads (all-or-nothing) -- a failed load must never
+  // silently go missing from the driver's pay.
+  const items = (payable ?? []).map((row: PayableDriverLoad) => ({
+    organization_id: organizationId,
+    driver_settlement_id: settlement.id,
+    load_id: row.load_id,
+    dispatch_id: row.dispatch_id,
+    load_number: row.load_number,
+    delivery_date: row.delivery_date,
+    miles: row.miles,
+    load_rate: row.load_rate,
+    pay_method: row.pay_method,
+    pay_rate: row.pay_rate,
+    gross_pay: row.gross_pay,
+    created_by: user?.id ?? null,
+  }));
+  const itemsError = payableError ?? (items.length ? (await supabase.from("driver_settlement_items").insert(items)).error : null);
+  if (itemsError) {
+    // Never leave a half-built settlement behind: void it (no delete policy; voiding keeps the audit trail).
+    await supabase.rpc("void_driver_settlement", { p_settlement_id: settlement.id, p_reason: "Could not add the payable loads; created again after the error was fixed." });
+    throw new Error(`Could not add the payable loads to this settlement: ${itemsError.message}`);
   }
 
   revalidatePath("/driver-settlements");

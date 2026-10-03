@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { MessageSoundToggle } from "@/components/notify/message-sound-toggle";
+import { DesktopAlertToggle } from "@/components/notify/desktop-alert-toggle";
 
 // Persistent bottom status bar. "Connected Session" rather than
 // "Database: Live" -- a client component can't truthfully attest to
@@ -12,10 +14,12 @@ export function DesktopStatusBar({
   fullName,
   role,
   organizationName,
+  showMessageSound = false,
 }: {
   fullName: string;
   role: string;
   organizationName: string;
+  showMessageSound?: boolean;
 }) {
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-desktop-border bg-desktop-panel px-3 text-[11px] text-muted-foreground">
@@ -29,6 +33,14 @@ export function DesktopStatusBar({
       <Divider />
       <StatusItem label={`Organization: ${organizationName}`} />
       <div className="ml-auto flex items-center gap-3">
+        {showMessageSound && (
+          <>
+            <DesktopAlertToggle />
+            <Divider />
+            <MessageSoundToggle compact />
+            <Divider />
+          </>
+        )}
         <LiveClock />
       </div>
     </div>

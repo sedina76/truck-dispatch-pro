@@ -1,4 +1,4 @@
-import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { requireRole, BILLING_ROLES } from "@/lib/auth/require-role";
 
 // Guards the OFFICE driver-settlements module (/driver-settlements,
 // /driver-settlements/new, /driver-settlements/[id], and the nested
@@ -10,6 +10,6 @@ import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
 // per the Financial Data Rule; this office view is never the way, even
 // for a driver looking at only their own record.
 export default async function DriverSettlementsLayout({ children }: { children: React.ReactNode }) {
-  await requireRole(FINANCIAL_ROLES);
+  await requireRole(BILLING_ROLES);
   return <>{children}</>;
 }

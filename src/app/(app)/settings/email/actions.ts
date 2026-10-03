@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { addDomainDecision } from "@/lib/email/domain-setup";
 import { normalizeDomain, defaultSendingDomain, createResendDomain, checkResendDomainVerification, removeResendDomain } from "@/lib/email/domains";
 
 export type EmailActionResult = { ok: true } | { ok: false; error: string };
@@ -70,19 +71,48 @@ export async function addEmailDomain(formData: FormData): Promise<EmailActionRes
   // Global uniqueness is also DB-enforced (organization_email_domains_
   // sending_domain_key) -- this pre-check just gives a clean message
   // instead of a raw constraint-violation error.
-  const { data: existingGlobal } = await service.from("organization_email_domains").select("id, organization_id").eq("sending_domain", sendingDomain.domain).maybeSingle();
-  if (existingGlobal) {
-    return {
-      ok: false,
-      error: existingGlobal.organization_id === organizationId ? "This sending domain is already added to your organization." : "This sending domain is already in use by another account.",
-    };
-  }
+  const { data: existingGlobal } = await service
+    .from("organization_email_domains")
+    .select("id, organization_id, disabled_at")
+    .eq("sending_domain", sendingDomain.domain)
+    .maybeSingle();
+  const decision = addDomainDecision(existingGlobal, organizationId);
+  if (decision.action === "refuse") return { ok: false, error: decision.error };
 
   const created = await createResendDomain(sendingDomain.domain);
   if (!created.ok) return { ok: false, error: created.error };
 
-  const { count } = await service.from("organization_email_domains").select("id", { count: "exact", head: true }).eq("organization_id", organizationId);
-  const isFirstDomain = (count ?? 0) === 0;
+  const { count } = await service
+    .from("organization_email_domains")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", organizationId)
+    .eq("is_default", true)
+    .is("disabled_at", null);
+  const becomesDefault = (count ?? 0) === 0;
+
+  if (decision.action === "reactivate" && existingGlobal) {
+    // A previously REMOVED domain is being set up again: its row is kept
+    // for send history (and sending_domain is unique), so it is brought
+    // back with the provider's fresh registration and DNS records.
+    const { error: reError } = await service
+      .from("organization_email_domains")
+      .update({
+        domain: normalized.domain,
+        resend_domain_id: created.data.resendDomainId,
+        status: created.data.status,
+        sending_enabled: created.data.sendingEnabled,
+        dns_records: created.data.records,
+        verified_at: null,
+        disabled_at: null,
+        is_default: becomesDefault,
+      })
+      .eq("id", existingGlobal.id)
+      .eq("organization_id", organizationId);
+    if (reError) return { ok: false, error: "Domain was created with the provider but could not be saved. Contact support." };
+    await logEmailActivity(organizationId, "email_domain_added", { domain: normalized.domain, sending_domain: sendingDomain.domain, set_up_again: true });
+    revalidatePath("/settings/email");
+    return { ok: true };
+  }
 
   const { error: insertError } = await service.from("organization_email_domains").insert({
     organization_id: organizationId,
@@ -92,7 +122,7 @@ export async function addEmailDomain(formData: FormData): Promise<EmailActionRes
     status: created.data.status,
     sending_enabled: created.data.sendingEnabled,
     dns_records: created.data.records,
-    is_default: isFirstDomain,
+    is_default: becomesDefault,
     created_by: userId,
   });
   if (insertError) return { ok: false, error: "Domain was created with the provider but could not be saved. Contact support." };

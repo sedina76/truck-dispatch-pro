@@ -26,6 +26,8 @@ import {
   ReceiptText,
   UserPlus,
 } from "lucide-react";
+import { useOrgRole } from "@/components/auth/role-context";
+import { hrefAllowedForRole } from "@/lib/auth/billing-access";
 import {
   CommandDialog,
   CommandInput,
@@ -56,6 +58,7 @@ const NAV_ITEMS = [
   { label: "Invoices", href: "/invoices", icon: Receipt },
   { label: "Payments", href: "/payments", icon: Wallet },
   { label: "Carrier Settlements", href: "/settlements", icon: HandCoins },
+  { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText },
   { label: "Advances", href: "/advances", icon: BadgeDollarSign },
   { label: "Expenses", href: "/expenses", icon: ReceiptText },
   { label: "Reports", href: "/reports", icon: BarChart3 },
@@ -76,6 +79,7 @@ const QUICK_CREATE = [
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
+  const role = useOrgRole();
   const router = useRouter();
 
   useEffect(() => {
@@ -107,7 +111,7 @@ export function CommandPalette() {
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
         <CommandGroup heading="Quick Create">
-          {QUICK_CREATE.map((item) => (
+          {QUICK_CREATE.filter((item) => hrefAllowedForRole(item.href, role)).map((item) => (
             <CommandItem key={item.href} onSelect={() => go(item.href)}>
               <Plus className="size-4 text-muted-foreground" />
               {item.label}
@@ -116,7 +120,7 @@ export function CommandPalette() {
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Go to">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => hrefAllowedForRole(item.href, role)).map((item) => (
             <CommandItem key={item.href} onSelect={() => go(item.href)}>
               <item.icon className="size-4 text-muted-foreground" />
               {item.label}

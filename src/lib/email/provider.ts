@@ -1,5 +1,6 @@
 import "server-only";
 import { Resend } from "resend";
+import { renderEmailHtml, type EmailLayout } from "@/lib/email/templates";
 
 // The ONE place that decides "is sending actually possible" and the ONE
 // place that actually talks to the email provider (Resend). Every send
@@ -60,6 +61,13 @@ export type SendTransactionalEmailArgs = {
    * PROVIDER, not just by this app's own ledger bookkeeping.
    */
   idempotencyKey?: string;
+  /**
+   * Optional branded call-to-action layout (src/lib/email/templates.ts):
+   * button, checklist, details box. When set, the HTML part is rendered
+   * from it instead of the plain-text wrapper; `text` is still sent as the
+   * plain-text part.
+   */
+  layout?: EmailLayout;
 };
 
 export type SendResult = { ok: true; providerMessageId: string | null } | { ok: false; error: string };
@@ -113,7 +121,7 @@ export async function sendTransactionalEmail(args: SendTransactionalEmailArgs): 
         replyTo,
         subject: args.subject,
         text: args.text,
-        html: buildHtml(args.organizationName, args.heading, args.text),
+        html: args.layout ? renderEmailHtml(args.organizationName, args.layout) : buildHtml(args.organizationName, args.heading, args.text),
         attachments: args.attachments?.map((a) => ({ filename: a.filename, content: Buffer.from(a.content) })),
       },
       args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : undefined

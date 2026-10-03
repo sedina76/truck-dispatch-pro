@@ -1,9 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { notifyOfficeOfDriverDocument } from "@/lib/notify/office-notify";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
+import { getLatestDocument } from "@/lib/documents/latest-document";
 import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
@@ -290,6 +292,14 @@ export async function uploadTripDocument(loadId: string, documentType: string, f
   });
   if (insertError) throw new Error(insertError.message);
 
+  // Tell the office (bell + chime). Best-effort, never fails the upload.
+  await notifyOfficeOfDriverDocument(supabase, {
+    organizationId: identity.organizationId,
+    loadId,
+    documentType,
+    driverName: `${identity.firstName ?? ""} ${identity.lastName ?? ""}`.trim() || null,
+  });
+
   revalidatePath("/driver-portal/documents");
   revalidatePath("/driver-portal/trip");
 }
@@ -555,6 +565,55 @@ export async function getMyUnreadMessageCount(): Promise<number> {
     return 0;
   }
   return count ?? 0;
+}
+
+// Same scope as getMyUnreadMessageCount() above, plus the newest unread
+// message's timestamp -- what the bottom nav needs to decide whether a
+// message is NEW since its last check (and chime), rather than just "there
+// are still unread messages".
+export async function getMyUnreadMessageStatus(): Promise<{ count: number; latestAt: string | null }> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return { count: 0, latestAt: null };
+
+  const { data, count, error } = await supabase
+    .from("dispatch_messages")
+    .select("created_at", { count: "exact" })
+    .eq("dispatch_id", dispatch.id)
+    .eq("sender_type", "staff")
+    .is("read_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) {
+    console.error("[driver-portal] unread message status failed:", error);
+    return { count: 0, latestAt: null };
+  }
+  return { count: count ?? 0, latestAt: (data ?? [])[0]?.created_at ?? null };
+}
+
+export type MyPortalAlerts = {
+  messages: { count: number; latestAt: string | null };
+  // The current trip's POD, when dispatch has rejected it and the driver
+  // hasn't uploaded a replacement yet ("most recent row wins", same rule
+  // as the Docs screen via getLatestDocument).
+  rejectedPod: { reason: string | null; rejectedAt: string } | null;
+};
+
+// One poll for the bottom nav: unread dispatch messages + a rejected POD.
+// Each drives its own sound (message chime vs. rejection alert).
+export async function getMyPortalAlerts(): Promise<MyPortalAlerts> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const dispatch = await getCurrentDispatch(supabase, identity.driverId);
+  if (!dispatch) return { messages: { count: 0, latestAt: null }, rejectedPod: null };
+
+  const [messages, pod] = await Promise.all([
+    getMyUnreadMessageStatus(),
+    getLatestDocument(supabase, "load", dispatch.load_id, "pod").catch(() => null),
+  ]);
+  const rejectedPod = pod && pod.rejected_at && !pod.is_verified ? { reason: pod.rejection_reason, rejectedAt: pod.rejected_at } : null;
+  return { messages, rejectedPod };
 }
 
 export async function markMyMessagesRead(dispatchId: string) {

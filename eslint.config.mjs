@@ -7,6 +7,12 @@ const compat = new FlatCompat({
 const eslintConfig = [
   { ignores: [".next/**", "out/**", "build/**", "next-env.d.ts"] },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
+  {
+    // scripts/*.js are plain CommonJS Node tools run directly by npm
+    // (predev/prestart/verify/kill-stale), not app code -- require() is correct there.
+    files: ["scripts/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ];
 
 export default eslintConfig;

@@ -16,11 +16,20 @@ export default async function NewCarrierInvoicePage() {
   if (role !== "owner" && role !== "admin" && role !== "dispatcher") redirect("/access-denied");
   const carriers = await listBillableCarriers();
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold">New carrier invoice</h1>
-      <p className="text-sm text-muted-foreground">
-        Select one carrier and its delivered loads. The system resolves whether the carrier is billed directly or factored, the recipient and the totals; the dispatch-service fee is a separate receivable.
-      </p>
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">New Carrier Invoice</h1>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Select one carrier and its delivered loads (one broker per invoice). The system resolves whether the carrier is billed directly or factored, the recipient and the totals; the dispatch-service fee is a separate receivable.
+        </p>
+      </div>
+      <div className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+        <p className="font-medium text-desktop-text">First invoice for a carrier?</p>
+        <p className="mt-0.5">
+          On the carrier&apos;s page, set &quot;Who does the broker pay?&quot; to <span className="font-medium">Broker pays the carrier</span>. Its{" "}
+          <span className="font-medium">Billing setup</span> box then shows what&apos;s left (usually just whether it factors). The invoice code and the broker&apos;s billing details are filled in automatically. Loads need a verified proof of delivery before the package can be sent.
+        </p>
+      </div>
       <NewCarrierInvoiceForm carriers={carriers} />
     </div>
   );

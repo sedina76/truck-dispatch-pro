@@ -4,7 +4,9 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { BillingSubnav } from "@/components/desktop/billing-subnav";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
+import { canUseBilling } from "@/lib/auth/billing-access";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
+import { carrierPaidLoadsToInvoice } from "@/lib/billing/carrier-paid-loads";
 
 // Phase 2G: the one real gap identified in an otherwise mature, already-
 // production invoicing/AR/collections system -- delivered loads awaiting
@@ -44,12 +46,42 @@ type ReadyRow = {
   ready_to_bill: boolean;
 };
 
-type Row = ReadyRow & { id: string };
+// carrierName set = "broker pays the carrier" load: its invoice is the carrier's.
+type Row = ReadyRow & { id: string; carrierName?: string | null };
 
 export default async function BillingReadyToBillPage() {
   const supabase = await createClient();
   const { data } = await supabase.rpc("get_ready_to_bill_loads");
-  const rows: Row[] = ((data ?? []) as ReadyRow[]).map((r) => ({ ...r, id: r.load_id }));
+  const { data: roleData } = await supabase.rpc("current_role");
+  // Dispatchers see what is ready; invoicing itself is owner/admin/accountant.
+  const canInvoice = canUseBilling(roleData as string | null);
+  // "Broker pays the carrier" loads (not in get_ready_to_bill_loads): same
+  // Create Invoice button, which makes the invoice in the carrier's name.
+  const carrierPaid = canInvoice ? await carrierPaidLoadsToInvoice(supabase) : [];
+  const rows: Row[] = [
+    ...((data ?? []) as ReadyRow[]).map((r) => ({ ...r, id: r.load_id })),
+    ...carrierPaid.map((l) => ({
+      id: l.loadId,
+      load_id: l.loadId,
+      load_number: l.loadNumber,
+      status: "delivered",
+      customer_name: null,
+      broker_name: l.billToName,
+      origin_city: l.origin,
+      origin_state: null,
+      destination_city: l.destination,
+      destination_state: null,
+      delivered_at: l.deliveredAt,
+      rate: l.rate,
+      has_verified_pod: l.hasVerifiedPod,
+      has_bol: true,
+      bol_required: false,
+      has_rate_confirmation: true,
+      rate_confirmation_required: false,
+      ready_to_bill: l.hasVerifiedPod,
+      carrierName: l.carrierName,
+    })),
+  ];
 
   const readyCount = rows.filter((r) => r.ready_to_bill).length;
   const notReadyCount = rows.length - readyCount;
@@ -59,14 +91,21 @@ export default async function BillingReadyToBillPage() {
     { header: "Load #", cell: (row) => <span className="font-medium">{row.load_number}</span> },
     {
       header: "Bill To",
-      cell: (row) => row.broker_name ?? row.customer_name ?? <span className="text-muted-foreground">--</span>,
+      cell: (row) => (
+        <span>
+          {row.broker_name ?? row.customer_name ?? <span className="text-muted-foreground">--</span>}
+          {row.carrierName !== undefined && (
+            <span className="block text-[10.5px] text-muted-foreground">Carrier&apos;s invoice{row.carrierName ? ` -- ${row.carrierName}` : ""}</span>
+          )}
+        </span>
+      ),
     },
     {
       header: "Route",
       cell: (row) =>
         row.origin_city && row.destination_city ? (
           <span className="tabular-nums">
-            {row.origin_city}, {row.origin_state} &rarr; {row.destination_city}, {row.destination_state}
+            {[row.origin_city, row.origin_state].filter(Boolean).join(", ")} &rarr; {[row.destination_city, row.destination_state].filter(Boolean).join(", ")}
           </span>
         ) : (
           "--"
@@ -108,13 +147,15 @@ export default async function BillingReadyToBillPage() {
     },
     {
       header: "Action",
-      cell: (row) => (
+      cell: (row) => canInvoice ? (
         <a
           href={`/invoices/new?load_id=${row.load_id}`}
           className="inline-flex h-6 items-center rounded-sm bg-primary px-2.5 text-[12px] font-medium text-primary-foreground hover:bg-primary-hover"
         >
           Create Invoice
         </a>
+      ) : (
+        <span className="text-[11.5px] text-muted-foreground">Billing team</span>
       ),
     },
   ];

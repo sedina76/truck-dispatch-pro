@@ -77,7 +77,7 @@ export function PaymentResponsibilityFields({
         <label htmlFor="recovery_type" className={labelClass}>Recovery</label>
         <select id="recovery_type" name="recovery_type" form={formId} disabled={disabled} value={recoveryType} onChange={(e) => setRecoveryType(e.target.value)} className={selectClass}>
           <option value="none">Company Expense -- No Recovery</option>
-          <option value="carrier_settlement">Recover From Carrier Settlement</option>
+          <option value="carrier_settlement">Recover From Carrier (Settlement or Dispatch Fee Invoice)</option>
           <option value="driver_settlement">Recover From Driver Settlement</option>
           <option value="carrier_direct">Paid Directly By Carrier -- No Company Expense</option>
           <option value="driver_direct">Paid Directly By Driver -- No Company Expense</option>

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getMyDispatchMessages } from "@/app/driver-portal/actions";
 import { MessageThread } from "@/components/driver-portal/message-thread";
+import { MessageSoundToggle } from "@/components/notify/message-sound-toggle";
 
 // Phase 2I.1 (Part B4) -- driver-facing conversation, scoped to the
 // driver's CURRENT dispatch (same "current trip" resolver every other
@@ -27,9 +28,12 @@ export default async function DriverPortalMessagesPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Messages</h1>
-        <p className="text-xs text-muted-foreground">{loadNumber}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Messages</h1>
+          <p className="text-xs text-muted-foreground">{loadNumber}</p>
+        </div>
+        <MessageSoundToggle className="min-h-11 rounded-lg px-2 text-xs text-muted-foreground" />
       </div>
       <MessageThread dispatchId={dispatchId} initialMessages={messages} initialHasMore={hasMore} />
     </div>

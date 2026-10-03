@@ -2,16 +2,16 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Star, Plus, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, Star, Plus, ChevronDown, ChevronRight, Check, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DocumentLinkButton } from "@/components/drivers/document-link-button";
-import { getCarrierDocumentSignedUrl } from "@/app/(app)/carriers/carrier-document-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import type { OrgRole } from "@/lib/auth/require-role";
-import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, VerifiedNoaDocument } from "@/lib/factoring/types";
-import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS, deriveEffectiveState } from "@/lib/factoring/types";
+import type { CarrierFactoringMode, CarrierFactoringReadiness, CarrierOption, FactoringCompanyRow, FactoringRelationshipRow, NoaDocumentOption } from "@/lib/factoring/types";
+import { FEE_TIMING_OPTIONS, RECOURSE_TYPE_OPTIONS, SUBMISSION_METHOD_OPTIONS, deriveEffectiveState } from "@/lib/factoring/types";
+import { relationshipReadinessSteps, canBecomeDefault, isFullyReady, type ReadinessStep } from "@/lib/factoring/readiness";
+import { defaultPolicyFilter, filterCarriers, policyCounts, type PolicyFilter } from "@/lib/factoring/carrier-policy-filter";
 import {
   createFactoringCompany,
   updateFactoringCompany,
@@ -22,6 +22,7 @@ import {
   setDefaultFactoringRelationship,
   setFactoringRelationshipActive,
   setCarrierFactoringPolicy,
+  updateFactoringRelationshipSetup,
   approveFactoringRelationshipNoa,
   type FactoringActionResult,
 } from "./actions";
@@ -63,21 +64,21 @@ function fmtPct(n: number) {
 export function FactoringSettingsClient({
   companies,
   relationships,
-  verifiedNoaDocuments,
   carriers,
   carrierScopingApplied,
   readinessByCarrierId,
   carrierUpdatedAtById,
   currentRole,
+  noaDocumentsByCarrierId = {},
 }: {
   companies: FactoringCompanyRow[];
   relationships: FactoringRelationshipRow[];
-  verifiedNoaDocuments: VerifiedNoaDocument[];
   carriers: CarrierOption[];
   carrierScopingApplied: boolean;
   readinessByCarrierId: Record<string, CarrierFactoringReadiness>;
   carrierUpdatedAtById: Record<string, string>;
   currentRole: OrgRole;
+  noaDocumentsByCarrierId?: Record<string, NoaDocumentOption[]>;
 }) {
   // Phase 3B.1.4 (Section A/H): "unauthorized mutation buttons are not
   // shown." Purely a display convenience -- every action below
@@ -177,13 +178,13 @@ export function FactoringSettingsClient({
         <ManageRelationshipsDialog
           company={manageCompany}
           relationships={relationshipsByCompany.get(manageCompany.id) ?? []}
-          verifiedNoaDocuments={verifiedNoaDocuments}
           carriers={carriers}
           carrierById={carrierById}
           onClose={() => setManageCompany(null)}
           onEditRelationship={(r) => setEditRelationship(r)}
           canManage={canManage}
           canEdit={canEdit}
+          noaDocumentsByCarrierId={noaDocumentsByCarrierId}
         />
       )}
       {editRelationship && (
@@ -229,17 +230,30 @@ function CarrierFactoringPolicyPanel({
 }) {
   const [showInactive, setShowInactive] = useState(false);
   const [policyCarrier, setPolicyCarrier] = useState<CarrierOption | null>(null);
+  const [filter, setFilter] = useState<PolicyFilter>(() => defaultPolicyFilter(carriers));
+  const [query, setQuery] = useState("");
 
-  const activeCarriers = carriers.filter((c) => c.is_active);
   const inactiveCarriers = carriers.filter((c) => !c.is_active);
-  const shown = showInactive ? carriers : activeCarriers;
+  const counts = policyCounts(carriers);
+  const shown = filterCarriers(carriers, filter, query, showInactive);
+  const tabs: { key: PolicyFilter; label: string; count: number }[] = [
+    { key: "needs_setup", label: "Needs setup", count: counts.needsSetup },
+    { key: "factored", label: "Factored", count: counts.factored },
+    { key: "direct", label: "Direct", count: counts.direct },
+    { key: "all", label: "All", count: counts.active },
+  ];
 
   return (
     <div className="rounded-md border border-desktop-border bg-card shadow-elevation-1">
       <div className="flex h-7 items-center justify-between rounded-t-md bg-desktop-header px-3 text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
         <span>Carrier Factoring Policy</span>
+        {carrierScopingApplied && carriers.length > 0 && (
+          <span className="font-normal normal-case tracking-normal">
+            {counts.factored} factored · {counts.direct} direct · {counts.needsSetup} need setup
+          </span>
+        )}
       </div>
-      <div className="p-4">
+      <div className="p-3">
         {!carrierScopingApplied ? (
           <p className="text-sm text-muted-foreground">Carrier-specific factoring policy is not available yet. This section will appear once the database migration is applied.</p>
         ) : carriers.length === 0 ? (
@@ -249,9 +263,39 @@ function CarrierFactoringPolicyPanel({
             <p className="text-xs text-muted-foreground">
               Every carrier starts <span className="font-medium text-foreground">Unconfigured</span> and blocks invoice issuance until an owner or admin explicitly sets Direct or Factored.
             </p>
-            <div className="overflow-x-auto rounded-md border border-desktop-border">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter carriers by policy">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={filter === tab.key}
+                    onClick={() => setFilter(tab.key)}
+                    className={
+                      filter === tab.key
+                        ? "h-7 rounded-sm border border-primary bg-primary/10 px-2.5 text-xs font-medium text-primary"
+                        : "h-7 rounded-sm border border-desktop-border px-2.5 text-xs text-muted-foreground hover:bg-desktop-muted"
+                    }
+                  >
+                    {tab.label} <span className="tabular-nums">({tab.count})</span>
+                  </button>
+                ))}
+              </div>
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search carriers"
+                aria-label="Search carriers"
+                className="ml-auto h-7 w-full max-w-[220px] rounded-sm border border-desktop-border bg-card px-2 text-xs outline-none focus-visible:border-primary"
+              />
+            </div>
+            {/* Fixed height: the list scrolls inside the panel (header stays),
+                so the page never grows with the number of carriers. */}
+            <div className="max-h-[296px] overflow-auto rounded-md border border-desktop-border">
               <table className="w-full text-[13px]">
-                <thead>
+                <thead className="sticky top-0 z-10">
                   <tr className="border-b border-desktop-border bg-desktop-header text-left text-[11px] font-semibold uppercase tracking-wide text-desktop-header-text">
                     <th className="px-3 py-2">Carrier</th>
                     <th className="px-3 py-2">Policy</th>
@@ -261,21 +305,28 @@ function CarrierFactoringPolicyPanel({
                   </tr>
                 </thead>
                 <tbody>
+                  {shown.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">
+                        {query ? "No carriers match your search." : filter === "needs_setup" ? "Every active carrier has a policy." : "No carriers in this view."}
+                      </td>
+                    </tr>
+                  )}
                   {shown.map((carrier) => {
                     const readiness = readinessByCarrierId[carrier.id];
                     const defaultRel = relationships.find((r) => r.carrier_id === carrier.id && r.is_default && r.is_active) ?? null;
                     const defaultCompany = defaultRel ? companyById.get(defaultRel.factoring_company_id) : null;
                     return (
                       <tr key={carrier.id} className="border-b border-desktop-border last:border-0">
-                        <td className="px-3 py-2 font-medium">
+                        <td className="px-3 py-1.5 font-medium">
                           {carrier.legal_name}
                           {!carrier.is_active && <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(Historical)</span>}
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-3 py-1.5">
                           <StatusBadge status={carrier.factoring_mode ?? "unconfigured"} />
                         </td>
-                        <td className="px-3 py-2">{readiness ? <StatusBadge status={readiness.classification} /> : <span className="text-xs text-muted-foreground">--</span>}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                        <td className="px-3 py-1.5">{readiness ? <StatusBadge status={readiness.classification} /> : <span className="text-xs text-muted-foreground">--</span>}</td>
+                        <td className="px-3 py-1.5 text-xs text-muted-foreground">
                           {defaultCompany ? (
                             <span className="text-foreground">
                               {defaultCompany.name}
@@ -285,7 +336,7 @@ function CarrierFactoringPolicyPanel({
                             "Not set"
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-1.5 text-right">
                           {canManage && carrier.is_active && (
                             <Button type="button" size="sm" variant="outline" onClick={() => setPolicyCarrier(carrier)}>
                               Change Policy
@@ -308,14 +359,41 @@ function CarrierFactoringPolicyPanel({
         )}
       </div>
       {policyCarrier && (
-        <ChangeCarrierPolicyDialog carrier={policyCarrier} expectedUpdatedAt={carrierUpdatedAtById[policyCarrier.id] ?? ""} onClose={() => setPolicyCarrier(null)} />
+        <ChangeCarrierPolicyDialog
+          carrier={policyCarrier}
+          expectedUpdatedAt={carrierUpdatedAtById[policyCarrier.id] ?? ""}
+          onClose={() => setPolicyCarrier(null)}
+          relationships={relationships.filter((r) => r.carrier_id === policyCarrier.id)}
+          companyById={companyById}
+        />
       )}
     </div>
   );
 }
 
-function ChangeCarrierPolicyDialog({ carrier, expectedUpdatedAt, onClose }: { carrier: CarrierOption; expectedUpdatedAt: string; onClose: () => void }) {
+function ChangeCarrierPolicyDialog({
+  carrier,
+  expectedUpdatedAt,
+  onClose,
+  relationships,
+  companyById,
+}: {
+  carrier: CarrierOption;
+  expectedUpdatedAt: string;
+  onClose: () => void;
+  relationships: FactoringRelationshipRow[];
+  companyById: Map<string, FactoringCompanyRow>;
+}) {
   const { run, pendingKey, error } = useAction();
+  const [mode, setMode] = useState<CarrierFactoringMode>(carrier.factoring_mode === "factored" ? "factored" : "direct");
+  // The relationship closest to ready: the default first, then active, then fewest gaps.
+  const scored = relationships.map((r) => {
+    const company = companyById.get(r.factoring_company_id);
+    const steps = relationshipReadinessSteps(r, Boolean(company?.is_active));
+    return { r, company, steps, gaps: steps.filter((s) => !s.done).length };
+  });
+  scored.sort((a, b) => Number(b.r.is_default) - Number(a.r.is_default) || Number(b.r.is_active) - Number(a.r.is_active) || a.gaps - b.gaps);
+  const best = scored[0] ?? null;
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -340,11 +418,32 @@ function ChangeCarrierPolicyDialog({ carrier, expectedUpdatedAt, onClose }: { ca
         >
           <label className={labelCls}>
             New Policy <span className="text-danger">*</span>
-            <select name="mode" defaultValue={carrier.factoring_mode === "factored" ? "factored" : "direct"} required className={inputCls}>
+            <select name="mode" value={mode} onChange={(e) => setMode(e.target.value as CarrierFactoringMode)} required className={inputCls}>
               <option value="direct">Direct &mdash; this carrier is paid directly</option>
               <option value="factored">Factored &mdash; invoices for this carrier are sold to a factor</option>
             </select>
           </label>
+          {mode === "factored" && carrier.factoring_mode !== "factored" && (
+            <div className="rounded-md border border-desktop-border bg-muted/30 p-2.5">
+              {best ? (
+                <>
+                  <p className="mb-1.5 text-xs font-medium">
+                    {isFullyReady(best.steps) ? "Ready: " : "Before switching to Factored, finish setting up "}
+                    <span className="text-foreground">
+                      {best.company?.name ?? "the factor"}
+                      {best.r.relationship_name ? ` · ${best.r.relationship_name}` : ""}
+                    </span>
+                    {isFullyReady(best.steps) ? "" : " under Factoring Companies → Relationships:"}
+                  </p>
+                  <ReadinessChecklist steps={best.steps} />
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  This carrier has no factoring relationship yet. Add one under Factoring Companies → Relationships first.
+                </p>
+              )}
+            </div>
+          )}
           <label className={labelCls}>
             Reason <span className="text-danger">*</span>
             <textarea
@@ -566,23 +665,23 @@ function CompanyFormDialog({ mode, company, onClose }: { mode: "create" | "edit"
 function ManageRelationshipsDialog({
   company,
   relationships,
-  verifiedNoaDocuments,
   carriers,
   carrierById,
   onClose,
   onEditRelationship,
   canManage,
   canEdit,
+  noaDocumentsByCarrierId,
 }: {
   company: FactoringCompanyRow;
   relationships: FactoringRelationshipRow[];
-  verifiedNoaDocuments: VerifiedNoaDocument[];
   carriers: CarrierOption[];
   carrierById: Map<string, CarrierOption>;
   onClose: () => void;
   onEditRelationship: (r: FactoringRelationshipRow) => void;
   canManage: boolean;
   canEdit: boolean;
+  noaDocumentsByCarrierId: Record<string, NoaDocumentOption[]>;
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const activeCarriers = carriers.filter((c) => c.is_active);
@@ -614,12 +713,13 @@ function ManageRelationshipsDialog({
                 <RelationshipCard
                   key={r.id}
                   relationship={r}
-                  companyName={company.name}
-                  verifiedNoaDocuments={verifiedNoaDocuments.filter((doc) => doc.entity_id === r.carrier_id)}
                   carrier={carrierById.get(r.carrier_id) ?? null}
                   onEdit={() => onEditRelationship(r)}
                   canManage={canManage}
                   canEdit={canEdit}
+                  companyName={company.name}
+                  companyActive={company.is_active}
+                  noaDocuments={noaDocumentsByCarrierId[r.carrier_id] ?? []}
                 />
               ))}
             </div>
@@ -642,23 +742,29 @@ function ManageRelationshipsDialog({
 
 function RelationshipCard({
   relationship,
-  companyName,
-  verifiedNoaDocuments,
   carrier,
   onEdit,
   canManage,
   canEdit,
+  companyName,
+  companyActive,
+  noaDocuments,
 }: {
   relationship: FactoringRelationshipRow;
-  companyName: string;
-  verifiedNoaDocuments: VerifiedNoaDocument[];
   carrier: CarrierOption | null;
   onEdit: () => void;
   canManage: boolean;
   canEdit: boolean;
+  companyName: string;
+  companyActive: boolean;
+  noaDocuments: NoaDocumentOption[];
 }) {
   const { run, pendingKey, error } = useAction();
-  const [approveOpen, setApproveOpen] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
+  const [noaOpen, setNoaOpen] = useState(false);
+  const steps = relationshipReadinessSteps(relationship, companyActive);
+  const ready = isFullyReady(steps);
+  const defaultAllowed = canBecomeDefault(steps);
   const state = deriveEffectiveState(relationship);
   const feeTimingLabel = FEE_TIMING_OPTIONS.find((o) => o.value === relationship.fee_timing)?.label ?? relationship.fee_timing;
   const recourseLabel = RECOURSE_TYPE_OPTIONS.find((o) => o.value === relationship.recourse_type)?.label ?? relationship.recourse_type;
@@ -693,9 +799,6 @@ function RelationshipCard({
               {relationship.effective_to ? ` – ${relationship.effective_to}` : " (open-ended)"}
             </span>
           </div>
-          <p className="mt-1 text-xs">
-            NOA: {relationship.noa_approved ? `Approved (${relationship.noa_reference ?? "reference unavailable"})` : "Not approved"}
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {canEdit && (
@@ -704,12 +807,24 @@ function RelationshipCard({
             </Button>
           )}
           {canManage && (
-            <Button type="button" size="sm" variant="outline" onClick={() => setApproveOpen(true)}>
-              {relationship.noa_approved ? "Review NOA" : "Approve NOA"}
+            <Button type="button" size="sm" variant="outline" onClick={() => setBillingOpen(true)}>
+              Billing &amp; Submission
+            </Button>
+          )}
+          {canManage && carrier && (
+            <Button type="button" size="sm" variant="outline" onClick={() => setNoaOpen(true)}>
+              {relationship.noa_approved ? "Re-approve NOA" : "Approve NOA"}
             </Button>
           )}
           {canManage && relationship.is_active && !relationship.is_default && (
-            <Button type="button" size="sm" variant="outline" disabled={pendingKey === "default"} onClick={() => run("default", () => setDefaultFactoringRelationship(relationship.id))}>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pendingKey === "default" || !defaultAllowed}
+              title={defaultAllowed ? undefined : "Finish the setup steps below first"}
+              onClick={() => run("default", () => setDefaultFactoringRelationship(relationship.id))}
+            >
               {pendingKey === "default" ? <Loader2 className="size-3.5 animate-spin" /> : null}
               Set Default
             </Button>
@@ -728,80 +843,222 @@ function RelationshipCard({
           )}
         </div>
       </div>
+      <div className="mt-2 border-t border-desktop-border pt-2">
+        {ready ? (
+          <p className="flex items-center gap-1.5 text-xs font-medium text-success">
+            <Check className="size-3.5" /> Ready for factoring
+          </p>
+        ) : (
+          <>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">Setup checklist &mdash; complete in this order:</p>
+            <ReadinessChecklist steps={steps} />
+          </>
+        )}
+      </div>
       {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-      {approveOpen && (
-        <NoaApprovalDialog
-          relationship={relationship}
-          companyName={companyName}
-          carrier={carrier}
-          documents={verifiedNoaDocuments}
-          onClose={() => setApproveOpen(false)}
-        />
+      {billingOpen && <BillingSubmissionDialog relationship={relationship} companyName={companyName} onClose={() => setBillingOpen(false)} />}
+      {noaOpen && carrier && (
+        <ApproveNoaDialog relationship={relationship} companyName={companyName} carrierName={carrier.legal_name} noaDocuments={noaDocuments} onClose={() => setNoaOpen(false)} />
       )}
     </div>
   );
 }
 
-function NoaApprovalDialog({ relationship, companyName, carrier, documents, onClose }: {
-  relationship: FactoringRelationshipRow;
-  companyName: string;
-  carrier: CarrierOption | null;
-  documents: VerifiedNoaDocument[];
-  onClose: () => void;
-}) {
+// ---------------------------------------------------------------------------
+// Readiness checklist -- mirrors exactly what Set Default (0138) and a switch
+// to Factored (0139) require; see lib/factoring/readiness.ts.
+// ---------------------------------------------------------------------------
+function ReadinessChecklist({ steps }: { steps: ReadinessStep[] }) {
+  return (
+    <ol className="space-y-1">
+      {steps.map((step) => (
+        <li key={step.key} className="flex items-start gap-1.5 text-xs">
+          {step.done ? <Check className="mt-px size-3.5 shrink-0 text-success" /> : <Circle className="mt-px size-3.5 shrink-0 text-muted-foreground" />}
+          <span>
+            <span className={step.done ? "text-muted-foreground" : "font-medium text-foreground"}>{step.label}</span>
+            {!step.done && <span className="text-muted-foreground"> &mdash; {step.fix}</span>}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+const textareaCls =
+  "w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm shadow-elevation-1 outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20";
+
+// ---------------------------------------------------------------------------
+// Billing & Submission -- remittance instructions + how invoices reach the
+// factor. Owner/admin only (the database enforces this for remittance).
+// ---------------------------------------------------------------------------
+function BillingSubmissionDialog({ relationship, companyName, onClose }: { relationship: FactoringRelationshipRow; companyName: string; onClose: () => void }) {
   const { run, pendingKey, error } = useAction();
-  const [documentId, setDocumentId] = useState("");
-  const [reference, setReference] = useState("");
-  const [effectiveDate, setEffectiveDate] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
+  const [method, setMethod] = useState<string>(relationship.submission_method ?? "");
+  const isApi = relationship.submission_method === "api";
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Review Notice of Assignment</DialogTitle>
-          <DialogDescription>Review the signed document before recording approval. This changes the relationship&apos;s approved NOA.</DialogDescription>
+          <DialogTitle>Billing &amp; Submission &mdash; {companyName}</DialogTitle>
+          <DialogDescription>Where brokers must send payment for factored invoices, and how invoices are sent to the factor.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
-          <p><strong>Carrier:</strong> {carrier?.legal_name ?? "Unknown carrier"}<br />
-            <strong>Factor:</strong> {companyName}<br />
-            <strong>Relationship:</strong> {relationship.relationship_name || "Unnamed relationship"}</p>
-          {relationship.noa_approved && <p>Currently approved: {relationship.noa_reference} (effective {relationship.noa_effective_date}). Select a new document only when replacing this approval.</p>}
-          <p>Upload and verify a Notice of Assignment on the <a className="text-primary underline" href={`/carriers/${relationship.carrier_id}`}>carrier documents page</a>, then return here.</p>
-          {documents.length === 0 ? (
-            <p role="status" className="text-danger">No verified NOA document exists for this carrier.</p>
-          ) : (
-            <label className={labelCls}>Verified carrier NOA document
-              <select className={inputCls} value={documentId} onChange={(event) => setDocumentId(event.target.value)}>
-                <option value="">Select document</option>
-                {documents.map((doc) => <option key={doc.id} value={doc.id}>{doc.file_name} ({doc.document_type.replaceAll("_", " ")})</option>)}
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const ok = await run("save", () => updateFactoringRelationshipSetup(relationship.id, new FormData(e.currentTarget)));
+            if (ok) onClose();
+          }}
+          className="space-y-3"
+        >
+          <label className={labelCls}>
+            Remittance Instructions <span className="text-danger">*</span>
+            <textarea
+              name="remittance_instructions"
+              rows={4}
+              required
+              defaultValue={relationship.remittance_instructions ?? ""}
+              placeholder={"e.g. Remit to: ABC Factoring LLC, PO Box 1234, Dallas TX 75201.\nPayments for this invoice must be made ONLY to ABC Factoring."}
+              className={textareaCls}
+            />
+            <span className="text-[11px] font-normal">Printed on factored invoices and the NOA. Do not enter full bank account or routing numbers here.</span>
+          </label>
+          <label className={labelCls}>
+            Remittance Reference (optional)
+            <input name="remittance_reference" defaultValue={relationship.remittance_reference ?? ""} placeholder="e.g. your client number with the factor" className={inputCls} />
+          </label>
+          <label className={labelCls}>
+            Submission Method <span className="text-danger">*</span>
+            {isApi ? (
+              <>
+                <input type="hidden" name="submission_method" value="api" />
+                <div className="flex h-8 items-center rounded-md border border-border bg-muted/40 px-2 text-sm">API integration (managed under Integrations)</div>
+              </>
+            ) : (
+              <select name="submission_method" value={method} onChange={(e) => setMethod(e.target.value)} required className={inputCls}>
+                <option value="" disabled>
+                  Choose how invoices reach the factor&hellip;
+                </option>
+                {SUBMISSION_METHOD_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
+            )}
+            {!isApi && method && <span className="text-[11px] font-normal">{SUBMISSION_METHOD_OPTIONS.find((o) => o.value === method)?.description}</span>}
+          </label>
+          {method === "secure_email" && (
+            <label className={labelCls}>
+              Factor&apos;s Submission Email <span className="text-danger">*</span>
+              <input name="submission_destination_email" type="email" required defaultValue={relationship.submission_destination_email ?? ""} placeholder="invoices@yourfactor.com" className={inputCls} />
             </label>
           )}
-          {documentId && (
-            <DocumentLinkButton label="View selected NOA" getUrl={getCarrierDocumentSignedUrl.bind(null, documentId, false)} />
-          )}
-          <label className={labelCls}>NOA reference or version
-            <input className={inputCls} value={reference} onChange={(event) => setReference(event.target.value)} />
+          <label className={labelCls}>
+            Submission Notes (optional)
+            <textarea name="submission_notes" rows={2} defaultValue={relationship.submission_notes ?? ""} placeholder="e.g. include rate con and signed BOL with every invoice" className={textareaCls} />
           </label>
-          <label className={labelCls}>Effective date
-            <input className={inputCls} type="date" value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} />
+          {error && <p className="text-xs text-danger">{error}</p>}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={pendingKey === "save"}>
+              {pendingKey === "save" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Approve Notice of Assignment -- owner/admin. Either paste the approved NOA
+// wording, or pick one of this carrier's verified NOA documents (uploaded and
+// verified on the carrier's Documents tab), or both.
+// ---------------------------------------------------------------------------
+function ApproveNoaDialog({
+  relationship,
+  companyName,
+  carrierName,
+  noaDocuments,
+  onClose,
+}: {
+  relationship: FactoringRelationshipRow;
+  companyName: string;
+  carrierName: string;
+  noaDocuments: NoaDocumentOption[];
+  onClose: () => void;
+}) {
+  const { run, pendingKey, error } = useAction();
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Approve Notice of Assignment</DialogTitle>
+          <DialogDescription>
+            {carrierName} &rarr; {companyName}. Confirms the NOA brokers receive telling them to pay {companyName}. Owner/admin only, and recorded in the activity log.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const ok = await run("save", () => approveFactoringRelationshipNoa(relationship.id, new FormData(e.currentTarget)));
+            if (ok) onClose();
+          }}
+          className="space-y-3"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className={labelCls}>
+              NOA Reference / Version <span className="text-danger">*</span>
+              <input name="noa_reference" required defaultValue={relationship.noa_reference ?? ""} placeholder={`e.g. ${companyName} NOA v1`} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              Effective Date <span className="text-danger">*</span>
+              <input name="noa_effective_date" type="date" required defaultValue={relationship.noa_effective_date ?? today} className={inputCls} />
+            </label>
+          </div>
+          <label className={labelCls}>
+            Verified NOA Document
+            <select name="noa_document_id" defaultValue={relationship.noa_document_id ?? ""} className={inputCls}>
+              <option value="">{noaDocuments.length ? "None — use the wording below" : "No verified NOA documents for this carrier"}</option>
+              {noaDocuments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.fileName} ({d.documentType === "notice_of_assignment" ? "NOA" : "Factoring notice"}, {d.createdAt.slice(0, 10)})
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] font-normal">Only documents uploaded to this carrier and marked verified are listed.</span>
           </label>
-          <label className="flex items-start gap-2 text-xs">
-            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
-            I reviewed this document and confirm it is the approved NOA for this carrier and factoring relationship.
+          <label className={labelCls}>
+            Approved NOA Wording {noaDocuments.length ? "(if no document chosen)" : <span className="text-danger">*</span>}
+            <textarea
+              name="noa_template_text"
+              rows={5}
+              defaultValue={relationship.noa_template_text ?? ""}
+              placeholder={`e.g. NOTICE OF ASSIGNMENT: ${carrierName} has assigned its accounts receivable to ${companyName}. All payments must be remitted to ${companyName} only.`}
+              className={textareaCls}
+            />
           </label>
-          {error && <p role="alert" className="text-danger">{error}</p>}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="button" disabled={!confirmed || !documentId || !reference.trim() || !effectiveDate || !!pendingKey}
-            onClick={async () => {
-              if (await run("approve", () => approveFactoringRelationshipNoa(relationship.id, documentId, reference, effectiveDate))) onClose();
-            }}>
-            {pendingKey ? "Recording..." : "Record NOA approval"}
-          </Button>
-        </DialogFooter>
+          {error && <p className="text-xs text-danger">{error}</p>}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={pendingKey === "save"}>
+              {pendingKey === "save" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              Approve NOA
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

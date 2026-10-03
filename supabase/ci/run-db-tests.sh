@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# =============================================================================
+# supabase/ci/run-db-tests.sh -- runs EVERY database test suite on throwaway
+# PostgreSQL clusters. Touches nothing outside temp dirs; never connects to
+# Supabase or any real database.
+#
+#   1. TEST_0130_0133_run.sh             (26 migration/behavior test files)
+#   2. TEST_DEADLOCK_*, TEST_ROLLBACK_*, TEST_CONCURRENCY_*  (each its own cluster)
+#   3. TEST_0144_LOAD_STOPS_PARENT_LOCK.sql
+#   4. TEST_0148 (cross-tenant takeover guard) on a database built from
+#      migrations 0001..0119 + platform_stub.sql + 0148 -- the newest point a
+#      fresh build can reach (0120+ are pinned to production data). Also
+#      proves the guard is genuinely needed: the test must FAIL without 0148.
+#   5. TEST_FACTORING_LIFECYCLE_E2E (+ must-fail run without 0160) and
+#      TEST_0160_existing_stuck_invoice, on the same fresh 0001..0119 database
+#
+# Requires initdb/pg_ctl/psql/createdb on PATH and a non-root user (initdb
+# refuses root). Usage:  bash supabase/ci/run-db-tests.sh
+# Exit code is non-zero if anything failed.
+# =============================================================================
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # .../supabase
+cd "$HERE"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/tdp-db-tests.XXXXXX")"
+PORT_BASE="${PORT_BASE:-56100}"
+FAILED=()
+port=$PORT_BASE
+
+# Runs one suite; retries ONCE only when the throwaway server failed to start
+# (an environment hiccup, never a test result).
+run_suite() {
+  local name="$1"; shift
+  local log="$OUT/$name.log"
+  for attempt in 1 2; do
+    port=$((port + 1))
+    PGPORT=$port "$@" >"$log" 2>&1
+    local rc=$?
+    if [ $rc -eq 0 ]; then echo "PASS  $name"; return 0; fi
+    if [ $attempt -eq 1 ] && grep -q "could not start server" "$log"; then
+      echo "retry $name (server failed to start)"; sleep 2; continue
+    fi
+    echo "FAIL  $name (exit $rc) -- last lines:"; tail -25 "$log" | sed 's/^/      /'
+    FAILED+=("$name"); return 1
+  done
+}
+
+# Builds a throwaway DB from 0001..0119 (+ optional extra files), runs one SQL test.
+run_fresh_db_test() {
+  local test_sql="$1"; shift
+  local extras=("$@")
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/tdp-fresh.XXXXXX")"
+  local p=${PGPORT:?}
+  initdb -D "$d" -U postgres --auth=trust --no-locale -E UTF8 >/dev/null || return 9
+  pg_ctl -D "$d" -l "$d/log" -o "-p $p -c listen_addresses=127.0.0.1 -c unix_socket_directories= -c fsync=off" -w start >/dev/null \
+    || { echo "could not start server"; rm -rf "$d"; return 9; }
+  local psql=(psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$p" -U postgres -d t)
+  local rc=0
+  createdb -h 127.0.0.1 -p "$p" -U postgres t \
+    && "${psql[@]}" -f ci/platform_stub.sql >/dev/null || rc=8
+  if [ $rc -eq 0 ]; then
+    for m in migrations/*.sql; do
+      local n; n="$(basename "$m" | cut -c1-4)"
+      [[ "$n" > "0119" ]] && break
+      # pg_cron is not installable on plain PostgreSQL; the stub provides cron.*
+      sed -E 's/create extension if not exists pg_cron[^;]*;/select 1;/I' "$m" | "${psql[@]}" >/dev/null || { echo "migration failed: $m"; rc=7; break; }
+    done
+  fi
+  if [ $rc -eq 0 ]; then
+    for e in "${extras[@]}"; do "${psql[@]}" -f "$e" >/dev/null || { echo "extra failed: $e"; rc=6; break; }; done
+  fi
+  [ $rc -eq 0 ] && { psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$p" -U postgres -d t -f "$test_sql" || rc=1; }
+  pg_ctl -D "$d" -m immediate stop >/dev/null 2>&1; rm -rf "$d"
+  return $rc
+}
+
+# Expects the given command to FAIL (proves a test actually detects the bug).
+expect_failure() { if "$@"; then echo "UNEXPECTED PASS"; return 1; else return 0; fi; }
+
+echo "== database tests (logs: $OUT) =="
+run_suite "TEST_0130_0133_run" bash ./TEST_0130_0133_run.sh
+for f in TEST_DEADLOCK_*.sh TEST_ROLLBACK_*.sh TEST_CONCURRENCY_*.sh; do
+  run_suite "${f%.sh}" bash "./$f"
+done
+
+single_sql_test() {
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/tdp-single.XXXXXX")"
+  initdb -D "$d" -U postgres --auth=trust --no-locale -E UTF8 >/dev/null || return 9
+  pg_ctl -D "$d" -l "$d/log" -o "-p $PGPORT -c listen_addresses=127.0.0.1 -c unix_socket_directories= -c fsync=off" -w start >/dev/null \
+    || { echo "could not start server"; rm -rf "$d"; return 9; }
+  createdb -h 127.0.0.1 -p "$PGPORT" -U postgres t
+  psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$PGPORT" -U postgres -d t -f "$1"; local rc=$?
+  pg_ctl -D "$d" -m immediate stop >/dev/null 2>&1; rm -rf "$d"
+  return $rc
+}
+run_suite "TEST_0144_LOAD_STOPS_PARENT_LOCK" single_sql_test TEST_0144_LOAD_STOPS_PARENT_LOCK.sql
+
+run_suite "TEST_0148_without_fix_must_fail" expect_failure run_fresh_db_test TEST_0148_profile_cross_tenant_move_guard.sql
+run_suite "TEST_0148_profile_cross_tenant_move_guard" run_fresh_db_test TEST_0148_profile_cross_tenant_move_guard.sql migrations/0148_profile_cross_tenant_move_guard.sql
+
+# Factoring lifecycle autopilot (submit -> pending -> approve -> fund ->
+# customer paid -> reserve released -> close, plus rejection, dispute,
+# recourse/chargeback/buyback and guard rails), run as real users with RLS.
+# Without 0160 it must FAIL (fee-from-reserve invoices can't close;
+# overfunding accepted); with 0160 every step passes.
+run_suite "TEST_FACTORING_LIFECYCLE_without_0160_must_fail" expect_failure run_fresh_db_test TEST_FACTORING_LIFECYCLE_E2E.sql
+run_suite "TEST_FACTORING_LIFECYCLE_E2E" run_fresh_db_test TEST_FACTORING_LIFECYCLE_E2E.sql migrations/0160_factoring_fee_from_reserve_reconciliation_fix.sql
+run_suite "TEST_0160_existing_stuck_invoice" run_fresh_db_test TEST_0160_existing_stuck_invoice.sql
+
+# Signed-out function access (0161): with Supabase's default function grants
+# emulated, the encryption key is readable by anyone and advances can be
+# deducted into another org's settlement -- the test must FAIL; with 0161
+# it passes.
+run_suite "TEST_0161_without_fix_must_fail" expect_failure run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql
+run_suite "TEST_0161_signed_out_function_access" run_fresh_db_test TEST_0161_signed_out_function_access.sql ci/emulate_supabase_function_grants.sql migrations/0161_signed_out_function_access_hardening.sql
+
+# Encryption key rotation (maintenance/ROTATE_ENCRYPTION_KEYS.sql): aborts
+# cleanly on an undecryptable value; otherwise every value decrypts to the
+# same text with the new keys and the old keys decrypt nothing.
+run_suite "TEST_ROTATE_ENCRYPTION_KEYS" run_fresh_db_test TEST_ROTATE_ENCRYPTION_KEYS.sql
+run_suite "ROTATE_KEYS_PREVIEW_READONLY" run_fresh_db_test maintenance/ROTATE_KEYS_PREVIEW_READONLY.sql
+
+# Production twin: EVERY migration 0001..latest applied unchanged (see
+# ci/twin-db.sh, ci/twin/README.md), then the 0162 drift-repair checks and the
+# generated drift check (must return no rows against the twin itself), then
+# the one-time stuck-dispatch repair (commits, cleans up after itself; last).
+run_suite "TWIN_ALL_MIGRATIONS_0162_TO_0169_CORE_WORKFLOW" bash ci/twin-db.sh TEST_0162_production_drift_repair.sql TEST_0163_settle_by_delivery_date.sql TEST_0164_draft_invoice_follows_load_rate.sql TEST_0165_carrier_dispatch_fee_invoices.sql TEST_0166_dispatch_fee_workflow_fixes.sql TEST_0167_broker_pays_carrier_setting.sql TEST_0168_carrier_invoice_double_billing_guards.sql TEST_0169_carrier_factor_package_sender.sql DRIFT_CHECK_READONLY.sql TEST_CORE_WORKFLOW_E2E.sql TEST_FIX_STUCK_DISPATCHES.sql TEST_INVOICES_ONE_TAB.sql
+
+echo
+if [ ${#FAILED[@]} -eq 0 ]; then
+  echo "ALL DATABASE TESTS PASSED"
+  exit 0
+fi
+echo "DATABASE TEST FAILURES: ${FAILED[*]}"
+exit 1

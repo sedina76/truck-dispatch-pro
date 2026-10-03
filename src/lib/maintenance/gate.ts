@@ -108,7 +108,7 @@ p.lead{color:var(--text);font-size:1.05rem}
 <div class="brand"><svg viewBox="0 0 48 48" role="img" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 12h27v20H3zM32 18h8l6 8v6H32z"/><circle cx="12" cy="35" r="4.5" fill="var(--card)" stroke="currentColor" stroke-width="3"/><circle cx="37" cy="35" r="4.5" fill="var(--card)" stroke="currentColor" stroke-width="3"/></svg><span>Truck Dispatch Pro</span></div>
 <h1 id="title">Scheduled maintenance</h1>
 <p class="lead" role="status">${MAINTENANCE_MESSAGE}</p>
-<p>Your data is safe. This page will update automatically once we are back; you can also reload it at any time.</p>
+<p>Your data is safe. Please reload this page in a few minutes.</p>
 <span class="status">Status: maintenance in progress</span>
 </main>
 </body>

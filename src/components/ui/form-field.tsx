@@ -9,6 +9,7 @@ export function FormField({
   placeholder,
   step,
   disabled,
+  confirmChange,
 }: {
   label: string;
   name: string;
@@ -18,6 +19,8 @@ export function FormField({
   placeholder?: string;
   step?: string;
   disabled?: boolean;
+  /** Money fields on EDIT forms: ask before saving a changed amount (label shown in the question). */
+  confirmChange?: string;
 }) {
   return (
     // min-w-0: a grid item defaults to min-width:auto, which refuses to
@@ -40,6 +43,7 @@ export function FormField({
         placeholder={placeholder}
         disabled={disabled}
         defaultValue={defaultValue ?? undefined}
+        {...(confirmChange ? { "data-confirm-change": confirmChange, "data-original-value": defaultValue == null ? "" : String(defaultValue) } : {})}
       />
     </div>
   );

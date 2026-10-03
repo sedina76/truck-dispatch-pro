@@ -23,6 +23,7 @@ import { formatStopDateTime } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { verifyPod, getPodSignedUrl } from "../pod-actions";
 import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/require-role";
+import { canUseBilling } from "@/lib/auth/billing-access";
 import { ChangeLoadNumberDialog } from "@/components/loads/change-load-number-dialog";
 
 // Phase POST-0069 finding: rate/detention_rate/layover_rate were dropped
@@ -95,6 +96,8 @@ export default async function LoadDetailPage({
   // everything, decide what to show after."
   const { data: roleData } = await supabase.rpc("current_role");
   const canSeeFinancials = FINANCIAL_ROLES.includes((roleData as OrgRole | null) ?? ("viewer" as OrgRole));
+  // Invoice screens are owner/admin/accountant only (lib/auth/billing-access.ts).
+  const canOpenInvoices = canUseBilling(roleData as string | null);
   // 0114 revision 2: only owner/admin get the "Change Load Number"
   // control -- everyone else (including dispatcher) sees a plain
   // read-only value. This is a UI convenience only; the database's own
@@ -242,7 +245,7 @@ export default async function LoadDetailPage({
               "Load marked delivered. No invoice was created automatically -- add a broker or customer to this load, then create one manually."
             )}
           </p>
-          {invoiceRow && (
+          {invoiceRow && canOpenInvoices && (
             <div className="flex shrink-0 items-center gap-2">
               <Link
                 href={`/invoices/${invoiceRow.id}`}
@@ -355,7 +358,7 @@ export default async function LoadDetailPage({
                     here to accidentally leak even if this condition were
                     removed. */}
                 {canSeeFinancials && (
-                  <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadFinancialsRow?.rate} required />
+                  <FormField label="Rate ($)" name="rate" type="number" step="0.01" defaultValue={loadFinancialsRow?.rate} required confirmChange="The load rate" />
                 )}
                 {/* Phase 2G.9 item 2: reclassified operational/safe -- see
                     LOAD_SAFE_COLUMNS' header comment. Always rendered. */}
@@ -531,12 +534,14 @@ export default async function LoadDetailPage({
                     ? "No invoice on file -- this load has no broker or customer set, so one couldn't be generated automatically. Set one, or create an invoice manually."
                     : "An invoice is created automatically once this load is marked Delivered. You can also create one manually now."}
                 </p>
-                <Link
-                  href={`/invoices/new?load_id=${id}`}
-                  className="inline-flex h-7 items-center rounded-sm bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary-hover"
-                >
-                  Create Invoice
-                </Link>
+                {canOpenInvoices && (
+                  <Link
+                    href={`/invoices/new?load_id=${id}`}
+                    className="inline-flex h-7 items-center rounded-sm bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary-hover"
+                  >
+                    Create Invoice
+                  </Link>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -577,9 +582,11 @@ export default async function LoadDetailPage({
                       : "--"}
                   </span>
                 </div>
-                <Link href={`/invoices/${invoiceRow.id}`} className="inline-block text-xs font-medium text-[var(--color-brand)]">
-                  View invoice &rarr;
-                </Link>
+                {canOpenInvoices && (
+                  <Link href={`/invoices/${invoiceRow.id}`} className="inline-block text-xs font-medium text-[var(--color-brand)]">
+                    View invoice &rarr;
+                  </Link>
+                )}
               </div>
             )}
           </DesktopCollapsibleSection>

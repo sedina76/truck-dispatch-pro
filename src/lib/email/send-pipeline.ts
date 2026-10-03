@@ -4,6 +4,7 @@ import { sendTransactionalEmail, EMAIL_PROVIDER_CONFIGURED, FRIENDLY_SEND_ERROR,
 import { resolveEmailSender } from "@/lib/email/sender-resolver";
 import { verifyEntityOwnership, type EmailAuthorizationContext, type OwnedEntityIds } from "@/lib/email/authorization";
 import type { EmailPurpose } from "@/lib/email/purposes";
+import type { EmailLayout } from "@/lib/email/templates";
 
 // ============================================================================
 // The ONE authoritative server-side send pipeline (spec section 16). Every
@@ -52,6 +53,8 @@ export type SendTenantEmailArgs = {
   bcc?: string[];
   subject: string;
   text: string;
+  /** Optional branded HTML layout (button, checklist) -- see src/lib/email/templates.ts. */
+  layout?: EmailLayout;
   attachments?: EmailAttachment[];
 
   // Generic linkage (kept for parity with pre-Phase-2F email_send_log rows).
@@ -348,6 +351,7 @@ export async function sendTenantEmail(args: SendTenantEmailArgs): Promise<SendTe
       replyTo: sender.replyTo ?? undefined,
       organizationName: org?.name ?? "",
       heading: args.subject,
+      layout: args.layout,
       attachments: args.attachments,
       // Two-layer idempotency (spec review item 4): the SAME key this
       // app uses to reserve/dedupe locally is also sent to Resend as its

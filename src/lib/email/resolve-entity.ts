@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { getBillingParty } from "@/lib/billing/party";
 import { isPacketOutdated } from "@/app/(app)/invoices/billing-packet-actions";
 import { checkPacketReadiness } from "@/lib/billing-packet/generate";
+import { dispatchFeeInvoiceEmailBody } from "@/lib/dispatch-fee-invoices/summary";
+import { loadIssuedCarrierInvoice, factorPackageMissing } from "@/lib/carrier-invoices/pdf";
+import { packageEmailBody, packageRecipient } from "@/lib/carrier-invoices/source";
 
 // Shared "who does this go to, what's the subject/body, what attachment,
 // is it blocked" resolver -- used by BOTH /api/email/resolve (populates
@@ -240,6 +243,87 @@ export async function resolveEmailForEntity(entityType: string, entityId: string
         blocked: null,
         organizationName: orgName,
         numberLabel: p.payment_number,
+      };
+    }
+
+    case "dispatch_fee_invoice": {
+      // Dispatch company -> carrier (0165). Billing roles only (RLS); the
+      // PDF attached is the same one the Download button serves.
+      const { data: invoice } = await supabase
+        .from("carrier_fee_invoices")
+        .select("id, invoice_number, status, period_start, period_end, total_amount, balance_due, due_date, carriers(legal_name, email)")
+        .eq("id", entityId)
+        .maybeSingle();
+      if (!invoice) return { error: "Invoice not found.", status: 404 };
+      const v = invoice as unknown as {
+        invoice_number: string;
+        status: string;
+        period_start: string;
+        period_end: string;
+        total_amount: number;
+        balance_due: number;
+        due_date: string | null;
+        carriers: { legal_name: string; email: string | null } | null;
+      };
+      const orgName = await resolveOrgName(supabase);
+      const day = (d: string | null) => (d ? new Date(d + "T00:00:00").toLocaleDateString("en-US") : "");
+      return {
+        to: v.carriers?.email || "",
+        subject: `Dispatch Fee Invoice ${v.invoice_number}`,
+        message: dispatchFeeInvoiceEmailBody({
+          carrierName: v.carriers?.legal_name ?? null,
+          invoiceNumber: v.invoice_number,
+          periodLabel: `${day(v.period_start)} - ${day(v.period_end)}`,
+          balanceDue: money(v.balance_due),
+          dueDate: day(v.due_date),
+          orgName,
+        }),
+        attachmentType: "dispatch_fee_invoice_pdf",
+        attachmentLabel: `Dispatch Fee Invoice PDF (${v.invoice_number})`,
+        blocked:
+          v.status === "draft"
+            ? 'This invoice is still a draft. Click "Mark as Sent" first -- that locks the lines and sets the due date shown on the PDF -- then email it.'
+            : v.status === "void"
+              ? "This invoice is void and cannot be emailed."
+              : null,
+        organizationName: orgName,
+        numberLabel: v.invoice_number,
+      };
+    }
+
+    case "carrier_invoice": {
+      // The carrier's own invoice to the broker + paperwork (factor package).
+      // Recipient follows the carrier's "who sends the paperwork" setting
+      // (0169) and whether the carrier factors (issuance snapshot).
+      const inv = await loadIssuedCarrierInvoice(supabase, entityId);
+      if (!inv) return { error: "Only an issued carrier invoice can be emailed.", status: 404 };
+      const { data: carrier } = await supabase.from("carriers").select("legal_name, dba_name, email, factor_package_sent_by").eq("id", inv.carrierId).maybeSingle();
+      const sender = carrier?.factor_package_sent_by === "carrier" ? "carrier" : "dispatcher";
+      const dest = packageRecipient(inv.snapshot, sender, carrier?.email ?? null);
+      const carrierName = carrier?.dba_name || carrier?.legal_name || inv.snapshot.issuer?.legal_name || "the carrier";
+      const orgName = await resolveOrgName(supabase);
+      const missing = inv.issuanceStatus === "voided" ? [] : await factorPackageMissing(supabase, inv);
+      return {
+        to: dest.to,
+        subject: `Invoice ${inv.snapshot.invoice_number} - ${carrierName}`,
+        message: packageEmailBody({
+          who: dest.who,
+          carrierName,
+          invoiceNumber: inv.snapshot.invoice_number,
+          loadNumbers: (inv.snapshot.loads ?? []).map((l) => l.load_number),
+          total: money(Number(inv.snapshot.total_amount)),
+          orgName,
+        }),
+        attachmentType: "carrier_invoice_package_pdf",
+        attachmentLabel: `Invoice package PDF (${inv.snapshot.invoice_number}: invoice, POD, rate con, BOL)`,
+        blocked:
+          inv.issuanceStatus === "voided"
+            ? "This invoice is void and cannot be sent."
+            : missing.length
+              ? `The package is not ready. Missing: ${missing.join("; ")}.`
+              : null,
+        organizationName: orgName,
+        numberLabel: inv.snapshot.invoice_number,
       };
     }
 

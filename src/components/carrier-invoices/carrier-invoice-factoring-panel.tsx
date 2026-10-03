@@ -57,6 +57,9 @@ export function CarrierInvoiceFactoringPanel({ carrierInvoiceId, preview }: { ca
       } else {
         setError({ code: outcome.code, message: outcome.error });
       }
+    } catch {
+      // Network drop, deploy, or maintenance window: say so instead of failing silently.
+      setError({ code: "TRANSPORT", message: "We couldn't reach the server. Check your connection, then refresh to see whether it went through before trying again." });
     } finally {
       guard.current.inFlight = false;
       setBusy(false);

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { FileText, CheckCircle2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { deleteRecord } from "@/lib/actions/records";
@@ -46,7 +46,13 @@ export default async function InvoiceDetailPage({
         .eq("invoice_id", id)
         .order("received_at", { ascending: false }),
     ]);
-  if (!invoice) notFound();
+  if (!invoice) {
+    // One Invoices tab: a carrier's invoice ("broker pays the carrier" load)
+    // opens at this address too -- forward to its page.
+    const { data: carriersInvoice } = await supabase.from("carrier_invoices").select("id").eq("id", id).maybeSingle();
+    if (carriersInvoice) redirect(`/carrier-invoices/${id}`);
+    notFound();
+  }
 
   const recorderIds = [...new Set((payments ?? []).map((p) => p.recorded_by).filter((v): v is string => !!v))];
   const { data: recorders } = recorderIds.length
