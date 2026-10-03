@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { notifyOfficeOfDriverDocument } from "@/lib/notify/office-notify";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
@@ -290,6 +291,14 @@ export async function uploadTripDocument(loadId: string, documentType: string, f
     uploaded_by: null,
   });
   if (insertError) throw new Error(insertError.message);
+
+  // Tell the office (bell + chime). Best-effort, never fails the upload.
+  await notifyOfficeOfDriverDocument(supabase, {
+    organizationId: identity.organizationId,
+    loadId,
+    documentType,
+    driverName: `${identity.firstName ?? ""} ${identity.lastName ?? ""}`.trim() || null,
+  });
 
   revalidatePath("/driver-portal/documents");
   revalidatePath("/driver-portal/trip");

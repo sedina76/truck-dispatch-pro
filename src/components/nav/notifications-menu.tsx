@@ -128,6 +128,22 @@ export function NotificationsMenu({ notifications: initialNotifications }: { not
                   </div>
                   {n.body && <p className="line-clamp-2 pl-3.5 text-xs text-muted-foreground">{n.body}</p>}
                 </Link>
+              ) : n.entity_type === "load" && n.entity_id ? (
+                // A driver-uploaded document (POD, BOL, ...): open the load.
+                <Link
+                  key={n.id}
+                  href={`/loads/${n.entity_id}`}
+                  onClick={() => {
+                    markNotificationRead(n.id).catch(() => {});
+                  }}
+                  className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-2.5 text-left transition-colors hover:bg-muted"
+                >
+                  <div className="flex w-full items-center gap-2">
+                    {!n.read_at && <span className="size-1.5 shrink-0 rounded-full bg-primary" />}
+                    <p className="flex-1 truncate text-sm font-medium">{n.title}</p>
+                  </div>
+                  {n.body && <p className="line-clamp-2 pl-3.5 text-xs text-muted-foreground">{n.body}</p>}
+                </Link>
               ) : n.exception_id ? (
                 // Phase 2P.6B -- an exception-sourced notification (0107:
                 // opened/escalated/assigned/reassigned) navigates to the

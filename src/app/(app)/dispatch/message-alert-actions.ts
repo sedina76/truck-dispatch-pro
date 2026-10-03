@@ -59,7 +59,7 @@ export async function getUnreadDriverMessageAlert(): Promise<DriverMessageAlert>
 export type NotificationAlert = {
   count: number;
   latestAt: string | null;
-  latest: { title: string; body: string | null } | null;
+  latest: { title: string; body: string | null; href: string | null } | null;
 };
 
 const EMPTY_NOTIFICATIONS: NotificationAlert = { count: 0, latestAt: null, latest: null };
@@ -79,16 +79,17 @@ export async function getUnreadNotificationAlert(): Promise<NotificationAlert> {
       supabase.from("notifications").select("id", { count: "exact", head: true }).eq("profile_id", user.id).is("read_at", null).neq("type", "dispatch_message"),
       supabase
         .from("notifications")
-        .select("title, body, created_at")
+        .select("title, body, created_at, entity_type, entity_id")
         .eq("profile_id", user.id)
         .is("read_at", null)
         .neq("type", "dispatch_message")
         .order("created_at", { ascending: false })
         .limit(1),
     ]);
-    const row = (latestRows ?? [])[0] as { title: string; body: string | null; created_at: string } | undefined;
+    const row = (latestRows ?? [])[0] as { title: string; body: string | null; created_at: string; entity_type: string | null; entity_id: string | null } | undefined;
     if (!count || !row) return EMPTY_NOTIFICATIONS;
-    return { count, latestAt: row.created_at, latest: { title: row.title, body: row.body } };
+    const href = row.entity_type === "load" && row.entity_id ? `/loads/${row.entity_id}` : null;
+    return { count, latestAt: row.created_at, latest: { title: row.title, body: row.body, href } };
   } catch {
     return EMPTY_NOTIFICATIONS;
   }

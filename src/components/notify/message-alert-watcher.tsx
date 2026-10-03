@@ -51,7 +51,7 @@ export function MessageAlertWatcher() {
           }
           if (n.chime && notification.latest) {
             toast.show("info", notification.latest.body ? `${notification.latest.title}: ${notification.latest.body}` : notification.latest.title);
-            if (away) showDesktopAlert(notification.latest.title, notification.latest.body ?? "", { tag: `ntf-${notification.latestAt}` });
+            if (away) showDesktopAlert(notification.latest.title, notification.latest.body ?? "", { tag: `ntf-${notification.latestAt}`, href: notification.latest.href ?? undefined });
             router.refresh(); // the bell shows it right away
           }
         })

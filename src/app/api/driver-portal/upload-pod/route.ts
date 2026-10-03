@@ -3,6 +3,7 @@ import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { validateUploadedFile } from "@/lib/documents/validate-upload";
+import { notifyOfficeOfDriverDocument } from "@/lib/notify/office-notify";
 
 const ALLOWED_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_BYTES = 15 * 1024 * 1024;
@@ -91,6 +92,14 @@ export async function POST(request: NextRequest) {
   // Missing transition too, same as the staff-side upload path. Isolated:
   // must never fail the driver's own upload response.
   syncExceptionsForDispatch(supabase, identity.organizationId, dispatch.id).catch((err) => console.warn("[driver-portal upload-pod] exception sync failed:", err));
+
+  // Tell the office (bell + chime): a POD to review and verify.
+  await notifyOfficeOfDriverDocument(supabase, {
+    organizationId: identity.organizationId,
+    loadId,
+    documentType: "pod",
+    driverName: `${identity.firstName ?? ""} ${identity.lastName ?? ""}`.trim() || null,
+  });
 
   return NextResponse.json({ ok: true });
 }
