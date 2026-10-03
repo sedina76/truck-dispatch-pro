@@ -24,12 +24,11 @@ export default async function NewCarrierInvoicePage() {
         </p>
       </div>
       <div className="rounded-sm border border-desktop-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
-        <p className="font-medium text-desktop-text">Before the first invoice for a carrier</p>
-        <ul className="mt-1 list-disc space-y-0.5 pl-4">
-          <li>On the carrier: &quot;Who does the broker pay?&quot; = Broker pays the carrier (only those loads are listed), an Invoice code (e.g. RRT), and the broker under &quot;Brokers this carrier invoices&quot;.</li>
-          <li>In Settings, Factoring: the carrier&apos;s billing policy, Direct or Factored. For Factored: its factoring company, remit-to, and an approved notice of assignment.</li>
-          <li>Each load needs its pickup and delivery stops, and a verified proof of delivery before its package can be sent.</li>
-        </ul>
+        <p className="font-medium text-desktop-text">First invoice for a carrier?</p>
+        <p className="mt-0.5">
+          On the carrier&apos;s page, set &quot;Who does the broker pay?&quot; to <span className="font-medium">Broker pays the carrier</span>. Its{" "}
+          <span className="font-medium">Billing setup</span> box then shows what&apos;s left (usually just whether it factors). The invoice code and the broker&apos;s billing details are filled in automatically. Loads need a verified proof of delivery before the package can be sent.
+        </p>
       </div>
       <NewCarrierInvoiceForm carriers={carriers} />
     </div>

@@ -3,6 +3,7 @@
 import { isCarrierInvoicePilotOperator } from "@/lib/factoring/carrier-invoice-issuance";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { ensureCarrierPartyLink } from "@/lib/carrier-invoices/party-link";
 import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import {
   ISSUANCE_GENERIC_FAILURE,
@@ -72,6 +73,8 @@ export async function previewCarrierInvoiceIssuance(input: IssuanceInput): Promi
   if (bad) return { success: false, eligible: false, code: bad };
   const { supabase, user } = await authed();
   if (!user) return { success: false, eligible: false, code: "FORBIDDEN" };
+  const linkProblem = await ensureCarrierPartyLink(supabase, input);
+  if (linkProblem) return { success: false, eligible: false, code: "RECIPIENT_SETUP", message: linkProblem };
   const { data, error } = await supabase.rpc("preview_carrier_invoice_issuance", { p_carrier_id: input.carrierId, p_load_ids: input.loadIds, p_recipient_type: input.recipientType, p_recipient_id: input.recipientId });
   if (error) return { success: false, eligible: false, code: "TRANSPORT", message: ISSUANCE_GENERIC_FAILURE };
   return (data ?? { success: false, eligible: false, code: "UNKNOWN" }) as IssuancePreview;
@@ -85,6 +88,8 @@ export async function createCarrierInvoiceDraft(input: IssuanceInput, idempotenc
   if (!user) return fail("FORBIDDEN", "Not authenticated.");
   const access = await checkOperationalAccess(); // D.2.11 SaaS paywall, as every operational mutation
   if (!access.ok) return fail("FORBIDDEN", "Your organization's subscription does not permit this action.");
+  const linkProblem = await ensureCarrierPartyLink(supabase, input);
+  if (linkProblem) return fail("RECIPIENT_SETUP", linkProblem);
   const { data, error } = await supabase.rpc("create_carrier_invoice_draft_from_loads", { p_carrier_id: input.carrierId, p_load_ids: input.loadIds, p_recipient_type: input.recipientType, p_recipient_id: input.recipientId, p_idempotency_key: idempotencyKey });
   const outcome = outcomeFromWorkflow(data as WorkflowResult | null, error);
   if (outcome.ok) refresh(outcome.invoiceId);
@@ -158,3 +163,4 @@ export async function reissueCarrierInvoice(invoiceId: string, expectedUpdatedAt
   if (outcome.ok) refresh(invoiceId, outcome.replacementInvoiceId);
   return outcome;
 }
+

@@ -112,10 +112,22 @@ export const ISSUANCE_CODE_MESSAGES: Record<string, string> = {
 
 export const ISSUANCE_GENERIC_FAILURE = "The request could not be completed. Please refresh the page and try again.";
 
+/** Where to fix a carrier-setup problem, added after the message so the user knows the next click. */
+export const ISSUANCE_SETUP_HINTS: Record<string, string> = {
+  CARRIER_INVOICE_CODE_MISSING: 'Fix: on the carrier page, "Billing setup" (or enter an Invoice code in the carrier form).',
+  FACTORING_POLICY_UNCONFIGURED: 'Fix: on the carrier page, "Billing setup" -> "Doesn\'t factor", or set up its factoring company in Settings -> Factoring.',
+  NO_ACTIVE_DEFAULT_RELATIONSHIP: "Fix: Settings -> Factoring -> this carrier: add its factoring company and make it the default.",
+  RELATIONSHIP_NOT_EFFECTIVE: "Fix: Settings -> Factoring -> this carrier: check the factoring relationship's start/end dates.",
+  NOT_READY: "Fix: Settings -> Factoring -> this carrier: the factor needs a remit-to, a submission method and an approved notice of assignment.",
+  COMPANY_INACTIVE: "Fix: Settings -> Factoring: turn the factoring company back on, or choose another.",
+};
+
 export function issuanceMessage(result: { code?: string; message?: string } | null | undefined): string {
   if (!result) return ISSUANCE_GENERIC_FAILURE;
-  if (typeof result.message === "string" && result.message.trim()) return result.message;
-  if (result.code && ISSUANCE_CODE_MESSAGES[result.code]) return ISSUANCE_CODE_MESSAGES[result.code];
+  const hint = result.code ? ISSUANCE_SETUP_HINTS[result.code] : undefined;
+  const withHint = (m: string) => (hint ? `${m} ${hint}` : m);
+  if (typeof result.message === "string" && result.message.trim()) return withHint(result.message);
+  if (result.code && ISSUANCE_CODE_MESSAGES[result.code]) return withHint(ISSUANCE_CODE_MESSAGES[result.code]);
   return ISSUANCE_GENERIC_FAILURE;
 }
 
