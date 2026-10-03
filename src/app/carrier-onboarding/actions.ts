@@ -134,7 +134,10 @@ function str(formData: FormData, key: string): string | null {
 
 export async function saveCompanyInfo(formData: FormData): Promise<{ ok: true } | { ok: false; error: string }> {
   const identity = await getCarrierActionIdentity();
-  if (!identity) return { ok: false, error: SESSION_ENDED_MESSAGE };
+  if (!identity) {
+    console.error("[carrier-onboarding] company save refused: no active onboarding session (cookie missing/expired)");
+    return { ok: false, error: SESSION_ENDED_MESSAGE };
+  }
   const supabase = createServiceRoleClient();
 
   const legalName = str(formData, "legal_name");
@@ -170,13 +173,19 @@ export async function saveCompanyInfo(formData: FormData): Promise<{ ok: true } 
     const digits = ein.replace(/[^0-9]/g, "");
     if (digits.length !== 9) return { ok: false, error: "EIN must be 9 digits (formatted as XX-XXXXXXX or digits only)." };
     const { data: encrypted, error: encryptError } = await supabase.rpc("encrypt_carrier_onboarding_ein", { p_ein: digits });
-    if (encryptError) return { ok: false, error: "Could not securely store the EIN. Please try again." };
+    if (encryptError) {
+      console.error("[carrier-onboarding] EIN encryption failed:", { application_id: identity.applicationId, error: encryptError.message });
+      return { ok: false, error: "Could not securely store the EIN. Please try again." };
+    }
     patch.ein_encrypted = encrypted;
     patch.ein_last4 = digits.slice(-4);
   }
 
   const { error } = await supabase.from("carrier_onboarding_applications").update(patch).eq("id", identity.applicationId);
-  if (error) return { ok: false, error: error.message };
+  if (error) {
+    console.error("[carrier-onboarding] company save failed:", { application_id: identity.applicationId, error: error.message });
+    return { ok: false, error: "We couldn't save your company information. Please try again, or contact the office that invited you." };
+  }
 
   revalidatePath("/carrier-onboarding/company");
   revalidatePath("/carrier-onboarding/review");

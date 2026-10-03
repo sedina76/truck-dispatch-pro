@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCarrierOnboardingSession } from "@/lib/carrier-onboarding/session";
 import { OnboardingStepper } from "@/components/carrier-onboarding/stepper";
+import { ToastProvider } from "@/components/ui/toast";
 
 // Phase 2L.4 -- the ONE gate every step page sits behind. A route group
 // ((portal), not part of the URL) so /carrier-onboarding/invalid itself
@@ -12,7 +13,11 @@ export default async function CarrierOnboardingPortalLayout({ children }: { chil
   const identity = await getCarrierOnboardingSession();
   if (!identity) redirect("/carrier-onboarding/invalid");
 
+  // ToastProvider: every step's Save / Continue reports errors (and "Saved.")
+  // as a toast. Without it those messages were silently dropped, so a
+  // refused save looked like "the button does nothing".
   return (
+    <ToastProvider>
     <div className="min-h-screen bg-desktop-bg">
       <header className="border-b border-desktop-border bg-card px-4 py-3 sm:px-6">
         <div className="mx-auto max-w-2xl">
@@ -25,5 +30,6 @@ export default async function CarrierOnboardingPortalLayout({ children }: { chil
         <main className="mt-4">{children}</main>
       </div>
     </div>
+    </ToastProvider>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { FormField, FormGrid } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ export function CompanyForm({ application }: { application: MyApplication }) {
   const toast = useToast();
   const router = useRouter();
   const [saving, startSave] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -20,9 +21,17 @@ export function CompanyForm({ application }: { application: MyApplication }) {
     // two separate onSubmit paths fighting over e.currentTarget.
     const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const continueNext = submitter?.name !== "save_only";
+    setError(null);
     startSave(async () => {
-      const result = await saveCompanyInfo(formData);
+      let result: Awaited<ReturnType<typeof saveCompanyInfo>>;
+      try {
+        result = await saveCompanyInfo(formData);
+      } catch {
+        result = { ok: false, error: "Something went wrong saving. Please try again; if it keeps happening, contact the office that invited you." };
+      }
       if (!result.ok) {
+        // shown both as a toast and right under the buttons, so it can't be missed
+        setError(result.error);
         toast.show("error", result.error);
         return;
       }
@@ -78,12 +87,17 @@ export function CompanyForm({ application }: { application: MyApplication }) {
         </label>
       </div>
 
+      {error && (
+        <p role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[13px] text-danger">
+          {error}
+        </p>
+      )}
       <div className="flex flex-col-reverse gap-2 border-t border-desktop-border pt-4 sm:flex-row sm:justify-end">
         <Button type="submit" name="save_only" variant="outline" disabled={saving}>
           Save Progress
         </Button>
         <Button type="submit" disabled={saving}>
-          {saving ? "Saving..." : "Continue to Equipment"}
+          {saving ? "Saving..." : "Continue to Tax Info"}
         </Button>
       </div>
     </form>
