@@ -38,7 +38,11 @@ test("no separate Carrier Invoices tab: Billing's Invoices tab covers the carrie
   // the carrier's invoice page has the same layout as yours: Invoices > number tabs, tiles, terms, documents, billing packet
   const detail = src("../../app/(app)/carrier-invoices/[id]/page.tsx");
   assert.match(detail, /<DesktopWorkspaceTabs tabs=\{\[\{ label: "Invoices", href: "\/invoices" \}/);
-  for (const part of ['label="Subtotal"', 'label="Balance Due"', "Payment Terms", "Billing Documents", "Billing Packet", "Download PDF", "Billing Party"]) assert.ok(detail.includes(part), part);
+  for (const part of ['label="Subtotal"', 'label="Balance Due"', "Payment Terms", "Billing Documents", "<CarrierBillingPacketSection", "Download PDF", "Billing Party"]) assert.ok(detail.includes(part), part);
+  // same Billing Packet box as your invoice: checklist, status, "Generate Billing Packet" (shown, greyed out until ready)
+  const packet = src("../../components/carrier-invoices/carrier-billing-packet-section.tsx");
+  for (const part of ["<CardTitle>Billing Packet</CardTitle>", "Generate Billing Packet", "Download Packet", "Billing Packet Not Ready", "Rate Confirmation — Optional", "BOL — Optional"]) assert.ok(packet.includes(part), part);
+  assert.ok((packet.match(/>\s*Generate Billing Packet\s*</g) ?? []).length === 2, "the button shows whether or not the packet is ready");
   // and /invoices/<id> forwards a carrier's invoice to its page
   assert.match(src("../../app/(app)/invoices/[id]/page.tsx"), /if \(carriersInvoice\) redirect\(`\/carrier-invoices\/\$\{id\}`\)/);
 });
@@ -79,4 +83,13 @@ test("issuing: one click for owner/admin on a draft, prefilled note, plain wordi
   assert.ok(!/supabase\.rpc\(/.test(quick), "only the reviewed actions touch the workflow");
   const detail = src("../../app/(app)/carrier-invoices/[id]/page.tsx");
   assert.match(detail, /canIssueDraft=\{actions\.markReady && isCarrierInvoicePilotOperator\(role\)\}/);
+});
+
+test("the carrier's billing packet is saved to storage and opened by signed link (large phone photos never hit the response size cap)", () => {
+  const route = src("../../app/(app)/carrier-invoices/[id]/package/route.ts");
+  assert.match(route, /requireRoleForApi\(BILLING_ROLES\)/);
+  assert.match(route, /storage\.from\("billing-packets"\)\.upload\(path, bytes/);
+  assert.match(route, /const folder = `\$\{org\}\/carrier-invoices\/\$\{id\}`/, "org folder first: the bucket's RLS scopes by it");
+  assert.match(route, /createSignedUrl\(path, 300/);
+  assert.match(route, /NextResponse\.redirect\(signed\.signedUrl, 303\)/);
 });

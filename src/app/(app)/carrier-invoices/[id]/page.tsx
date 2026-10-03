@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { FileText, Package, CheckCircle2, AlertTriangle } from "lucide-react";
+import { FileText, CheckCircle2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { EmailCarrierButton } from "@/components/dispatch-fee-invoices/email-carrier-button";
+import { CarrierBillingPacketSection } from "@/components/carrier-invoices/carrier-billing-packet-section";
 import { CarrierInvoiceFactoringPanel } from "@/components/carrier-invoices/carrier-invoice-factoring-panel";
 import { CarrierInvoiceLifecyclePanel } from "@/components/carrier-invoices/carrier-invoice-lifecycle-panel";
 import { isCarrierInvoicePilotOperator, lifecycleActions, type IssuancePreview } from "@/lib/factoring/carrier-invoice-issuance";
@@ -13,7 +13,7 @@ import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import { computePodStatus } from "@/lib/documents/pod-status";
 import { getLatestDocument } from "@/lib/documents/latest-document";
 import { getPodSignedUrl } from "@/app/(app)/loads/pod-actions";
-import { loadIssuedCarrierInvoice, factorPackageMissing } from "@/lib/carrier-invoices/pdf";
+import { loadIssuedCarrierInvoice } from "@/lib/carrier-invoices/pdf";
 import { packageRecipient } from "@/lib/carrier-invoices/source";
 import { getCarrierInvoiceFactoringPreview } from "../factoring-actions";
 import { previewCarrierInvoiceIssuance, previewCarrierInvoiceReissue } from "../issuance-actions";
@@ -76,7 +76,6 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
   // factor package (issued freight invoices only)
   const issued = invoice.issuance_status === "issued" && invoice.invoice_document_type === "carrier_freight_invoice";
   const issuedInv = issued ? await loadIssuedCarrierInvoice(supabase, id) : null;
-  const missing = issuedInv ? await factorPackageMissing(supabase, issuedInv) : [];
   const sender = names.carriers?.factor_package_sent_by === "carrier" ? "carrier" : "dispatcher";
   const dest = issuedInv ? packageRecipient(issuedInv.snapshot, sender, names.carriers?.email ?? null) : null;
   const { data: emailsRaw } = issued
@@ -272,50 +271,24 @@ export default async function CarrierInvoiceDetailPage({ params }: { params: Pro
       )}
 
       {freight && (
-        <div className="rounded-xl border border-border bg-card p-4 shadow-elevation-1">
-          <p className="text-sm font-medium">Billing Packet</p>
-          {!issuedInv ? (
-            <p className="mt-2 text-[12.5px] text-muted-foreground">
-              {invoice.issuance_status === "voided" ? "This invoice is void." : "Issue the invoice first. The billing packet is then the invoice plus the load's proof of delivery, rate confirmation and bill of lading."}
-            </p>
-          ) : (
-            <div className="mt-2 space-y-2.5 text-[12.5px]">
-              <p>
-                Goes to: <span className="font-medium">{dest?.label}</span>
-                <span className="text-muted-foreground">
-                  {" "}(carrier setting: {sender === "carrier" ? "the carrier sends the paperwork" : "we send the paperwork"}{" "}
-                  -- <Link href={`/carriers/${invoice.carrier_id}#broker-pays`} className="text-primary hover:underline">change</Link>)
-                </span>
-              </p>
-              {missing.length > 0 && (
-                <div className="rounded-sm border border-warning/30 bg-warning/5 px-3 py-2 text-warning">
-                  Not ready -- missing: {missing.join("; ")}. Upload and verify it on the load, then come back.
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                <a href={`/carrier-invoices/${id}/pdf`} target="_blank" rel="noopener" className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">
-                  <FileText className="size-4" /> Invoice PDF
-                </a>
-                {missing.length === 0 && (
-                  <>
-                    <a href={`/carrier-invoices/${id}/package`} target="_blank" rel="noopener" className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">
-                      <Package className="size-4" /> View billing packet
-                    </a>
-                    <a href={`/carrier-invoices/${id}/package?download=1`} className="inline-flex h-8 items-center rounded-sm border border-desktop-border px-3 text-[13px] font-medium hover:bg-muted">
-                      Download billing packet
-                    </a>
-                    <EmailCarrierButton label={lastSent ? "Email Again" : dest?.who === "factor_portal" ? "Email Billing Packet" : `Email to ${dest?.who === "factor" ? "Factor" : dest?.who === "broker" ? "Broker" : "Carrier"}`} />
-                  </>
-                )}
-              </div>
-              {dest?.who === "factor_portal" && <p className="text-muted-foreground">This factor takes uploads on its website: download the billing packet and upload it there (or email it to an address you type in).</p>}
-              <p className="text-muted-foreground">
-                {lastSent ? `Emailed to ${lastSent.recipient} on ${new Date(lastSent.sent_at).toLocaleString()}.` : "Not emailed yet."}
-                {emails[0] && emails[0].status !== "sent" && <span className="text-danger"> Last attempt did not send: {emails[0].error ?? emails[0].status}.</span>}
-              </p>
-            </div>
-          )}
-        </div>
+        <CarrierBillingPacketSection
+          invoiceId={id}
+          issued={!!issuedInv}
+          voided={invoice.issuance_status === "voided"}
+          loads={docRows.map((d) => ({ loadNumber: d.loadNumber, podStatus: d.podStatus, rateConReady: d.rateConReady, bolReady: d.bolReady }))}
+          destination={
+            dest
+              ? {
+                  who: dest.who,
+                  label: dest.label,
+                  settingLabel: sender === "carrier" ? "carrier setting: the carrier sends the paperwork" : "carrier setting: we send the paperwork",
+                  changeHref: `/carriers/${invoice.carrier_id}#broker-pays`,
+                }
+              : null
+          }
+          lastSent={lastSent ? { recipient: lastSent.recipient, sentAt: lastSent.sent_at } : null}
+          lastError={emails[0] && emails[0].status !== "sent" ? (emails[0].error ?? emails[0].status) : null}
+        />
       )}
 
       <div className="rounded-xl border border-border bg-card p-4 text-[12.5px] shadow-elevation-1">
