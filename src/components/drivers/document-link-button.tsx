@@ -7,7 +7,10 @@ import { FileText, Loader2 } from "lucide-react";
 // getApplicationDocumentUrl.bind(null, applicationId, storagePath)) --
 // generates a short-lived signed URL server-side each time it's clicked
 // rather than embedding a long-lived link, since the bucket is private.
-export function DocumentLinkButton({ label, getUrl }: { label: string; getUrl: () => Promise<string> }) {
+// It may also RETURN { error } instead of throwing: a thrown server-action
+// message is replaced by a generic "Server Components render" text in
+// production, so actions that want the person to see the real reason return it.
+export function DocumentLinkButton({ label, getUrl }: { label: string; getUrl: () => Promise<string | { error: string }> }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -15,8 +18,12 @@ export function DocumentLinkButton({ label, getUrl }: { label: string; getUrl: (
     setLoading(true);
     setError(null);
     try {
-      const url = await getUrl();
-      window.open(url, "_blank", "noopener,noreferrer");
+      const result = await getUrl();
+      if (typeof result !== "string") {
+        setError(result.error);
+        return;
+      }
+      window.open(result, "_blank", "noopener,noreferrer");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not open this document.");
     } finally {

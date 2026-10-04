@@ -298,6 +298,9 @@ export async function uploadOnboardingDocument(documentType: string, formData: F
     document_type: documentType,
     file_name: file.name,
     file_path: storagePath,
+    // where the file really is (it used to default to 'documents', so after
+    // conversion the carrier page could not open it)
+    storage_bucket: "carrier-onboarding-documents",
     file_size_bytes: file.size,
     mime_type: file.type,
     uploaded_by: null,

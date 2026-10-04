@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireOperationalAccess } from "@/lib/billing/operational-access";
 import { createClient } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { emptyToNull } from "@/lib/utils/form";
 import { validateUploadedFile } from "@/lib/documents/validate-upload";
@@ -131,12 +132,29 @@ export async function uploadCarrierDocument(
 }
 
 // Short-lived signed URL for a carrier document. The bucket is private;
-// every view/download goes through this, never a stored link. RLS-scoped
-// lookup confirms the row is this org's own carrier document before a URL
-// is ever generated.
-export async function getCarrierDocumentSignedUrl(documentId: string, download: boolean): Promise<string> {
+// every view/download goes through this, never a stored link. The RLS-scoped
+// lookup (caller's own session) confirms the row is this org's own carrier
+// document BEFORE any link is made.
+//
+// Where the file lives: documents.storage_bucket, except that documents a
+// carrier uploaded during onboarding were recorded with the column's default
+// ('documents') while the file is in 'carrier-onboarding-documents' -- and
+// after conversion they appear here as carrier documents (e.g. the NOA).
+// That bucket has no staff storage policy (the portal is server-mediated), so
+// once the row is verified the link is signed with the service role, trying
+// the recorded bucket first and then the known document buckets. Problems are
+// RETURNED so the person sees the real reason (a thrown message is hidden in
+// production).
+const KNOWN_DOCUMENT_BUCKETS = ["load-documents", "carrier-onboarding-documents", "documents", "carrier-w9s"];
+
+export async function getCarrierDocumentSignedUrl(documentId: string, download: boolean): Promise<string | { error: string }> {
   const supabase = await createClient();
-  const organizationId = await getCurrentOrgId();
+  let organizationId: string;
+  try {
+    organizationId = await getCurrentOrgId();
+  } catch {
+    return { error: "Your session has ended. Sign in again." };
+  }
 
   const { data: doc } = await supabase
     .from("documents")
@@ -145,13 +163,19 @@ export async function getCarrierDocumentSignedUrl(documentId: string, download: 
     .eq("organization_id", organizationId)
     .eq("entity_type", "carrier")
     .maybeSingle();
-  if (!doc) throw new Error("Document not available.");
+  if (!doc) return { error: "Document not available." };
+  if (!doc.file_path || !doc.file_path.startsWith(`${organizationId}/`)) return { error: "This document's file location is not valid." };
 
-  const { data, error } = await supabase.storage
-    .from(doc.storage_bucket ?? BUCKET)
-    .createSignedUrl(doc.file_path, 300, download ? { download: true } : undefined);
-  if (error || !data) throw new Error(error?.message ?? "Could not generate a document link.");
-  return data.signedUrl;
+  const recorded = doc.storage_bucket ?? BUCKET;
+  const buckets = [recorded, ...KNOWN_DOCUMENT_BUCKETS.filter((b) => b !== recorded)];
+  const service = createServiceRoleClient();
+  for (const bucket of buckets) {
+    const { data } = await service.storage.from(bucket).createSignedUrl(doc.file_path, 300, download ? { download: true } : undefined);
+    // a signed URL is only returned for an object that exists
+    if (data?.signedUrl) return data.signedUrl;
+  }
+  console.error("[carrier-documents] file not found in any document bucket:", { document_id: documentId, recorded_bucket: recorded });
+  return { error: "The file for this document could not be found. Please upload it again." };
 }
 
 // Delete a carrier document uploaded through this workflow. Protected
