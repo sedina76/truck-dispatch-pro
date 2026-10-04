@@ -108,7 +108,8 @@ export async function getDashboardKpis(canSeeFinancials: boolean, canSeeExceptio
     supabase.from("trucks").select("id, status"),
     supabase.from("invoices").select("status, balance_due, issue_date"),
     supabase.from("compliance_items").select("status"),
-    supabase.from("expenses").select("amount, expense_date"),
+    // Only real costs: approved or paid (never void, draft or still-submitted).
+    supabase.from("expenses").select("amount, expense_date").in("status", ["approved", "paid"]),
     supabase.from("dispatch_advances").select("amount, status, updated_at"),
     // Accounts Receivable canonical aggregate -- same function Finance ->
     // Accounts Receivable, the Invoices list KPIs, and Reports all call,
@@ -193,8 +194,10 @@ export async function getDashboardKpis(canSeeFinancials: boolean, canSeeExceptio
   const complianceAlerts = compliance.filter((c) => c.status === "expiring_soon" || c.status === "expired").length;
 
   // ---- 8. Profit This Month (dispatch fees - expenses - waived advances) --
-  const grossThisMonth = sumWhere(dispatches, "dispatched_at", startOfThisMonth, undefined, "dispatch_fee_amount");
-  const grossLastMonth = sumWhere(dispatches, "dispatched_at", startOfLastMonth, startOfThisMonth, "dispatch_fee_amount");
+  // A cancelled dispatch earns no fee.
+  const feeDispatches = dispatches.filter((d) => d.status !== "cancelled");
+  const grossThisMonth = sumWhere(feeDispatches, "dispatched_at", startOfThisMonth, undefined, "dispatch_fee_amount");
+  const grossLastMonth = sumWhere(feeDispatches, "dispatched_at", startOfLastMonth, startOfThisMonth, "dispatch_fee_amount");
   const expensesThisMonth = sumWhere(expenses, "expense_date", startOfThisMonth, undefined, "amount");
   const expensesLastMonth = sumWhere(expenses, "expense_date", startOfLastMonth, startOfThisMonth, "amount");
   const waivedThisMonth = sumWhere(
@@ -214,7 +217,7 @@ export async function getDashboardKpis(canSeeFinancials: boolean, canSeeExceptio
   const netThisMonth = grossThisMonth - expensesThisMonth - waivedThisMonth;
   const netLastMonth = grossLastMonth - expensesLastMonth - waivedLastMonth;
   const feesSpark = bucketDaily(
-    dispatches.map((d) => ({ at: d.dispatched_at, amount: Number(d.dispatch_fee_amount) })),
+    feeDispatches.map((d) => ({ at: d.dispatched_at, amount: Number(d.dispatch_fee_amount) })),
     SPARKLINE_DAYS
   );
 
@@ -366,7 +369,7 @@ export async function getDashboardKpis(canSeeFinancials: boolean, canSeeExceptio
       href: "/reports/revenue",
       delta: toDelta(pctDelta(netThisMonth, netLastMonth), "vs last month"),
       sparkline: feesSpark,
-      tooltip: "Dispatch fees earned this month, minus recorded expenses and waived driver advances.",
+      tooltip: "Dispatch fees earned this month (cancelled dispatches excluded), minus approved/paid expenses and waived driver advances. Voided or not-yet-approved expenses don't count.",
       updatedAt,
     },
   ];
