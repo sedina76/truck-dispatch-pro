@@ -58,7 +58,7 @@ export default async function NewFuelLogPage() {
             <DesktopCollapsibleSection id="payment" title="Payment & Responsibility">
               {/* Responsible Driver stays org-wide by design (see
                   payment-responsibility-fields.tsx) -- unchanged. */}
-              <PaymentResponsibilityFields drivers={driversRaw ?? []} amountCapLabel="the fuel purchase total" />
+              <PaymentResponsibilityFields drivers={driversRaw ?? []} amountCapLabel="the fuel purchase total" defaultPaidBy="carrier" />
             </DesktopCollapsibleSection>
           </div>
         </CollapsibleSectionsProvider>

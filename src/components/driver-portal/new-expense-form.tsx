@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { submitDriverExpense } from "@/app/driver-portal/actions";
-import { DRIVER_SUBMITTABLE_CATEGORIES, DRIVER_FUEL_PAID_BY } from "@/lib/driver-portal/constants";
+import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
 
 const CATEGORY_LABEL: Record<(typeof DRIVER_SUBMITTABLE_CATEGORIES)[number], string> = {
   lumper: "Lumper",
@@ -80,15 +80,6 @@ export function NewExpenseForm({ loadNumber }: { loadNumber: string }) {
               <input name="odometer_reading" type="number" min="0" inputMode="numeric" className={inputClass} placeholder="miles" />
             </Field>
           </div>
-          <Field label="How did you pay?">
-            <select name="paid_by" required className={inputClass} defaultValue="carrier">
-              {DRIVER_FUEL_PAID_BY.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </Field>
         </>
       )}
 

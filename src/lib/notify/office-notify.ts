@@ -77,7 +77,7 @@ export async function notifyOfficeOfDriverExpense(
  */
 export async function notifyOfficeOfDriverFuel(
   supabase: ServiceRoleClient,
-  p: { organizationId: string; fuelLogId: string; loadId: string | null; amount: number; gallons: number; station: string | null; truckUnit: string | null; paidByLabel: string; driverName: string | null }
+  p: { organizationId: string; fuelLogId: string; loadId: string | null; amount: number; gallons: number; station: string | null; truckUnit: string | null; driverName: string | null }
 ): Promise<void> {
   try {
     const [{ data: recipients }, { data: load }] = await Promise.all([

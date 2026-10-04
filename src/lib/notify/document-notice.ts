@@ -44,13 +44,13 @@ export function driverExpenseNotice(category: string, amount: number, loadNumber
 }
 
 /** Bell text when a driver logs a fuel purchase from the Driver Portal. */
-export function driverFuelNotice(p: { amount: number; gallons: number; station: string | null; truckUnit: string | null; loadNumber: string | null; paidByLabel: string; driverName: string | null }): { title: string; body: string } {
+export function driverFuelNotice(p: { amount: number; gallons: number; station: string | null; truckUnit: string | null; loadNumber: string | null; driverName: string | null }): { title: string; body: string } {
   const money = `$${Number(p.amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const gal = `${Number(p.gallons).toLocaleString("en-US", { maximumFractionDigits: 2 })} gal`;
   const truck = p.truckUnit ? `Truck ${p.truckUnit}` : "a truck";
   const who = p.driverName?.trim() || "The driver";
   return {
     title: `Fuel ${money} (${gal}) -- ${truck}`,
-    body: `${who} logged it${p.station ? ` at ${p.station}` : ""}${p.loadNumber ? ` on Load ${p.loadNumber}` : ""}. Paid with: ${p.paidByLabel}.`,
+    body: `${who} logged it${p.station ? ` at ${p.station}` : ""}${p.loadNumber ? ` on Load ${p.loadNumber}` : ""}. Paid by the carrier.`,
   };
 }

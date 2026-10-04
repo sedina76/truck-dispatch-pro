@@ -6,7 +6,6 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import { ExpenseReceiptUpload } from "@/components/driver-portal/expense-receipt-upload";
 import { getDriverFuelReceiptSignedUrl } from "@/app/driver-portal/actions";
-import { DRIVER_FUEL_PAID_BY } from "@/lib/driver-portal/constants";
 
 function money(n: number): string {
   return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -71,7 +70,6 @@ export default async function DriverPortalFuelDetailPage({ params }: { params: P
           <Field label="State" value={f.state ?? "--"} />
           <Field label="Truck" value={f.trucks?.unit_number ?? "--"} />
           <Field label="Odometer" value={f.odometer_reading != null ? Number(f.odometer_reading).toLocaleString() : "--"} />
-          <Field label="Paid with" value={DRIVER_FUEL_PAID_BY.find((o) => o.value === f.paid_by)?.label ?? f.paid_by} />
         </div>
       </div>
 

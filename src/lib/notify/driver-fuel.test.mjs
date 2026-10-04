@@ -10,8 +10,8 @@ const src = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
 test("bell text for driver fuel", () => {
   assert.deepEqual(
-    driverFuelNotice({ amount: 412.5, gallons: 110.25, station: "Pilot Flying J", truckUnit: "T-101", loadNumber: "LD-000001", paidByLabel: "Carrier fuel card", driverName: "Ali Salah" }),
-    { title: "Fuel $412.50 (110.25 gal) -- Truck T-101", body: "Ali Salah logged it at Pilot Flying J on Load LD-000001. Paid with: Carrier fuel card." }
+    driverFuelNotice({ amount: 412.5, gallons: 110.25, station: "Pilot Flying J", truckUnit: "T-101", loadNumber: "LD-000001", driverName: "Ali Salah" }),
+    { title: "Fuel $412.50 (110.25 gal) -- Truck T-101", body: "Ali Salah logged it at Pilot Flying J on Load LD-000001. Paid by the carrier." }
   );
 });
 
@@ -38,11 +38,18 @@ test("fuel -> fuel_logs (not expenses), receipt on the fuel log, office notified
 
 test("driver app: fuel fields, own fuel list and detail", () => {
   const form = src("../../components/driver-portal/new-expense-form.tsx");
-  for (const f of ['name="gallons"', 'name="price_per_gallon"', 'name="state"', 'name="odometer_reading"', 'name="paid_by"']) assert.ok(form.includes(f), f);
+  for (const f of ['name="gallons"', 'name="price_per_gallon"', 'name="state"', 'name="odometer_reading"']) assert.ok(form.includes(f), f);
   assert.match(form, /router\.push\(fuelLogId \? `\/driver-portal\/expenses\/fuel\/\$\{fuelLogId\}`/);
   const list = src("../../app/driver-portal/expenses/page.tsx");
   assert.match(list, /\.from\("fuel_logs"\)[\s\S]*\.eq\("driver_id", identity\.driverId\)/);
   const detail = src("../../app/driver-portal/expenses/fuel/[id]/page.tsx");
   assert.match(detail, /\.eq\("driver_id", identity\.driverId\)/);
   assert.match(detail, /<ExpenseReceiptUpload fuelLogId=\{f\.id\} \/>/);
+});
+
+test("fuel is paid by the carrier: no payment question for the driver, recorded as carrier", () => {
+  const a = src("../../app/driver-portal/actions.ts");
+  assert.match(a, /paid_by: "carrier",/);
+  assert.ok(!src("../../components/driver-portal/new-expense-form.tsx").includes('name="paid_by"'));
+  assert.match(src("../../app/(app)/fuel/new/page.tsx"), /defaultPaidBy="carrier"/);
 });

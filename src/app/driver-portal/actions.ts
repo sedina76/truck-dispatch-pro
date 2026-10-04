@@ -6,7 +6,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
 import { getLatestDocument } from "@/lib/documents/latest-document";
-import { DRIVER_SUBMITTABLE_CATEGORIES, DRIVER_FUEL_PAID_BY } from "@/lib/driver-portal/constants";
+import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
 
@@ -188,8 +188,6 @@ async function submitDriverFuel(
   if (!gallons || gallons <= 0) throw new Error("Enter the gallons.");
   const pricePerGallon = toNumber(formData.get("price_per_gallon"));
   const odometer = toNumber(formData.get("odometer_reading"));
-  const paidBy = String(formData.get("paid_by") || "carrier");
-  if (!DRIVER_FUEL_PAID_BY.some((o) => o.value === paidBy)) throw new Error("Choose how you paid.");
   const state = emptyToNull(formData.get("state"));
 
   const { data: trip } = await supabase.from("dispatches").select("truck_id").eq("id", dispatch.id).maybeSingle();
@@ -213,7 +211,8 @@ async function submitDriverFuel(
       state: state ? String(state).toUpperCase().slice(0, 2) : null,
       station_name: emptyToNull(formData.get("vendor_name")),
       purchased_at: purchasedAt,
-      paid_by: paidBy,
+      // Fuel is the carrier's cost (paid with the carrier's fuel card / money).
+      paid_by: "carrier",
     })
     .select("id")
     .single();
@@ -242,7 +241,6 @@ async function submitDriverFuel(
     gallons,
     station: emptyToNull(formData.get("vendor_name")) as string | null,
     truckUnit: truck?.unit_number ?? null,
-    paidByLabel: DRIVER_FUEL_PAID_BY.find((o) => o.value === paidBy)?.label ?? paidBy,
     driverName: drv ? `${drv.first_name} ${drv.last_name}` : null,
   });
 
