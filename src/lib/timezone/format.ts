@@ -145,3 +145,14 @@ export function dateOnlyDayEnd(iso: string | null, windowEndIso: string | null, 
   if (!iso || windowEndIso || !isMidnightLocal(iso, timezone)) return null;
   return new Date(new Date(iso).getTime() + (23 * 60 + 59) * 60 * 1000).toISOString();
 }
+
+/** "Mountain Time (America/Denver)" -- the zone people say, plus the exact one. */
+export function zoneDisplayName(timezone: string | null): string {
+  if (!timezone) return "--";
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longGeneric" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName");
+    return part?.value && part.value !== timezone ? `${part.value} (${timezone})` : timezone;
+  } catch {
+    return timezone;
+  }
+}

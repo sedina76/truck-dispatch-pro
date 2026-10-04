@@ -63,3 +63,17 @@ test("a date-only appointment is due by the end of that day, not 12:00 AM", asyn
   assert.equal(r.scheduleVarianceMinutes, -(20 * 60 + 38)); // 20 h 38 min after the day ended, not 1 day 20 h
   assert.match(src("../routing/evaluate-route.ts"), /dateOnlyDayEnd\(targetStop\.scheduled_at, targetStop\.scheduled_window_end, targetStopTimezone\)/);
 });
+
+test("stop sections: date-only appointment, readable timezone, distance in ft/mi, formatted phone", async () => {
+  const { zoneDisplayName } = await import("./format.ts");
+  const { formatDistance } = await import("../routing/risk.ts");
+  assert.equal(zoneDisplayName("America/Denver"), "Mountain Time (America/Denver)");
+  assert.equal(formatDistance(1593991), "990 mi");
+  assert.equal(formatDistance(120), "394 ft");
+  assert.equal(formatDistance(5000), "3.1 mi");
+  assert.equal(formatDistance(null), "--");
+  const drawer = src("../../components/dispatch/dispatch-drawer.tsx");
+  assert.match(drawer, /value=\{formatAppointment\(stop\.scheduledAt, stop\.scheduledWindowEnd, stop\.timezone\)\}/);
+  assert.match(drawer, /<Row label="Distance" value=\{formatDistance\(geofence\.distanceM\)\} \/>/);
+  assert.match(drawer, /<Row label="Phone" value=\{formatPhone\(stop\.contactPhone\)\} \/>/);
+});

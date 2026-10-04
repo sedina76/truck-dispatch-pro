@@ -136,3 +136,12 @@ export function addRequiredRest(drivingSeconds: number): number {
 export function etaIncludesRest(drivingSeconds: number | null): boolean {
   return drivingSeconds != null && drivingSeconds > HOS.BREAK_AFTER_DRIVING_S;
 }
+
+/** Geofence distance: feet when close (under a quarter mile), miles otherwise. 1593991 -> "990 mi", 120 -> "394 ft". */
+export function formatDistance(meters: number | null): string {
+  if (meters == null) return "--";
+  const feet = meters * 3.28084;
+  if (feet < 1320) return `${Math.round(feet).toLocaleString("en-US")} ft`;
+  const miles = meters / 1609.344;
+  return miles >= 10 ? `${Math.round(miles).toLocaleString("en-US")} mi` : `${miles.toFixed(1)} mi`;
+}

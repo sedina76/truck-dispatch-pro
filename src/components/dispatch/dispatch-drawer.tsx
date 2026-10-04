@@ -39,8 +39,8 @@ import {
 } from "@/app/(app)/dispatch/board-actions";
 import { refreshDispatchEta } from "@/app/(app)/dispatch/route-actions";
 import { formatMinutes } from "@/lib/dispatch/detention";
-import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes, etaIncludesRest } from "@/lib/routing/risk";
-import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
+import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes, etaIncludesRest, formatDistance } from "@/lib/routing/risk";
+import { formatStopDateTime, stopLocalDateInputValue, stopLocalTimeInputValue, formatStopDayTime, formatAppointment, zoneDisplayName } from "@/lib/timezone/format";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
 import { InternalFinancialsPanel } from "@/components/dispatch/internal-financials-panel";
@@ -579,12 +579,12 @@ function StopSection({
         <Row label="Address" value={stopAddressLine(stop)} />
         <Row
           label="Appointment"
-          value={stop.scheduledWindowEnd ? formatStopWindow(stop.scheduledAt, stop.scheduledWindowEnd, stop.timezone) : formatStopDateTime(stop.scheduledAt, stop.timezone)}
+          value={formatAppointment(stop.scheduledAt, stop.scheduledWindowEnd, stop.timezone)}
         />
-        <Row label="Timezone" value={stop.timezone} />
+        <Row label="Timezone" value={zoneDisplayName(stop.timezone)} />
         <Row label="Reference #" value={stop.referenceNumber ?? "--"} />
         <Row label="Contact" value={stop.contactName ?? "--"} />
-        <Row label="Phone" value={stop.contactPhone ?? "--"} />
+        <Row label="Phone" value={formatPhone(stop.contactPhone)} />
         <Row label="Arrival" value={formatStopDateTime(stop.arrivedAt, stop.timezone)} />
         <Row label="Departure" value={formatStopDateTime(stop.departedAt, stop.timezone)} />
       </div>
@@ -965,7 +965,7 @@ function GeofenceBlock({
         <Satellite className="size-3.5" /> {kind === "pickup" ? "Pickup" : "Delivery"} Geofence
       </p>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-        <Row label="Distance" value={geofence.distanceM != null ? `${Math.round(geofence.distanceM)} m` : "--"} />
+        <Row label="Distance" value={formatDistance(geofence.distanceM)} />
         <Row label="State" value={geofence.state ? GEOFENCE_STATE_LABEL[geofence.state] ?? geofence.state : "No data yet"} />
         <Row label="GPS Accuracy" value={geofence.accuracyM != null ? `${Math.round(geofence.accuracyM)} m` : "--"} />
         <Row
