@@ -45,6 +45,7 @@ import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
 import { InternalFinancialsPanel } from "@/components/dispatch/internal-financials-panel";
 import { formatPhone } from "@/lib/utils/phone";
+import { WeatherAlerts } from "@/components/tracking/weather-alerts";
 
 // Phase 2I.1: 'documents' and 'communication' default OPEN (unlike every
 // other secondary section) -- both are now primary operational surfaces
@@ -1096,6 +1097,8 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> Route ETA unavailable.
         </div>
       )}
+
+      <WeatherAlerts alerts={data.weatherAlerts} timeZone={r?.targetStopTimezone} />
 
       {data.routeDeviation && <RouteDeviationBlock deviation={data.routeDeviation} dispatchId={dispatchId} onDismissed={onRefreshed} />}
 

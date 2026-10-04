@@ -6,6 +6,7 @@ import { TrackingBoard } from "@/components/tracking/tracking-board";
 import type { FleetRow, FleetRisk } from "@/lib/tracking/fleet";
 import { stopLabel } from "@/lib/geo/stop-point";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { weatherAlertsForTrip } from "@/lib/weather/route-alerts";
 
 export default async function TrackingPage() {
   const supabase = await createClient();
@@ -116,6 +117,7 @@ export default async function TrackingPage() {
     risk_status: string | null;
     calculation_status: string | null;
     updated_at: string;
+    route_geometry: [number, number][] | null;
   };
   const routeByDispatch = new Map<string, RouteRow>();
   const stopById = new Map<string, { facility_name: string | null; city: string | null; state: string | null; timezone: string | null; geocode_source: string | null }>();
@@ -124,7 +126,7 @@ export default async function TrackingPage() {
     const [{ data: routeRows, error: routeError }, { data: orgRow }] = await Promise.all([
       supabase
         .from("dispatch_route_intelligence")
-        .select("dispatch_id, target_stop_id, route_distance_meters, route_duration_seconds, estimated_arrival_at, appointment_at, appointment_window_end, schedule_variance_minutes, risk_status, calculation_status, updated_at")
+        .select("dispatch_id, target_stop_id, route_distance_meters, route_duration_seconds, estimated_arrival_at, appointment_at, appointment_window_end, schedule_variance_minutes, risk_status, calculation_status, updated_at, route_geometry")
         .in("dispatch_id", dispatchIds),
       supabase.from("organizations").select("timezone").eq("id", organizationId).maybeSingle(),
     ]);
@@ -166,6 +168,32 @@ export default async function TrackingPage() {
       calcStatus: route?.calculation_status ?? null,
     };
   });
+
+  // Weather on each loaded truck's route and stops (NWS, cached ~10 min;
+  // never holds the page up more than ~5 s -- slow answers show next refresh).
+  const onLoad = fleetRows.filter((r) => r.dispatchId);
+  const weatherByDispatch = await Promise.race([
+    Promise.all(
+      onLoad.map(async (r) => {
+        const m = markers.find((x) => x.driverId === r.driverId);
+        const stops = initialDispatchStops[r.dispatchId!] ?? { pickup: null, delivery: null };
+        const alerts = await weatherAlertsForTrip({
+          truck: m ? { lat: m.latitude, lon: m.longitude } : null,
+          route: routeByDispatch.get(r.dispatchId!)?.route_geometry ?? null,
+          stops: [
+            ...(stops.pickup ? [{ lat: stops.pickup.latitude, lon: stops.pickup.longitude, label: "pickup" }] : []),
+            ...(stops.delivery ? [{ lat: stops.delivery.latitude, lon: stops.delivery.longitude, label: "delivery" }] : []),
+          ],
+        }).catch(() => []);
+        return [r.dispatchId!, alerts] as const;
+      })
+    ).then((pairs) => new Map(pairs)),
+    new Promise<Map<string, Awaited<ReturnType<typeof weatherAlertsForTrip>>>>((resolve) => setTimeout(() => resolve(new Map()), 5000)),
+  ]);
+  for (const r of fleetRows) {
+    const w = r.dispatchId ? weatherByDispatch.get(r.dispatchId) : undefined;
+    if (w && w.length) r.weather = w.map((a) => ({ event: a.event, where: a.where, area: a.area, severity: a.severity }));
+  }
 
   return (
     <div className="space-y-4">

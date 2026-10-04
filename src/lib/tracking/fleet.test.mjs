@@ -29,7 +29,7 @@ test("worst first: most late, late, at risk, GPS quiet, no ETA, on time, no load
 
 test("filters and counts agree", () => {
   const c = fleetCounts(rows, now);
-  assert.deepEqual(c, { onLoad: 6, late: 2, atRisk: 1, quiet: 1, idle: 1, reportingLive: 5 });
+  assert.deepEqual(c, { onLoad: 6, late: 2, atRisk: 1, quiet: 1, weather: 0, idle: 1, reportingLive: 5 });
   assert.equal(rows.filter((r) => matchesFilter(r, "late", now)).length, c.late);
   assert.equal(rows.filter((r) => matchesFilter(r, "idle", now)).length, 1);
   assert.ok(isGpsQuiet(rows[3], now) && !isGpsQuiet(rows[1], now), "an idle truck is never 'GPS quiet'");

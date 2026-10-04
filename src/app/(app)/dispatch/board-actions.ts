@@ -17,6 +17,8 @@ import { rpcDispatchConflict } from "@/lib/dispatch/conflicts";
 import { appendNoteLine } from "@/lib/dispatch/internal-notes";
 import { stopLabel, hasExactStopPoint, hasStopPoint, addressProblem, CITY_CENTER } from "@/lib/geo/stop-point";
 import { fillStopCoordinates, nearPlace } from "@/lib/geo/stop-geocoding";
+import { weatherAlertsForDispatch } from "@/lib/weather/route-alerts";
+import type { WeatherAlert } from "@/lib/weather/nws";
 
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
@@ -341,6 +343,8 @@ export type DispatchDrawerData = {
     stale: boolean;
   };
   routeIntelligence: RouteIntelligenceInfo | null;
+  /** Active NWS driving-hazard alerts on the route / at the stops (empty when none or unavailable). */
+  weatherAlerts: WeatherAlert[];
   routeDeviation: RouteDeviationInfo | null;
   documents: DrawerDocument[];
   activity: DrawerActivity[];
@@ -1074,6 +1078,8 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   }
 
   const tracking = buildTrackingInfo(latestLocation, dispatchId);
+  // Weather along the route (NWS, cached ~10 min); capped so it never holds the panel up.
+  const weatherAlerts = await Promise.race([weatherAlertsForDispatch(supabase, dispatchId), new Promise<WeatherAlert[]>((r) => setTimeout(() => r([]), 4500))]);
   if (tracking.available && latestLocation) tracking.placeName = await nearPlace(latestLocation.latitude, latestLocation.longitude).catch(() => null);
 
   return {
@@ -1123,6 +1129,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     },
     tracking,
     routeIntelligence,
+    weatherAlerts,
     routeDeviation,
     documents,
     activity,

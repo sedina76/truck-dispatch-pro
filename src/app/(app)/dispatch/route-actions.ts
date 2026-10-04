@@ -8,6 +8,8 @@ import { forceRefreshRouteIntelligence } from "@/lib/routing/evaluate-route";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { fillStopCoordinatesForDispatch } from "@/lib/geo/stop-geocoding";
 import { stopLabel } from "@/lib/geo/stop-point";
+import { weatherAlertsForDispatch } from "@/lib/weather/route-alerts";
+import type { WeatherAlert } from "@/lib/weather/nws";
 
 // ---------------------------------------------------------------------------
 // refreshDispatchEta -- the dispatcher-facing "Refresh ETA" button (spec
@@ -53,6 +55,8 @@ export type LiveTrackingRouteInfo = {
   // isn't applied yet (spec section 41: existing systems, this one
   // included, must keep working regardless).
   exceptions: { activeCount: number; highestSeverity: string | null; highestTitle: string | null } | null;
+  /** Active NWS driving-hazard alerts on the route / at the stops. */
+  weatherAlerts: WeatherAlert[];
 };
 
 const STALE_LOCATION_MINUTES = 5; // matches board-actions.ts's own constant
@@ -151,6 +155,8 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
     }
   }
 
+  const weatherAlerts = await Promise.race([weatherAlertsForDispatch(supabase, dispatchId), new Promise<WeatherAlert[]>((r) => setTimeout(() => r([]), 4500))]);
+
   return {
     loadNumber: d.loads?.load_number ?? "Load",
     driverName: d.drivers ? `${d.drivers.first_name} ${d.drivers.last_name}` : "--",
@@ -170,6 +176,7 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
     calculatedAt: routeRow?.calculated_at ?? null,
     deviation,
     exceptions,
+    weatherAlerts,
   };
 }
 

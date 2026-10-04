@@ -23,12 +23,14 @@ export type FleetRow = {
   risk: FleetRisk;
   varianceMinutes: number | null;
   calcStatus: string | null;
+  /** Active NWS driving-hazard alerts on this truck's route / stops. */
+  weather?: { event: string; where: string; area: string; severity: string }[];
 };
 
 /** No GPS for this long while on a load = "GPS quiet" (the driver app is probably closed). */
 export const GPS_QUIET_MINUTES = 15;
 
-export type FleetFilter = "all" | "late" | "at_risk" | "quiet" | "on_load" | "idle";
+export type FleetFilter = "all" | "late" | "at_risk" | "quiet" | "weather" | "on_load" | "idle";
 
 export function minutesSince(iso: string, now: number): number {
   return Math.max(0, (now - new Date(iso).getTime()) / 60_000);
@@ -72,6 +74,8 @@ export function matchesFilter(row: FleetRow, filter: FleetFilter, now: number): 
       return !!row.dispatchId && row.risk === "at_risk";
     case "quiet":
       return isGpsQuiet(row, now);
+    case "weather":
+      return !!row.dispatchId && (row.weather?.length ?? 0) > 0;
     case "on_load":
       return !!row.dispatchId;
     case "idle":
@@ -87,6 +91,7 @@ export function fleetCounts(rows: FleetRow[], now: number) {
     late: rows.filter((r) => matchesFilter(r, "late", now)).length,
     atRisk: rows.filter((r) => matchesFilter(r, "at_risk", now)).length,
     quiet: rows.filter((r) => matchesFilter(r, "quiet", now)).length,
+    weather: rows.filter((r) => matchesFilter(r, "weather", now)).length,
     idle: rows.filter((r) => !r.dispatchId).length,
     reportingLive: rows.filter((r) => minutesSince(r.recordedAt, now) <= GPS_QUIET_MINUTES).length,
   };

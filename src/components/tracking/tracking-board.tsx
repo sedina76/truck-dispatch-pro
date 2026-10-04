@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MessageSquare, Crosshair } from "lucide-react";
+import { MessageSquare, Crosshair, CloudLightning } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { LiveMap, type DriverMarker, type DispatchStopCoords } from "@/components/tracking/live-map";
@@ -32,6 +32,7 @@ const FILTERS: { key: FleetFilter; label: string }[] = [
   { key: "late", label: "Late" },
   { key: "at_risk", label: "At Risk" },
   { key: "quiet", label: "GPS Quiet" },
+  { key: "weather", label: "Weather" },
   { key: "on_load", label: "On a Load" },
   { key: "idle", label: "No Load" },
 ];
@@ -95,8 +96,9 @@ export function TrackingBoard({
     late: counts.late ? "text-danger" : "",
     at_risk: counts.atRisk ? "text-warning" : "",
     quiet: counts.quiet ? "text-warning" : "",
+    weather: counts.weather ? "text-danger" : "",
   };
-  const DOT: Partial<Record<FleetFilter, string>> = { late: "bg-danger", at_risk: "bg-warning", quiet: "bg-warning", on_load: "bg-success", idle: "bg-muted-foreground" };
+  const DOT: Partial<Record<FleetFilter, string>> = { late: "bg-danger", at_risk: "bg-warning", quiet: "bg-warning", weather: "bg-danger", on_load: "bg-success", idle: "bg-muted-foreground" };
   const activeLabel = FILTERS.find((f) => f.key === filter)?.label ?? "All";
 
   return (
@@ -180,7 +182,15 @@ export function TrackingBoard({
                           <span className="text-muted-foreground">No active load</span>
                         )}
                       </td>
-                      <td className="px-3 py-2">{r.dispatchId ? r.nextStop ?? "--" : ""}</td>
+                      <td className="px-3 py-2">
+                        {r.dispatchId ? r.nextStop ?? "--" : ""}
+                        {r.dispatchId && r.weather && r.weather.length > 0 && (
+                          <p className="mt-0.5 flex items-center gap-1 text-[11.5px] font-medium text-danger" title={r.weather.map((w) => `${w.event} -- ${w.where}${w.area ? `, ${w.area}` : ""}`).join("\n")}>
+                            <CloudLightning className="size-3 shrink-0" /> {r.weather[0].event}
+                            {r.weather.length > 1 ? ` +${r.weather.length - 1}` : ""}
+                          </p>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">{r.dispatchId ? formatMiles(r.milesLeftMeters) : ""}</td>
                       <td className="px-3 py-2">{r.dispatchId ? (r.calcStatus === "no_coordinates" ? <span className="text-muted-foreground">Stop not on map</span> : formatStopDayTime(r.etaAt, r.stopTimezone)) : ""}</td>
                       <td className="px-3 py-2">

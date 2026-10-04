@@ -10,6 +10,7 @@ import { getRouteIntelligenceForDispatch, refreshDispatchEta, type LiveTrackingR
 import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes, etaIncludesRest } from "@/lib/routing/risk";
 import { formatStopDateTime, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { cn } from "@/lib/utils";
+import { WeatherAlerts } from "@/components/tracking/weather-alerts";
 
 export type DriverMarker = {
   driverId: string;
@@ -626,6 +627,7 @@ function SelectedTruckPanel({
                 {info.riskStatus === "late" && ` -- ${formatLateLabel(info.scheduleVarianceMinutes)}`}
                 {info.riskStatus === "on_time" && formatMarginLabel(info.scheduleVarianceMinutes) && ` -- ${formatMarginLabel(info.scheduleVarianceMinutes)}`}
               </div>
+              <WeatherAlerts alerts={info.weatherAlerts} timeZone={info.targetStopTimezone} />
               {etaIncludesRest(info.routeDurationSeconds) && (
                 <p className="text-[11px] text-muted-foreground">ETA includes required breaks and 10 h rests for a solo driver ({formatDurationMinutes((info.routeDurationSeconds ?? 0) / 60)} of driving).</p>
               )}
