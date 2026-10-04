@@ -27,14 +27,30 @@ function menu(label: string, items: MenuLink[]) {
   return { label, items };
 }
 
+/** Items this role can open, with no leading, trailing or doubled separators left behind. */
+export function visibleItems(items: MenuLink[], role: string | null | undefined): MenuLink[] {
+  const out: MenuLink[] = [];
+  for (const item of items) {
+    if (item === "separator") {
+      if (out.length > 0 && out[out.length - 1] !== "separator") out.push(item);
+    } else if (!("href" in item) || hrefAllowedForRole(item.href, role)) {
+      out.push(item);
+    }
+  }
+  while (out[out.length - 1] === "separator") out.pop();
+  return out;
+}
+
 export function DesktopMenuBar() {
   const { resolvedTheme, setTheme } = useTheme();
   const role = useOrgRole();
 
+  // Ordered the way the work flows: book a load -> dispatch it -> track it
+  // -> bill it (your invoice or the carrier's) -> get paid -> settle / bill
+  // the carrier its fee.
   const menus = [
     menu("File", [
       { label: "New Load", href: "/loads/new" },
-      { label: "New Invoice", href: "/invoices/new" },
       { label: "New Dispatch", href: "/dispatch/new" },
       "separator",
       { label: "Print Current Page", action: () => window.print() },
@@ -42,9 +58,9 @@ export function DesktopMenuBar() {
       { label: "Sign Out", action: () => logout() },
     ]),
     menu("Edit", [
-      { label: "Profile Settings", href: "/settings/profile" },
+      { label: "My Profile", href: "/settings/profile" },
       { label: "Organization Settings", href: "/settings/organization" },
-      { label: "User Management", href: "/settings/users" },
+      { label: "Users & Roles", href: "/settings/users" },
     ]),
     menu("View", [
       { label: resolvedTheme === "dark" ? "Switch to Light Theme" : "Switch to Dark Theme", action: () => setTheme(resolvedTheme === "dark" ? "light" : "dark") },
@@ -52,59 +68,78 @@ export function DesktopMenuBar() {
     ]),
     menu("Insert", [
       { label: "New Load", href: "/loads/new" },
+      { label: "New Dispatch", href: "/dispatch/new" },
+      "separator",
+      { label: "New Carrier", href: "/carriers/new" },
+      { label: "Invite Carrier (Onboarding)", href: "/carriers/onboarding/invite" },
       { label: "New Driver", href: "/drivers/new" },
       { label: "New Truck", href: "/trucks/new" },
       { label: "New Trailer", href: "/trailers/new" },
-      { label: "New Carrier", href: "/carriers/new" },
       { label: "New Broker", href: "/brokers/new" },
       { label: "New Customer", href: "/customers/new" },
+      "separator",
       { label: "New Invoice", href: "/invoices/new" },
-      { label: "Record Payment", href: "/payments/new" },
-      { label: "New Driver Settlement", href: "/driver-settlements/new" },
-      { label: "New Carrier Settlement", href: "/settlements/new" },
       { label: "New Dispatch Fee Invoice", href: "/dispatch-fee-invoices/new" },
+      { label: "Record Payment", href: "/payments/new" },
+      { label: "New Carrier Settlement", href: "/settlements/new" },
+      { label: "New Driver Settlement", href: "/driver-settlements/new" },
+      { label: "Add Advance", href: "/advances/new" },
       { label: "New Expense", href: "/expenses/new" },
     ]),
     menu("Tools", [
+      { label: "Factoring Companies", href: "/settings/factoring" },
       { label: "Integrations", href: "/settings/integrations" },
       { label: "Email & Sending Domain", href: "/settings/email" },
       { label: "Email History", href: "/email-history" },
-      { label: "Users & Roles", href: "/settings/users" },
       { label: "Bank Accounts", href: "/settings/organization/bank-accounts" },
       { label: "Subscription", href: "/settings/subscription" },
     ]),
     menu("Reports", [
       { label: "Revenue", href: "/reports/revenue" },
       { label: "Accounts Receivable Aging", href: "/reports/accounts-receivable" },
-      { label: "Carrier Performance", href: "/reports/carrier-performance" },
-      { label: "Broker Performance", href: "/reports/broker-performance" },
-      { label: "Driver Pay", href: "/reports/driver-pay" },
-      { label: "Carrier Pay", href: "/reports/carrier-pay" },
       "separator",
       { label: "Profitability", href: "/reports/profitability" },
+      { label: "Profit by Carrier", href: "/reports/profit-by-carrier" },
+      { label: "Profit by Broker", href: "/reports/profit-by-broker" },
+      { label: "Profit by Driver", href: "/reports/profit-by-driver" },
       { label: "Load Margin", href: "/reports/load-margin" },
       { label: "Lane Profitability", href: "/reports/lane-profitability" },
+      "separator",
+      { label: "Carrier Performance", href: "/reports/carrier-performance" },
+      { label: "Broker Performance", href: "/reports/broker-performance" },
+      "separator",
+      { label: "Carrier Pay", href: "/reports/carrier-pay" },
+      { label: "Driver Pay", href: "/reports/driver-pay" },
       { label: "Expenses", href: "/reports/expenses" },
     ]),
     menu("Window", [
       { label: "Dashboard", href: "/dashboard" },
+      "separator",
       { label: "Dispatch Board", href: "/dispatch/board" },
+      { label: "Loads", href: "/loads" },
+      { label: "Live Tracking", href: "/tracking" },
+      { label: "Exception Center", href: "/dispatch/exceptions" },
+      "separator",
+      { label: "Carriers", href: "/carriers" },
+      { label: "Drivers", href: "/drivers" },
+      { label: "Brokers", href: "/brokers" },
+      { label: "Customers", href: "/customers" },
       "separator",
       { label: "Billing Overview", href: "/billing" },
       { label: "Ready to Bill", href: "/billing/ready-to-bill" },
       { label: "Invoices", href: "/invoices" },
+      { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
       { label: "Payments", href: "/payments" },
       { label: "Accounts Receivable", href: "/accounts-receivable" },
       { label: "Collections", href: "/collections" },
       { label: "Statements", href: "/statements" },
       "separator",
-      { label: "Driver Settlements", href: "/driver-settlements" },
       { label: "Carrier Settlements", href: "/settlements" },
-      { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices" },
+      { label: "Driver Settlements", href: "/driver-settlements" },
     ]),
     menu("Help", [
-      { label: "Keyboard Shortcuts / Search", action: () => openCommandPalette() },
-      { label: "Settings", href: "/settings/profile" },
+      { label: "Search & Keyboard Shortcuts", action: () => openCommandPalette() },
+      { label: "My Profile", href: "/settings/profile" },
     ]),
   ];
 
@@ -121,7 +156,7 @@ export function DesktopMenuBar() {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56 rounded-sm p-1 text-[12.5px]">
-            {m.items.filter((item) => item === "separator" || !("href" in item) || hrefAllowedForRole(item.href, role)).map((item, idx) =>
+            {visibleItems(m.items, role).map((item, idx) =>
               item === "separator" ? (
                 <DropdownMenuSeparator key={idx} />
               ) : "href" in item ? (

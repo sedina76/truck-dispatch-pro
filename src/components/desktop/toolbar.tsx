@@ -18,7 +18,14 @@ import {
   Printer,
   Mail,
   HelpCircle,
+  Radio,
+  ClipboardCheck,
+  ChevronDown,
+  ListChecks,
 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useOrgRole } from "@/components/auth/role-context";
+import { hrefAllowedForRole } from "@/lib/auth/billing-access";
 import { cn } from "@/lib/utils";
 import { openCommandPalette } from "@/components/nav/command-palette";
 import { NotificationsMenu } from "@/components/nav/notifications-menu";
@@ -46,8 +53,20 @@ type NotificationRow = {
 // registers nothing gets the same safe defaults as before this feature
 // (Print falls back to window.print(), Export/Email stay disabled with a
 // truthful reason), so nothing regresses on pages not yet wired up.
+// The four collections shortcuts in one menu (they were four toolbar buttons;
+// "Promise" claimed to log a promise but only opened the page).
+const COLLECTION_VIEWS = [
+  { label: "Follow-ups due", href: "/collections?filter=follow_up_due", icon: PhoneCall },
+  { label: "Promises to pay", href: "/collections?status=promise_to_pay", icon: HandCoins },
+  { label: "Disputed invoices", href: "/collections?filter=disputed", icon: ShieldAlert },
+  { label: "Unassigned accounts", href: "/collections?filter=unassigned", icon: UserCog },
+  { label: "All collections", href: "/collections", icon: ListChecks },
+];
+
 export function DesktopToolbar({ notifications }: { notifications: NotificationRow[] }) {
   const router = useRouter();
+  const role = useOrgRole();
+  const allowed = (href: string) => hrefAllowedForRole(href, role);
   const { actions } = useDesktopActions();
   const [emailOpen, setEmailOpen] = useState(false);
 
@@ -75,17 +94,43 @@ export function DesktopToolbar({ notifications }: { notifications: NotificationR
 
       <Sep />
 
+      {/* The work in order: book -> dispatch -> track | bill -> get paid | chase. */}
       <ToolbarLinkButton href="/loads/new" title="New Load" icon={PackagePlus} label="New Load" />
       <ToolbarLinkButton href="/dispatch/board" title="Dispatch Board" icon={KanbanSquare} label="Dispatch" />
-      <ToolbarLinkButton href="/invoices/new" title="New Invoice" icon={Receipt} label="Invoice" />
-      <ToolbarLinkButton href="/payments/new" title="Record Payment" icon={Wallet} label="Payment" />
+      <ToolbarLinkButton href="/tracking" title="Live Tracking map" icon={Radio} label="Tracking" />
 
-      <Sep />
+      {allowed("/billing/ready-to-bill") && <Sep />}
+      {allowed("/billing/ready-to-bill") && <ToolbarLinkButton href="/billing/ready-to-bill" title="Delivered loads ready to bill" icon={ClipboardCheck} label="Ready to Bill" />}
+      {allowed("/invoices/new") && <ToolbarLinkButton href="/invoices/new" title="New Invoice (yours or the carrier's)" icon={Receipt} label="Invoice" />}
+      {allowed("/payments/new") && <ToolbarLinkButton href="/payments/new" title="Record Payment" icon={Wallet} label="Payment" />}
 
-      <ToolbarLinkButton href="/collections?filter=follow_up_due" title="Follow-ups due" icon={PhoneCall} label="Follow-Up" />
-      <ToolbarLinkButton href="/collections" title="Log a promise to pay" icon={HandCoins} label="Promise" />
-      <ToolbarLinkButton href="/collections?filter=disputed" title="Disputed invoices" icon={ShieldAlert} label="Dispute" />
-      <ToolbarLinkButton href="/collections?filter=unassigned" title="Unassigned accounts" icon={UserCog} label="Assign" />
+      {allowed("/collections") && (
+        <>
+          <Sep />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                title="Collections"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-transparent px-2 py-1 text-[12px] font-medium text-desktop-text/90 outline-none transition-colors hover:border-desktop-border hover:bg-desktop-muted data-[state=open]:border-desktop-border data-[state=open]:bg-desktop-muted"
+              >
+                <PhoneCall className="size-4 text-primary" />
+                <span className="hidden lg:inline">Collections</span>
+                <ChevronDown className="size-3 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-52 rounded-sm p-1 text-[12.5px]">
+              {COLLECTION_VIEWS.map((v) => (
+                <DropdownMenuItem key={v.href} asChild className="rounded-sm text-[12.5px]">
+                  <Link href={v.href} className="flex items-center gap-2">
+                    <v.icon className="size-3.5 text-primary" /> {v.label}
+                  </Link>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      )}
 
       <Sep />
 
