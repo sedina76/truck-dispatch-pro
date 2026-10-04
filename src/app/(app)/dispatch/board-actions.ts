@@ -319,8 +319,8 @@ export type DispatchDrawerData = {
   } | null;
   driver: { id: string; name: string; phone: string | null; status: string } | null;
   carrier: { id: string; name: string };
-  truck: { unitNumber: string; make: string | null; model: string | null; year: number | null } | null;
-  trailer: { unitNumber: string } | null;
+  truck: { id: string; unitNumber: string; make: string | null; model: string | null; year: number | null } | null;
+  trailer: { id: string; unitNumber: string } | null;
   pickup: StopDetail | null;
   delivery: StopDetail | null;
   geofence: {
@@ -584,7 +584,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   const { data: dispatch, error: dispatchError } = await supabase
     .from("dispatches")
     .select(
-      "id, status, load_id, carrier_id, truck_id, trailer_id, driver_id, dispatched_at, carriers(legal_name), trucks(unit_number, make, model, year), trailers(unit_number), drivers(first_name, last_name, phone, status)"
+      "id, status, load_id, carrier_id, truck_id, trailer_id, driver_id, dispatched_at, carriers(legal_name), trucks(id, unit_number, make, model, year), trailers(id, unit_number), drivers(first_name, last_name, phone, status)"
     )
     .eq("id", dispatchId)
     .eq("organization_id", organizationId)
@@ -651,8 +651,8 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       driver_id: string;
       dispatched_at: string;
       carriers: { legal_name: string } | null;
-      trucks: { unit_number: string; make: string | null; model: string | null; year: number | null } | null;
-      trailers: { unit_number: string } | null;
+      trucks: { id: string; unit_number: string; make: string | null; model: string | null; year: number | null } | null;
+      trailers: { id: string; unit_number: string } | null;
       drivers: { first_name: string; last_name: string; phone: string | null; status: string } | null;
     }),
     notes: notesRow?.notes ?? null,
@@ -1112,8 +1112,8 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       : null,
     driver: d.drivers ? { id: dispatch.driver_id, name: `${d.drivers.first_name} ${d.drivers.last_name}`, phone: d.drivers.phone, status: d.drivers.status } : null,
     carrier: { id: dispatch.carrier_id, name: d.carriers?.legal_name ?? "--" },
-    truck: d.trucks ? { unitNumber: d.trucks.unit_number, make: d.trucks.make, model: d.trucks.model, year: d.trucks.year } : null,
-    trailer: d.trailers ? { unitNumber: d.trailers.unit_number } : null,
+    truck: d.trucks ? { id: d.trucks.id, unitNumber: d.trucks.unit_number, make: d.trucks.make, model: d.trucks.model, year: d.trucks.year } : null,
+    trailer: d.trailers ? { id: d.trailers.id, unitNumber: d.trailers.unit_number } : null,
     pickup: toStopDetail(pickupStop, pickupFreeMinutes),
     delivery: toStopDetail(deliveryStop, deliveryFreeMinutes),
     geofence: {

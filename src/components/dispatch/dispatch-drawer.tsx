@@ -44,6 +44,7 @@ import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLoca
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
 import { InternalFinancialsPanel } from "@/components/dispatch/internal-financials-panel";
+import { formatPhone } from "@/lib/utils/phone";
 
 // Phase 2I.1: 'documents' and 'communication' default OPEN (unlike every
 // other secondary section) -- both are now primary operational surfaces
@@ -497,11 +498,35 @@ function DriverEquipmentSection({ data }: { data: DispatchDrawerData }) {
   return (
     <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
       <Row label="Driver" value={data.driver?.name ?? "-- Unassigned --"} />
-      <Row label="Driver Phone" value={data.driver?.phone ?? "--"} />
+      <Row label="Driver Phone" value={formatPhone(data.driver?.phone)} />
       <Row label="Driver Status" value={data.driver ? <StatusBadge status={data.driver.status} /> : "--"} />
-      <Row label="Truck" value={data.truck?.unitNumber ?? "-- Unassigned --"} />
-      <Row label="Tractor Type" value={data.truck ? [data.truck.year, data.truck.make, data.truck.model].filter(Boolean).join(" ") || "--" : "--"} />
-      <Row label="Trailer" value={data.trailer?.unitNumber ?? "--"} />
+      <Row
+        label="Truck"
+        value={
+          data.truck ? (
+            <Link href={`/trucks/${data.truck.id}`} className="hover:underline">
+              {data.truck.unitNumber}
+              {[data.truck.year, data.truck.make, data.truck.model].some(Boolean) && (
+                <span className="font-normal text-muted-foreground"> &middot; {[data.truck.year, data.truck.make, data.truck.model].filter(Boolean).join(" ")}</span>
+              )}
+            </Link>
+          ) : (
+            "-- Unassigned --"
+          )
+        }
+      />
+      <Row
+        label="Trailer"
+        value={
+          data.trailer ? (
+            <Link href={`/trailers/${data.trailer.id}`} className="hover:underline">
+              {data.trailer.unitNumber}
+            </Link>
+          ) : (
+            "--"
+          )
+        }
+      />
       {data.driver && (
         <div className="col-span-2 mt-1 flex gap-2 border-t border-desktop-border pt-1.5">
           <Link href={`/drivers/${data.driver.id}`} className="text-xs font-medium text-primary hover:underline">
