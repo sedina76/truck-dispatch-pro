@@ -118,8 +118,8 @@ export function DocumentsPanel({
         {billingReadiness && (
           <p className="mt-1.5 text-xs">
             Billing:{" "}
-            <span className={billingReadiness.readyToBill ? "font-medium text-desktop-success" : "font-medium text-desktop-warning"}>
-              {billingReadiness.readyToBill ? "Ready to Bill" : "Documents Needed"}
+            <span className={billingReadiness.readyToBill ? "font-medium text-desktop-success" : isDelivered ? "font-medium text-desktop-warning" : "font-medium text-muted-foreground"}>
+              {billingReadiness.readyToBill ? "Ready to Bill" : isDelivered ? "Documents Needed" : "After delivery (needs the POD)"}
             </span>
           </p>
         )}
@@ -166,7 +166,7 @@ export function DocumentsPanel({
             action, every other document type in the app already goes
             through. */}
         <div className="mt-2">
-          <SimpleDocumentSlot loadId={loadId} documentType="pod" label="POD File" doc={podEntry?.doc ?? null} onUploaded={onRefresh} />
+          <SimpleDocumentSlot buttonsOnly loadId={loadId} documentType="pod" label={podEntry?.doc ? "Replace POD" : "Upload POD"} doc={podEntry?.doc ?? null} onUploaded={onRefresh} />
         </div>
       </div>
 

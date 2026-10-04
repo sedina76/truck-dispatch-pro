@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Camera, Loader2 } from "lucide-react";
+import { Camera, Loader2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { uploadLoadDocument } from "@/app/(app)/loads/pod-actions";
 import { MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_MIME_TYPES } from "@/lib/documents/upload-limits";
@@ -113,35 +113,26 @@ export function UploadDocumentForm({
     await onUploaded?.();
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const file = inputRef.current?.files?.[0];
+  // One step: the Upload button opens the file picker and the file uploads
+  // as soon as it's chosen (no separate "Choose File" + "Upload").
+  async function handleChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
     if (!file) return;
     try {
       await submitFile(file);
     } catch {
       // already surfaced via setError above
+    } finally {
+      if (inputRef.current) inputRef.current.value = "";
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2">
-      <input
-        ref={inputRef}
-        type="file"
-        name="file"
-        accept=".pdf,.jpg,.jpeg,.png"
-        required
-        disabled={loading}
-        className={
-          compact
-            ? "w-32 text-[11px] text-[var(--color-text-muted)] file:mr-1 file:rounded file:border-0 file:bg-muted file:px-1.5 file:py-0.5 file:text-[10px] disabled:opacity-60"
-            : "text-xs text-[var(--color-text-muted)] file:mr-2 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-primary-foreground disabled:opacity-60"
-        }
-      />
-      <Button type="submit" size="sm" variant={buttonVariant} disabled={loading}>
-        {loading ? <Loader2 className="size-3.5 animate-spin" /> : null}
-        {label}
+    <div className={`flex flex-wrap items-center ${compact ? "justify-end" : ""} gap-2`}>
+      <input ref={inputRef} type="file" name="file" accept=".pdf,.jpg,.jpeg,.png" disabled={loading} onChange={handleChosen} className="hidden" aria-hidden="true" tabIndex={-1} />
+      <Button type="button" size="sm" variant={buttonVariant} disabled={loading} onClick={() => inputRef.current?.click()}>
+        {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+        {loading ? "Uploading..." : label}
       </Button>
       <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => setScannerOpen(true)}>
         <Camera className="size-3.5" />
@@ -155,6 +146,6 @@ export function UploadDocumentForm({
         documentLabel={documentType.replace(/_/g, " ")}
       />
       {error && <span className="w-full text-xs text-danger">{error}</span>}
-    </form>
+    </div>
   );
 }

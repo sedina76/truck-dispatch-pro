@@ -1,7 +1,10 @@
 import { DocumentLinkButton } from "@/components/drivers/document-link-button";
 import { UploadDocumentForm } from "@/components/loads/upload-document-form";
 import type { DocumentRow } from "@/lib/documents/latest-document";
-import { getPodSignedUrl, getFinancialDocumentSignedUrl } from "@/app/(app)/loads/pod-actions";
+import {
+  getPodSignedUrl,
+  getFinancialDocumentSignedUrl,
+} from "@/app/(app)/loads/pod-actions";
 
 // Upload-and-view only -- no verify/reject workflow. That cycle is specific
 // to POD (see the Proof of Delivery section on the load page); rate
@@ -16,6 +19,7 @@ export function SimpleDocumentSlot({
   label,
   doc,
   onUploaded,
+  buttonsOnly = false,
 }: {
   loadId: string;
   documentType: string;
@@ -26,18 +30,32 @@ export function SimpleDocumentSlot({
   // Drawer's DocumentsPanel, which is the only one with a second,
   // independently-fetched data source that router.refresh() can't reach.
   onUploaded?: () => void | Promise<void>;
+  /** Only the View / Upload / Scan buttons (the POD box already shows the status line). */
+  buttonsOnly?: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] py-2 last:border-0">
-      <span className="text-sm">
-        {doc ? (
-          <span className="text-success">&#10003;</span>
-        ) : (
-          <span className="text-[var(--color-text-muted)]">&#9675;</span>
-        )}{" "}
-        {label}
-        {!doc && <span className="ml-1 text-xs text-[var(--color-text-muted)]">-- not on file</span>}
-      </span>
+    <div
+      className={
+        buttonsOnly
+          ? "flex flex-wrap items-center gap-2"
+          : "flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] py-2 last:border-0"
+      }
+    >
+      {!buttonsOnly && (
+        <span className="text-sm">
+          {doc ? (
+            <span className="text-success">&#10003;</span>
+          ) : (
+            <span className="text-[var(--color-text-muted)]">&#9675;</span>
+          )}{" "}
+          {label}
+          {!doc && (
+            <span className="ml-1 text-xs text-[var(--color-text-muted)]">
+              -- not on file
+            </span>
+          )}
+        </span>
+      )}
       <div className="flex items-center gap-2">
         {/* Phase 2G.8: rate_confirmation is the one financial document type
             this generic slot renders -- its signed URL is generated
@@ -47,10 +65,20 @@ export function SimpleDocumentSlot({
         {doc && (
           <DocumentLinkButton
             label="View"
-            getUrl={(documentType === "rate_confirmation" ? getFinancialDocumentSignedUrl : getPodSignedUrl).bind(null, doc.file_path, false)}
+            getUrl={(documentType === "rate_confirmation"
+              ? getFinancialDocumentSignedUrl
+              : getPodSignedUrl
+            ).bind(null, doc.file_path, false)}
           />
         )}
-        <UploadDocumentForm loadId={loadId} documentType={documentType} label={doc ? "Replace" : "Upload"} compact buttonVariant="outline" onUploaded={onUploaded} />
+        <UploadDocumentForm
+          loadId={loadId}
+          documentType={documentType}
+          label={buttonsOnly ? label : doc ? "Replace" : "Upload"}
+          compact
+          buttonVariant="outline"
+          onUploaded={onUploaded}
+        />
       </div>
     </div>
   );
