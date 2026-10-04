@@ -14,6 +14,7 @@ import { DriverPaySection } from "@/components/drivers/driver-pay-section";
 import { DriverSettlementSummarySection } from "@/components/drivers/driver-settlement-summary-section";
 import { DriverProfitabilitySection } from "@/components/drivers/driver-profitability-section";
 import { DriverExpenseSummarySection } from "@/components/drivers/driver-expense-summary-section";
+import { SafetyHistorySection } from "@/components/safety/safety-history-section";
 import { ShareExternalProfileSection } from "@/components/loads/share-external-profile-section";
 import type { DateRangeKey } from "@/lib/drivers/trip-metrics";
 import { updateDriver, setDriverPii, revealDriverPii, setDriverPortalPin, revokeDriverPortalAccess } from "../actions";
@@ -41,6 +42,7 @@ const SECTION_DEFAULTS: Record<string, boolean> = {
   payroll: false,
   notes: false,
   trip_history: false,
+  safety_history: false,
   portal_access: false,
   settlement_summary: false,
   driver_pay: false,
@@ -381,6 +383,10 @@ export default async function DriverDetailPage({
             />
           </DesktopCollapsibleSection>
         )}
+
+        <DesktopCollapsibleSection id="safety_history" title="Safety History" description="Accidents, citations, cargo claims and inspection violations for this driver.">
+          <SafetyHistorySection driverId={id} />
+        </DesktopCollapsibleSection>
 
         {canManagePortalAccess && (
           <DesktopCollapsibleSection id="portal_access" title="Driver Portal Access" description="Sign-in on their phone at /driver-portal for their active dispatch and live location.">

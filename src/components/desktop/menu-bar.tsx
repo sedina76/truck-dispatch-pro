@@ -75,6 +75,7 @@ export function DesktopMenuBar() {
       { label: "New Driver", href: "/drivers/new" },
       { label: "New Truck", href: "/trucks/new" },
       { label: "New Trailer", href: "/trailers/new" },
+      { label: "Report Safety Incident", href: "/safety/new" },
       { label: "New Broker", href: "/brokers/new" },
       { label: "New Customer", href: "/customers/new" },
       "separator",

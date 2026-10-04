@@ -5,6 +5,7 @@ import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect } from "@/components/ui/form-field";
 import { updateTruck } from "../actions";
 import { TruckExpenseSummarySection } from "@/components/trucks/truck-expense-summary-section";
+import { SafetyHistorySection } from "@/components/safety/safety-history-section";
 
 export default async function TruckDetailPage({
   params,
@@ -94,6 +95,11 @@ export default async function TruckDetailPage({
       </FormCard>
 
       <TruckExpenseSummarySection truckId={id} />
+
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <p className="mb-2 text-sm font-medium">Safety history</p>
+        <SafetyHistorySection truckId={id} />
+      </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">

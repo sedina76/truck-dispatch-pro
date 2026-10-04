@@ -63,6 +63,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   expense: "Expense",
   fuel: "Fuel",
   maintenance: "Maintenance",
+  safety_incident: "Safety Incident",
   organization: "Organization",
 };
 
@@ -220,6 +221,15 @@ const TYPE_CONFIG: Record<string, TypeConfig> = {
           : null,
     }),
     href: (r) => `/maintenance/${r.id}`,
+  },
+  safety_incident: {
+    table: "safety_incidents",
+    columns: "id, incident_type, occurred_on, trucks(unit_number)",
+    toDisplay: (r) => ({
+      displayName: humanize(r.incident_type) || "Safety incident",
+      secondaryIdentifier: [r.occurred_on, r.trucks?.unit_number ? `Truck ${r.trucks.unit_number}` : null].filter(Boolean).join(" · ") || null,
+    }),
+    href: (r) => `/safety/${r.id}`,
   },
   organization: {
     table: "organizations",

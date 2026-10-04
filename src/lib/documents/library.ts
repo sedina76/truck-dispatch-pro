@@ -33,6 +33,7 @@ export const DOCUMENT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "estimate", label: "Estimate" },
   { value: "before_photo", label: "Before Photo" },
   { value: "after_photo", label: "After Photo" },
+  { value: "incident_photo", label: "Incident Photo" },
   { value: "funding_confirmation", label: "Funding Confirmation" },
   { value: "factor_statement", label: "Factor Statement" },
   { value: "chargeback_notice", label: "Chargeback Notice" },

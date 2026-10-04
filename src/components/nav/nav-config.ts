@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   Radio,
   CalendarDays,
+  ShieldAlert,
 } from "lucide-react";
 
 // Phase 2G.6: pulled out of sidebar.tsx so the new mobile nav (bottom bar +
@@ -96,6 +97,7 @@ export const SECTIONS: NavSection[] = [
       { label: "Trailers", href: "/trailers", icon: Container },
       { label: "Maintenance", href: "/maintenance", icon: Wrench },
       { label: "Fuel Logs", href: "/fuel", icon: Fuel },
+      { label: "Safety Incidents", href: "/safety", icon: ShieldAlert, roles: ["owner", "admin", "dispatcher", "accountant", "viewer"] },
     ],
   },
   {

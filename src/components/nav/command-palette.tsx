@@ -21,6 +21,7 @@ import {
   Plus,
   Wrench,
   Fuel,
+  ShieldAlert,
   BadgeDollarSign,
   Radio,
   ReceiptText,
@@ -53,6 +54,7 @@ const NAV_ITEMS = [
   { label: "Trailers", href: "/trailers", icon: Container },
   { label: "Maintenance", href: "/maintenance", icon: Wrench },
   { label: "Fuel Logs", href: "/fuel", icon: Fuel },
+  { label: "Safety Incidents", href: "/safety", icon: ShieldAlert },
   { label: "Documents", href: "/documents", icon: FileText },
   { label: "Compliance", href: "/compliance", icon: ShieldCheck },
   { label: "Invoices", href: "/invoices", icon: Receipt },
@@ -75,6 +77,7 @@ const QUICK_CREATE = [
   { label: "Record Payment", href: "/payments/new" },
   { label: "Add Advance", href: "/advances/new" },
   { label: "New Expense", href: "/expenses/new" },
+  { label: "Report Safety Incident", href: "/safety/new" },
 ];
 
 export function CommandPalette() {
