@@ -1,6 +1,6 @@
 import "server-only";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { driverDocumentNotice } from "./document-notice";
+import { driverDocumentNotice, driverExpenseNotice } from "./document-notice";
 
 type ServiceRoleClient = ReturnType<typeof createServiceRoleClient>;
 
@@ -34,5 +34,38 @@ export async function notifyOfficeOfDriverDocument(
     if (error) console.error("[driver-document] notification insert failed:", error);
   } catch (err) {
     console.error("[driver-document] notification failed:", err);
+  }
+}
+
+/**
+ * A driver submitted an expense (fuel, lumper, toll, ...) from the Driver
+ * Portal: one bell notification per active owner/admin/dispatcher/accountant,
+ * opening the expense so it can be checked and approved. Best-effort: never
+ * fails the driver's submission.
+ */
+export async function notifyOfficeOfDriverExpense(
+  supabase: ServiceRoleClient,
+  p: { organizationId: string; expenseId: string; loadId: string; category: string; amount: number; vendor: string | null; driverName: string | null }
+): Promise<void> {
+  try {
+    const [{ data: recipients }, { data: load }] = await Promise.all([
+      supabase.from("profiles").select("id").eq("organization_id", p.organizationId).in("role", ["owner", "admin", "dispatcher", "accountant"]).eq("is_active", true),
+      supabase.from("loads").select("load_number").eq("id", p.loadId).eq("organization_id", p.organizationId).maybeSingle(),
+    ]);
+    if (!recipients || recipients.length === 0) return;
+    const { title, body } = driverExpenseNotice(p.category, p.amount, load?.load_number ?? null, p.driverName, p.vendor);
+    const rows = recipients.map((r) => ({
+      organization_id: p.organizationId,
+      profile_id: r.id,
+      type: "system" as const,
+      title,
+      body,
+      entity_type: "expense" as const,
+      entity_id: p.expenseId,
+    }));
+    const { error } = await supabase.from("notifications").insert(rows);
+    if (error) console.error("[driver-expense] notification insert failed:", error);
+  } catch (err) {
+    console.error("[driver-expense] notification failed:", err);
   }
 }

@@ -88,7 +88,7 @@ export async function getUnreadNotificationAlert(): Promise<NotificationAlert> {
     ]);
     const row = (latestRows ?? [])[0] as { title: string; body: string | null; created_at: string; entity_type: string | null; entity_id: string | null } | undefined;
     if (!count || !row) return EMPTY_NOTIFICATIONS;
-    const href = row.entity_type === "load" && row.entity_id ? `/loads/${row.entity_id}` : null;
+    const href = !row.entity_id ? null : row.entity_type === "load" ? `/loads/${row.entity_id}` : row.entity_type === "expense" ? `/expenses/${row.entity_id}` : null;
     return { count, latestAt: row.created_at, latest: { title: row.title, body: row.body, href } };
   } catch {
     return EMPTY_NOTIFICATIONS;

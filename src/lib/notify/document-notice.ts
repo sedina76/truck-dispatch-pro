@@ -19,3 +19,26 @@ export function driverDocumentNotice(documentType: string, loadNumber: string | 
     body: `${who} uploaded ${l.long}${documentType === "pod" ? ". Review and verify it so the load can be billed." : "."}`,
   };
 }
+
+const EXPENSE_LABEL: Record<string, string> = {
+  fuel: "Fuel",
+  lumper: "Lumper",
+  tolls: "Toll",
+  scale_ticket: "Scale ticket",
+  parking: "Parking",
+  permit: "Permit",
+  washout: "Washout",
+  other: "Other",
+};
+
+/** Bell text when a driver submits an expense from the Driver Portal. */
+export function driverExpenseNotice(category: string, amount: number, loadNumber: string | null, driverName: string | null, vendor: string | null): { title: string; body: string } {
+  const label = EXPENSE_LABEL[category] ?? category.replace(/_/g, " ");
+  const money = `$${Number(amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const load = loadNumber ? `Load ${loadNumber}` : "a load";
+  const who = driverName?.trim() || "The driver";
+  return {
+    title: `${label} expense ${money} -- ${load}`,
+    body: `${who} submitted it${vendor ? ` (${vendor})` : ""}. Check the receipt and approve it.`,
+  };
+}

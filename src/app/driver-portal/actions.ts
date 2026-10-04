@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { notifyOfficeOfDriverDocument } from "@/lib/notify/office-notify";
+import { notifyOfficeOfDriverDocument, notifyOfficeOfDriverExpense } from "@/lib/notify/office-notify";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
@@ -152,8 +152,21 @@ export async function submitDriverExpense(formData: FormData): Promise<{ expense
     .single();
   if (error) throw new Error(error.message);
 
+  // Let the office know right away (bell + chime): opens the expense to approve.
+  const { data: drv } = await supabase.from("drivers").select("first_name, last_name").eq("id", identity.driverId).maybeSingle();
+  await notifyOfficeOfDriverExpense(supabase, {
+    organizationId: identity.organizationId,
+    expenseId: String(data.id),
+    loadId: String(dispatch.load_id),
+    category,
+    amount,
+    vendor: emptyToNull(formData.get("vendor_name")) as string | null,
+    driverName: drv ? `${drv.first_name} ${drv.last_name}` : null,
+  });
+
   revalidatePath("/driver-portal/expenses");
   revalidatePath("/driver-portal");
+  revalidatePath("/expenses");
   return { expenseId: data.id };
 }
 

@@ -40,14 +40,16 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
   let query = supabase
     .from("expenses")
     .select(
-      "id, expense_number, expense_date, scope, category, vendor_name, amount, tax_amount, total_amount, status, receipt_document_id, recorded_by, reference_number, load_id, truck_id, driver_id, carrier_id, loads(load_number), trucks(unit_number), profiles!expenses_recorded_by_fkey(full_name)"
+      "id, expense_number, expense_date, scope, category, vendor_name, amount, tax_amount, total_amount, status, receipt_document_id, recorded_by, reference_number, load_id, truck_id, driver_id, carrier_id, loads(load_number), trucks(unit_number), drivers(first_name, last_name), profiles!expenses_recorded_by_fkey(full_name)"
     )
     .order("expense_date", { ascending: false });
   if (start) query = query.gte("expense_date", start);
   if (end) query = query.lte("expense_date", end);
   if (scope) query = query.eq("scope", scope);
   if (category) query = query.eq("category", category);
-  if (status) query = query.eq("status", status);
+  // "pending" = waiting for approval: office drafts plus what drivers submitted.
+  if (status === "pending") query = query.in("status", ["draft", "submitted"]);
+  else if (status) query = query.eq("status", status);
   if (load_id) query = query.eq("load_id", load_id);
   if (truck_id) query = query.eq("truck_id", truck_id);
   if (driver_id) query = query.eq("driver_id", driver_id);
@@ -71,6 +73,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
     loads: { load_number: string } | null;
     trucks: { unit_number: string } | null;
     profiles: { full_name: string } | null;
+    drivers: { first_name: string; last_name: string } | null;
   }[];
 
   const s = summary as {
@@ -100,7 +103,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
         <DesktopKpiBox label="Direct Load Costs" value={money(s?.direct_load_total ?? 0)} />
         <DesktopKpiBox label="Truck / Fleet Costs" value={money(s?.truck_fleet_total ?? 0)} />
         <DesktopKpiBox label="General Overhead" value={money(s?.general_overhead_total ?? 0)} />
-        <DesktopKpiBox label="Unapproved" value={`${s?.pending_count ?? 0} (${money(s?.pending_amount ?? 0)})`} tone={s && s.pending_count > 0 ? "warning" : "neutral"} href="/expenses?status=draft" />
+        <DesktopKpiBox label="Unapproved" value={`${s?.pending_count ?? 0} (${money(s?.pending_amount ?? 0)})`} tone={s && s.pending_count > 0 ? "warning" : "neutral"} href="/expenses?status=pending" />
       </DesktopKpiStrip>
 
       <DesktopFilterBar>
@@ -127,6 +130,7 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
           <DesktopFilterField label="Status">
             <select name="status" defaultValue={status ?? ""} className={desktopInputClass}>
               <option value="">All</option>
+              <option value="pending">Waiting for approval</option>
               <option value="draft">Draft</option>
               <option value="submitted">Submitted</option>
               <option value="approved">Approved</option>
@@ -202,7 +206,9 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
                     <td className="py-1.5 pr-3 text-right tabular-nums font-medium">{money(r.total_amount)}</td>
                     <td className="py-1.5 pr-3"><StatusBadge status={r.status} /></td>
                     <td className="py-1.5 pr-3">{r.receipt_document_id ? "Yes" : "--"}</td>
-                    <td className="py-1.5 pr-3 text-muted-foreground">{r.profiles?.full_name ?? "--"}</td>
+                    <td className="py-1.5 pr-3 text-muted-foreground">
+                      {r.profiles?.full_name ?? (r.drivers ? `${r.drivers.first_name} ${r.drivers.last_name} (driver app)` : "--")}
+                    </td>
                   </tr>
                 ))}
               </tbody>
