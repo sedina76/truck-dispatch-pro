@@ -99,6 +99,9 @@ function actionHarness(file, role, { exists = true, authenticated = true, billin
     "@/lib/factoring/carrier-invoice-submission": submission,
     // auto-creates the carrier's billing link with the broker before preview/draft (not used by issue/reissue/submit)
     "@/lib/carrier-invoices/party-link": { ensureCarrierPartyLink: async () => null },
+    // issue/reissue email the packet to the factor afterwards (after(), never part of the mutation)
+    "next/server": { after() {} },
+    "@/lib/carrier-invoices/auto-send": { autoSendFactorPacket: async () => ({ sent: false, reason: "test" }) },
   };
   const code = ts.transpileModule(read(`../../app/(app)/carrier-invoices/${file}`), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};

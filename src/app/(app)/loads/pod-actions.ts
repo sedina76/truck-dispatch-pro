@@ -9,6 +9,8 @@ import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { validateUploadedFile } from "@/lib/documents/validate-upload";
 import { MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_MIME_TYPES } from "@/lib/documents/upload-limits";
 import { requireRole, FINANCIAL_ROLES } from "@/lib/auth/require-role";
+import { after } from "next/server";
+import { autoSendFactorPacketsForLoad } from "@/lib/carrier-invoices/auto-send";
 
 // Phase 2E push-hook shared by upload/verify/reject below -- POD Missing's
 // source identity is the LOAD (see sync.ts), but the sync entry point
@@ -138,6 +140,8 @@ export async function verifyPod(documentId: string, loadId: string) {
   // that the same as any other re-sync).
   await syncPodExceptionForLoad(organizationId, loadId);
   revalidatePath(`/loads/${loadId}`);
+  // Last missing piece of an issued carrier invoice's packet? Send it to the factor.
+  after(() => autoSendFactorPacketsForLoad(loadId).catch(() => undefined));
 }
 
 export async function rejectPod(documentId: string, loadId: string, formData: FormData) {

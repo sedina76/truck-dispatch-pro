@@ -134,7 +134,11 @@ export function CarrierBillingPacketSection({
             </p>
             {destination.who === "factor_portal" && <p>This factor takes uploads on its website: download the packet and upload it there (or email it to an address you type in).</p>}
             <p>
-              {lastSent ? `Emailed to ${lastSent.recipient} on ${new Date(lastSent.sentAt).toLocaleString()}.` : "Not emailed yet."}
+              {lastSent
+                ? `Emailed to ${lastSent.recipient} on ${new Date(lastSent.sentAt).toLocaleString()}.`
+                : destination.who === "factor"
+                  ? "Not emailed yet -- it goes to the factor automatically as soon as the packet is ready (invoice issued + POD verified)."
+                  : "Not emailed yet."}
               {lastError && <span className="text-danger"> Last attempt did not send: {lastError}.</span>}
             </p>
           </div>

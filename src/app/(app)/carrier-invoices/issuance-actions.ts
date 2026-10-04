@@ -2,6 +2,8 @@
 
 import { isCarrierInvoicePilotOperator } from "@/lib/factoring/carrier-invoice-issuance";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
+import { autoSendFactorPacket } from "@/lib/carrier-invoices/auto-send";
 import { createClient } from "@/lib/supabase/server";
 import { ensureCarrierPartyLink } from "@/lib/carrier-invoices/party-link";
 import { checkOperationalAccess } from "@/lib/billing/operational-access";
@@ -135,7 +137,11 @@ export async function issueCarrierInvoice(invoiceId: string, expectedUpdatedAt: 
   if (!access.ok) return fail("FORBIDDEN", "Your organization's subscription does not permit this action.");
   const { data, error } = await supabase.rpc("issue_prepared_carrier_invoice", { p_invoice_id: invoiceId, p_expected_updated_at: expectedUpdatedAt, p_reason: r, p_idempotency_key: idempotencyKey });
   const outcome = outcomeFromWorkflow(data as WorkflowResult | null, error);
-  if (outcome.ok) refresh(invoiceId);
+  if (outcome.ok) {
+    refresh(invoiceId);
+    // Packet complete (PODs verified) and the carrier factors by email? Send it now.
+    after(() => autoSendFactorPacket(invoiceId).then(() => undefined));
+  }
   return outcome;
 }
 
@@ -161,7 +167,11 @@ export async function reissueCarrierInvoice(invoiceId: string, expectedUpdatedAt
   if (!access.ok) return fail("FORBIDDEN", "Your organization's subscription does not permit this action.");
   const { data, error } = await supabase.rpc("reissue_carrier_invoice", { p_invoice_id: invoiceId, p_expected_updated_at: expectedUpdatedAt, p_reason: r, p_idempotency_key: idempotencyKey });
   const outcome = outcomeFromWorkflow(data as WorkflowResult | null, error);
-  if (outcome.ok) refresh(invoiceId, outcome.replacementInvoiceId);
+  if (outcome.ok) {
+    refresh(invoiceId, outcome.replacementInvoiceId);
+    const replacement = outcome.replacementInvoiceId;
+    if (replacement) after(() => autoSendFactorPacket(replacement).then(() => undefined));
+  }
   return outcome;
 }
 

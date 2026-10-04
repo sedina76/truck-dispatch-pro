@@ -46,7 +46,7 @@ test("every action validates its input (and the idempotency key) BEFORE any requ
   assert.match(ACTIONS, /const bad = validateIssuanceInput\(input\);\s*if \(bad\) return/);
   assert.equal([...ACTIONS.matchAll(/isValidWorkflowKey\(idempotencyKey\)/g)].length, 5);
   assert.equal([...ACTIONS.matchAll(/await checkOperationalAccess\(\)/g)].length, 5); // create, ready, discard, issue, reissue (previews are reads)
-  assert.equal([...ACTIONS.matchAll(/if \(outcome\.ok\) refresh\(/g)].length, 5);
+  assert.equal([...ACTIONS.matchAll(/if \(outcome\.ok\) \{?\s*refresh\(/g)].length, 5); // issue/reissue also queue the factor email after refreshing
   assert.match(ACTIONS, /revalidatePath\("\/carrier-invoices"\)/);
   assert.match(ACTIONS, /revalidatePath\(`\/carrier-invoices\/\$\{id\}`\)/);
   assert.match(ACTIONS, /refresh\(invoiceId, outcome\.replacementInvoiceId\)/, "the reissue refreshes BOTH the original and the replacement");
