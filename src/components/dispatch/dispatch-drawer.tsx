@@ -29,6 +29,7 @@ import {
   addDispatchQuickNote,
   updateDispatchBoardStatus,
   setStopCoordinates,
+  findStopCoordinates,
   setStopAppointment,
   setStopTimezone,
   dismissRouteDeviation,
@@ -764,18 +765,43 @@ function GeofenceBlock({
   const [lon, setLon] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [finding, setFinding] = useState(false);
   const toast = useToast();
+
+  async function handleFind() {
+    setFinding(true);
+    setError(null);
+    const result = await findStopCoordinates(dispatchId, stop.id);
+    setFinding(false);
+    if (result.ok) {
+      toast.show("success", result.message);
+      await onSaved();
+    } else {
+      setError(result.error);
+    }
+  }
 
   if (!geofence || !geofence.hasCoordinates) {
     return (
       <div className="rounded-sm border border-desktop-border bg-desktop-muted/40 px-2.5 py-2 text-[12px]">
         <p className="flex items-center gap-1.5 text-muted-foreground">
-          <AlertTriangle className="size-3.5 shrink-0" /> Geofence unavailable -- stop coordinates missing.
+          <AlertTriangle className="size-3.5 shrink-0" />
+          {geofence?.approximateOnly
+            ? "Automatic arrival is off: this stop is on the map only as its city center (no street address found). ETA is approximate."
+            : "Automatic arrival is off: this stop isn't on the map yet."}
         </p>
         {!editing ? (
-          <button type="button" onClick={() => setEditing(true)} className="mt-1.5 text-[12px] font-medium text-primary hover:underline">
-            Set Coordinates
-          </button>
+          <>
+            <div className="mt-1.5 flex items-center gap-3">
+              <button type="button" onClick={handleFind} disabled={finding} className="text-[12px] font-medium text-primary hover:underline disabled:opacity-50">
+                {finding ? "Looking up address..." : "Find on map"}
+              </button>
+              <button type="button" onClick={() => setEditing(true)} className="text-[12px] font-medium text-primary hover:underline">
+                Set Coordinates
+              </button>
+            </div>
+            {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
+          </>
         ) : (
           <div className="mt-2 space-y-1.5">
             <div className="flex gap-1.5">
@@ -930,7 +956,7 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
         </div>
       ) : r && r.calculationStatus === "no_coordinates" ? (
         <div className="flex items-start gap-1.5 rounded-sm border border-desktop-border bg-desktop-muted/40 px-2.5 py-2 text-[12px] text-muted-foreground">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> Route ETA unavailable -- stop coordinates missing.
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> Route ETA unavailable -- the next stop isn&apos;t on the map yet. Click Refresh ETA to look up its address (or use Find on map / Set Coordinates on the stop).
         </div>
       ) : r && r.estimatedArrivalAt ? (
         <div className="space-y-1.5">

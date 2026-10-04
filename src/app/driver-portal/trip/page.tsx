@@ -13,6 +13,7 @@ import { GeofenceStatusCard, type GeofenceStopInfo } from "@/components/driver-p
 import { formatMiles } from "@/lib/routing/risk";
 import { formatStopDateTime } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { stopLabel, hasExactStopPoint } from "@/lib/geo/stop-point";
 
 const DRIVER_RISK_LABEL: Record<string, string> = { on_time: "On Time", at_risk: "At Risk", late: "Late" };
 
@@ -142,7 +143,7 @@ export default async function DriverPortalTripPage() {
         <div className="rounded-2xl border border-border bg-card p-4">
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Next Stop</p>
           {routeIntel.calculationStatus === "no_coordinates" ? (
-            <p className="text-sm text-muted-foreground">Route ETA unavailable -- stop coordinates missing.</p>
+            <p className="text-sm text-muted-foreground">ETA not available yet -- your dispatcher is setting the next stop&apos;s location.</p>
           ) : routeIntel.estimatedArrivalAtLabel ? (
             <>
               <p className="text-sm font-medium">{routeIntel.targetStopLabel ?? "--"}</p>
@@ -222,11 +223,11 @@ async function getGeofenceStatusForTrip(supabase: any, dispatchId: string, loadI
   try {
     const [{ data: org, error: orgError }, { data: stopRows, error: stopsError }] = await Promise.all([
       supabase.from("organizations").select("gps_automation_mode").eq("id", organizationId).maybeSingle(),
-      supabase.from("load_stops").select("id, stop_type, stop_sequence, facility_name, city, state, latitude, longitude").eq("load_id", loadId).order("stop_sequence"),
+      supabase.from("load_stops").select("id, stop_type, stop_sequence, facility_name, city, state, latitude, longitude, geocode_source").eq("load_id", loadId).order("stop_sequence"),
     ]);
     if (orgError || stopsError || !org) return null;
 
-    const rows = (stopRows ?? []) as { id: string; stop_type: string; facility_name: string | null; city: string | null; state: string | null; latitude: number | null; longitude: number | null }[];
+    const rows = (stopRows ?? []) as { id: string; stop_type: string; facility_name: string | null; city: string | null; state: string | null; latitude: number | null; longitude: number | null; geocode_source: string | null }[];
     const pickupRow = rows.filter((s) => s.stop_type === "pickup")[0] ?? null;
     const deliveryRow = rows.filter((s) => s.stop_type === "delivery").slice(-1)[0] ?? null;
     const stopIds = [pickupRow?.id, deliveryRow?.id].filter(Boolean) as string[];
@@ -246,7 +247,7 @@ async function getGeofenceStatusForTrip(supabase: any, dispatchId: string, loadI
         companyName: row.facility_name,
         city: row.city,
         state: row.state,
-        hasCoordinates: row.latitude != null && row.longitude != null,
+        hasCoordinates: hasExactStopPoint(row),
         geofenceState: (g?.state as GeofenceStopInfo["geofenceState"]) ?? null,
         distanceM: g?.last_distance_m ?? null,
         radiusM,
@@ -278,10 +279,10 @@ async function getRouteIntelForTrip(supabase: any, dispatchId: string, organizat
     if (error || !row) return null;
 
     const [{ data: stopRow }, { data: orgRow }] = await Promise.all([
-      supabase.from("load_stops").select("facility_name, city, state, timezone").eq("id", row.target_stop_id).maybeSingle(),
+      supabase.from("load_stops").select("facility_name, city, state, timezone, geocode_source").eq("id", row.target_stop_id).maybeSingle(),
       supabase.from("organizations").select("timezone").eq("id", organizationId).maybeSingle(),
     ]);
-    const targetStopLabel = stopRow ? stopRow.facility_name || [stopRow.city, stopRow.state].filter(Boolean).join(", ") || null : null;
+    const targetStopLabel = stopRow ? stopLabel(stopRow) : null;
     // Phase 2C.1: driver-facing ETA/appointment in the target stop's own
     // timezone, never the driver's phone timezone (spec section 24).
     const targetTimezone = resolveStopTimezone(stopRow?.timezone ?? null, orgRow?.timezone ?? null).timezone;

@@ -137,7 +137,7 @@ export function GeofenceStatusCard({
         )}
         {label}
       </p>
-      {missingCoords && <p className="mt-1 text-xs text-muted-foreground">Geofence unavailable -- stop coordinates missing.</p>}
+      {missingCoords && <p className="mt-1 text-xs text-muted-foreground">Automatic arrival is off for this stop (its exact location isn&apos;t set). Tap your status when you arrive.</p>}
     </div>
   );
 }

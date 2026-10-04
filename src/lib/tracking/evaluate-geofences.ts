@@ -378,7 +378,7 @@ export async function evaluateGeofencesForDispatch(input: PingInput): Promise<vo
 
     const { data: stopsRaw, error: stopsError } = await supabase
       .from("load_stops")
-      .select("id, stop_type, stop_sequence, latitude, longitude, arrived_at, departed_at")
+      .select("id, stop_type, stop_sequence, latitude, longitude, geocode_source, arrived_at, departed_at")
       .eq("load_id", dispatch.load_id)
       .order("stop_sequence");
     if (stopsError || !stopsRaw) {

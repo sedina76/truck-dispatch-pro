@@ -2,6 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
+import { fillStopCoordinates } from "@/lib/geo/stop-geocoding";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { requireOperationalAccess } from "@/lib/billing/operational-access";
@@ -297,6 +299,12 @@ export async function createLoadWithStops(formData: FormData) {
 
     throw new Error(error.message);
   }
+
+  // Look up each stop's map point from its address once the page has been
+  // sent, so ETA and automatic arrived/departed work without typing
+  // coordinates (lib/geo/stop-geocoding.ts).
+  const newLoadId = String(loadId);
+  after(() => fillStopCoordinates(newLoadId).then(() => undefined, (err) => console.warn("[geocode] new-load lookup failed:", err)));
 
   // ---- Optional Rate Confirmation upload (spec section 10) ---------------
   // Reuses uploadLoadDocument verbatim -- the exact same staff-only upload

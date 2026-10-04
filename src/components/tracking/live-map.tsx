@@ -547,7 +547,7 @@ function SelectedTruckPanel({
           {info.riskStatus === "arrived" ? (
             <div className="rounded-sm border border-success/40 bg-success/10 px-2 py-1.5 font-semibold text-success">ARRIVED</div>
           ) : info.calculationStatus === "no_coordinates" ? (
-            <p className="text-muted-foreground">Route ETA unavailable -- stop coordinates missing.</p>
+            <p className="text-muted-foreground">Route ETA unavailable -- the next stop isn&apos;t on the map yet. Click Refresh ETA to look up its address.</p>
           ) : info.estimatedArrivalAt ? (
             <>
               <div className="border-t border-desktop-border pt-2">

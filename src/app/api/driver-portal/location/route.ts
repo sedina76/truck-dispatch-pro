@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { evaluateGeofencesForDispatch } from "@/lib/tracking/evaluate-geofences";
 import { evaluateRouteIntelligence } from "@/lib/routing/evaluate-route";
 import { evaluateRouteDeviation } from "@/lib/tracking/evaluate-route-deviation";
+import { fillStopCoordinatesForDispatch } from "@/lib/geo/stop-geocoding";
 
 const ACTIVE_DISPATCH_STATUSES = [
   "assigned",
@@ -111,6 +112,12 @@ export async function POST(request: NextRequest) {
   // migration-0059-not-applied-yet database or any other issue here can
   // never turn a successful location ping into a failed request.
   if (activeDispatch?.id) {
+    // Stops still without a map point get one looked up from their address
+    // after this response is sent (never slows the ping; failures are
+    // remembered and retried hours later, not on every ping).
+    const dispatchId = activeDispatch.id;
+    after(() => fillStopCoordinatesForDispatch(dispatchId).then(() => undefined, (err) => console.warn("[geocode] background lookup failed:", err)));
+
     await evaluateGeofencesForDispatch({
       dispatchId: activeDispatch.id,
       organizationId: identity.organizationId,

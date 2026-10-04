@@ -6,6 +6,8 @@ import { getCurrentOrgId } from "@/lib/actions/records";
 import { checkOperationalAccess } from "@/lib/billing/operational-access";
 import { forceRefreshRouteIntelligence } from "@/lib/routing/evaluate-route";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { fillStopCoordinatesForDispatch } from "@/lib/geo/stop-geocoding";
+import { stopLabel } from "@/lib/geo/stop-point";
 
 // ---------------------------------------------------------------------------
 // refreshDispatchEta -- the dispatcher-facing "Refresh ETA" button (spec
@@ -97,10 +99,10 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
   let targetStopTimezone = "UTC";
   if (routeRow?.target_stop_id) {
     const [{ data: stopRow }, { data: orgRow }] = await Promise.all([
-      supabase.from("load_stops").select("facility_name, city, state, timezone").eq("id", routeRow.target_stop_id).maybeSingle(),
+      supabase.from("load_stops").select("facility_name, city, state, timezone, geocode_source").eq("id", routeRow.target_stop_id).maybeSingle(),
       supabase.from("organizations").select("timezone").eq("id", organizationId).maybeSingle(),
     ]);
-    targetStopLabel = stopRow ? stopRow.facility_name || [stopRow.city, stopRow.state].filter(Boolean).join(", ") || null : null;
+    targetStopLabel = stopRow ? stopLabel(stopRow) : null;
     targetStopTimezone = resolveStopTimezone(stopRow?.timezone ?? null, orgRow?.timezone ?? null).timezone;
   }
 
@@ -188,7 +190,22 @@ export async function refreshDispatchEta(dispatchId: string): Promise<{ ok: true
   const { data: dispatch } = await supabase.from("dispatches").select("id").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
   if (!dispatch) return { ok: false, error: "Dispatch not found." };
 
+  // Stops without a map point are looked up from their address first (and a
+  // lookup that failed earlier is tried again), so Refresh ETA can fix
+  // "stop coordinates missing" by itself.
+  const fill = await fillStopCoordinatesForDispatch(dispatchId, { force: true }).catch((err) => {
+    console.warn("[geocode] lookup on Refresh ETA failed:", err);
+    return null;
+  });
+
   const result = await forceRefreshRouteIntelligence(dispatchId, organizationId);
+  if (result.ok && fill && fill.notFound.length > 0) {
+    const { data: route } = await supabase.from("dispatch_route_intelligence").select("calculation_status").eq("dispatch_id", dispatchId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+    if (route?.calculation_status === "no_coordinates") {
+      revalidatePath(`/dispatch/${dispatchId}`);
+      return { ok: false, error: `Couldn't find ${fill.notFound.join(" / ")} on the map. Check the stop's street address, or use Set Coordinates on the stop.` };
+    }
+  }
   if (result.ok) {
     revalidatePath("/dispatch/board");
     revalidatePath(`/dispatch/${dispatchId}`);

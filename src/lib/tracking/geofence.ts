@@ -16,13 +16,13 @@ export const CONFIRMATION_WINDOW_MS = 2 * 60 * 1000; // ~2 minutes, spec section
 
 export type StopCoordinates = { latitude: number; longitude: number };
 
-// Architecture-ready boundary for a real geocoding provider (spec section
-// 4). Today this only ever returns coordinates already on the row --
-// nothing here calls an external service, and none is configured anywhere
-// in this app. A future geocoding integration plugs in as a second branch
-// inside this one function, not a new call site scattered across the app.
-export function resolveStopCoordinates(stop: { latitude: number | null; longitude: number | null }): StopCoordinates | null {
+// The stop's point for a geofence: typed in (Set Coordinates) or found from
+// the street address (lib/geo/stop-geocoding.ts). A city-center point -- a
+// stop with no findable street address -- is NOT used: a geofence circle
+// around a city center would mark arrivals at the wrong place.
+export function resolveStopCoordinates(stop: { latitude: number | null; longitude: number | null; geocode_source?: string | null }): StopCoordinates | null {
   if (stop.latitude == null || stop.longitude == null) return null;
+  if (stop.geocode_source === "city_center") return null;
   return { latitude: stop.latitude, longitude: stop.longitude };
 }
 

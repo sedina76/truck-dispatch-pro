@@ -15,6 +15,8 @@ import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { isWithinActiveRetention, deliveredRetentionCountdown } from "@/lib/dispatch/board-retention";
 import { rpcDispatchConflict } from "@/lib/dispatch/conflicts";
 import { appendNoteLine } from "@/lib/dispatch/internal-notes";
+import { stopLabel, hasExactStopPoint, hasStopPoint, CITY_CENTER } from "@/lib/geo/stop-point";
+import { fillStopCoordinates } from "@/lib/geo/stop-geocoding";
 
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
@@ -447,6 +449,8 @@ type StopDetail = {
 // board-actions.ts's own history, see the drawer/board split further down).
 export type StopGeofenceInfo = {
   hasCoordinates: boolean;
+  /** The stop is on the map only as its city's center (ETA yes, geofence no). */
+  approximateOnly: boolean;
   state: "outside" | "candidate_inside" | "inside" | "candidate_outside" | "exited" | null;
   distanceM: number | null;
   accuracyM: number | null;
@@ -800,7 +804,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
 
   const [{ data: geoOrg, error: geoOrgError }, { data: stopCoords, error: stopCoordsError }, { data: geofenceRows, error: geofenceRowsError }] = await Promise.all([
     supabase.from("organizations").select("pickup_geofence_radius_m, delivery_geofence_radius_m, gps_automation_mode").eq("id", organizationId).maybeSingle(),
-    stopIdsForGeofence.length > 0 ? supabase.from("load_stops").select("id, latitude, longitude").in("id", stopIdsForGeofence) : Promise.resolve({ data: [], error: null }),
+    stopIdsForGeofence.length > 0 ? supabase.from("load_stops").select("id, latitude, longitude, geocode_source").in("id", stopIdsForGeofence) : Promise.resolve({ data: [], error: null }),
     stopIdsForGeofence.length > 0
       ? supabase
           .from("dispatch_geofence_state")
@@ -818,8 +822,12 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     pickupRadiusM = geoOrg.pickup_geofence_radius_m ?? 300;
     deliveryRadiusM = geoOrg.delivery_geofence_radius_m ?? 300;
   }
-  for (const row of (stopCoords ?? []) as { id: string; latitude: number | null; longitude: number | null }[]) {
-    coordsByStopId.set(row.id, row.latitude != null && row.longitude != null);
+  // Geofences need the stop's exact location -- a city-center point (stop
+  // with no findable street address) only feeds the approximate ETA.
+  const approxByStopId = new Map<string, boolean>();
+  for (const row of (stopCoords ?? []) as { id: string; latitude: number | null; longitude: number | null; geocode_source: string | null }[]) {
+    coordsByStopId.set(row.id, hasExactStopPoint(row));
+    approxByStopId.set(row.id, row.geocode_source === CITY_CENTER && hasStopPoint(row));
   }
   type GeofenceRow = { load_stop_id: string; state: string; last_distance_m: number | null; last_accuracy_m: number | null; last_location_at: string | null; confirmed_inside_at: string | null; status_applied_at: string | null };
   for (const row of (geofenceRows ?? []) as GeofenceRow[]) {
@@ -832,6 +840,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     const g = geofenceByStopId.get(stop.id);
     return {
       hasCoordinates,
+      approximateOnly: approxByStopId.get(stop.id) ?? false,
       state: (g?.state as StopGeofenceInfo["state"]) ?? null,
       distanceM: g?.last_distance_m ?? null,
       accuracyM: g?.last_accuracy_m ?? null,
@@ -985,13 +994,13 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   if (routeError) {
     console.warn(`[dispatch drawer] route intelligence unavailable for dispatch ${dispatchId} (likely migration 0060 not applied yet):`, routeError);
   } else if (routeRow) {
-    const { data: targetStopRow } = await supabase.from("load_stops").select("facility_name, city, state, timezone").eq("id", routeRow.target_stop_id).maybeSingle();
+    const { data: targetStopRow } = await supabase.from("load_stops").select("facility_name, city, state, timezone, geocode_source").eq("id", routeRow.target_stop_id).maybeSingle();
     const progress =
       routeRow.route_distance_meters != null && routeRow.initial_distance_meters != null && routeRow.initial_distance_meters > 0
         ? Math.max(0, Math.min(1, 1 - routeRow.route_distance_meters / routeRow.initial_distance_meters))
         : null;
     routeIntelligence = {
-      targetStopLabel: targetStopRow ? targetStopRow.facility_name || [targetStopRow.city, targetStopRow.state].filter(Boolean).join(", ") || null : null,
+      targetStopLabel: targetStopRow ? stopLabel(targetStopRow) : null,
       targetStopTimezone: resolveStopTimezone(targetStopRow?.timezone ?? null, organizationTimezone).timezone,
       routeDistanceMeters: routeRow.route_distance_meters,
       routeDurationSeconds: routeRow.route_duration_seconds,
@@ -1411,6 +1420,40 @@ export async function setStopCoordinates(dispatchId: string, stopId: string, lat
 
   revalidatePath(`/dispatch/${dispatchId}`);
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// findStopCoordinates -- "Find on map": looks the stop's address up (street
+// first; the city center only as a last resort, which drives the ETA but
+// never a geofence). Same ownership checks as setStopCoordinates above.
+// ---------------------------------------------------------------------------
+export async function findStopCoordinates(dispatchId: string, stopId: string): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not authenticated." };
+
+  const billingAccess = await checkOperationalAccess();
+  if (!billingAccess.ok) return { ok: false, error: "Your organization's subscription does not permit this action." };
+
+  let organizationId: string;
+  try {
+    organizationId = await getCurrentOrgId();
+  } catch {
+    return { ok: false, error: "No organization on this account." };
+  }
+
+  const { data: dispatch } = await supabase.from("dispatches").select("id, load_id").eq("id", dispatchId).eq("organization_id", organizationId).maybeSingle();
+  if (!dispatch) return { ok: false, error: "Dispatch not found." };
+  const { data: stop } = await supabase.from("load_stops").select("id").eq("id", stopId).eq("load_id", dispatch.load_id).maybeSingle();
+  if (!stop) return { ok: false, error: "Stop not found on this load." };
+
+  const result = await fillStopCoordinates(String(dispatch.load_id), { force: true, stopIds: [stopId] });
+  revalidatePath(`/dispatch/${dispatchId}`);
+  if (result.found > 0) return { ok: true, message: "Found the address on the map. ETA and automatic arrival tracking are on for this stop." };
+  if (result.approximate > 0) return { ok: true, message: "Couldn't find the street address, so the ETA uses the city center. For automatic arrival tracking, set the exact coordinates." };
+  return { ok: false, error: "Couldn't find this address on the map. Check the street address, or set the coordinates by hand." };
 }
 
 // ---------------------------------------------------------------------------
