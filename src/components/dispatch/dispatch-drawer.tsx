@@ -39,7 +39,7 @@ import {
 } from "@/app/(app)/dispatch/board-actions";
 import { refreshDispatchEta } from "@/app/(app)/dispatch/route-actions";
 import { formatMinutes } from "@/lib/dispatch/detention";
-import { formatMiles, formatLateLabel, formatMarginLabel } from "@/lib/routing/risk";
+import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes, etaIncludesRest } from "@/lib/routing/risk";
 import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
@@ -1061,6 +1061,11 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
               </div>
               {Math.round(r.progress * 100)}%
             </div>
+          )}
+          {etaIncludesRest(r.routeDurationSeconds) && (
+            <p className="text-[11px] text-muted-foreground" data-testid="eta-includes-rest">
+              ETA includes required breaks and 10 h rests for a solo driver ({formatDurationMinutes((r.routeDurationSeconds ?? 0) / 60)} of driving).
+            </p>
           )}
           <p className="text-[11px] text-muted-foreground">
             Route updated {fmtAgo(r.calculatedAt)}

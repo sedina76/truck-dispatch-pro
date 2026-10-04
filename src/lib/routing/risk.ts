@@ -99,3 +99,40 @@ export function formatMarginLabel(scheduleVarianceMinutes: number | null): strin
   if (scheduleVarianceMinutes == null || scheduleVarianceMinutes <= 0) return "";
   return `${formatDurationMinutes(scheduleVarianceMinutes)} to spare`;
 }
+
+// ---------------------------------------------------------------------------
+// Required rest for a SOLO property-carrying driver (FMCSA hours of service),
+// applied to the routing provider's pure driving time so a long-haul ETA is
+// realistic rather than "drives non-stop":
+//   - at most 11 h driving per shift, then a 10 h off-duty rest,
+//   - a 30 min break once 8 h of driving have accumulated in a shift.
+// Simplifications (stated in the UI as "includes required rest, solo"):
+// assumes the driver starts the leg with a fresh clock (the app does not
+// know hours already used today or the 60/70-hour week), and ignores the
+// 14 h window (11 h driving + 30 min break always fits inside it).
+// Team drivers are not modelled -- nothing in the app records them yet.
+// ---------------------------------------------------------------------------
+export const HOS = {
+  MAX_DRIVING_PER_SHIFT_S: 11 * 3600,
+  BREAK_AFTER_DRIVING_S: 8 * 3600,
+  BREAK_S: 30 * 60,
+  OFF_DUTY_RESET_S: 10 * 3600,
+} as const;
+
+/** Driving seconds -> elapsed seconds including the required breaks and rests. */
+export function addRequiredRest(drivingSeconds: number): number {
+  let remaining = Math.max(0, drivingSeconds);
+  let elapsed = 0;
+  while (remaining > 0) {
+    const shiftDriving = Math.min(remaining, HOS.MAX_DRIVING_PER_SHIFT_S);
+    elapsed += shiftDriving + (shiftDriving > HOS.BREAK_AFTER_DRIVING_S ? HOS.BREAK_S : 0);
+    remaining -= shiftDriving;
+    if (remaining > 0) elapsed += HOS.OFF_DUTY_RESET_S;
+  }
+  return elapsed;
+}
+
+/** Whether the ETA for this much driving includes any break or rest (for the UI note). */
+export function etaIncludesRest(drivingSeconds: number | null): boolean {
+  return drivingSeconds != null && drivingSeconds > HOS.BREAK_AFTER_DRIVING_S;
+}

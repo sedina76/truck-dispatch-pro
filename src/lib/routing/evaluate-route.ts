@@ -4,7 +4,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { distanceMeters } from "@/lib/geo/distance";
 import { getRoutingProvider } from "./provider";
 import { getNextOperationalStop, type OperationalStop } from "./next-stop";
-import { classifyRisk, classifyConfidence, type RiskStatus } from "./risk";
+import { classifyRisk, classifyConfidence, addRequiredRest, type RiskStatus } from "./risk";
 import { RoutingProviderError } from "./types";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { formatStopDayTime, formatAppointment, dateOnlyDayEnd } from "@/lib/timezone/format";
@@ -249,7 +249,9 @@ async function runEvaluation(supabase: ServiceRoleClient, input: PingInput, forc
       result: "ok",
     });
 
-    const estimatedArrivalAt = new Date(new Date(result.calculatedAt).getTime() + result.durationSeconds * 1000).toISOString();
+    // Driving time plus the breaks and 10 h rests a solo driver must take
+    // (risk.ts addRequiredRest); route_duration_seconds stays pure driving time.
+    const estimatedArrivalAt = new Date(new Date(result.calculatedAt).getTime() + addRequiredRest(result.durationSeconds) * 1000).toISOString();
     const appointmentAt = targetStop.scheduled_at ? new Date(targetStop.scheduled_at) : null;
     // A date with no time = any time that day (deadline: end of the stop's local day).
     const dayEnd = dateOnlyDayEnd(targetStop.scheduled_at, targetStop.scheduled_window_end, targetStopTimezone);
