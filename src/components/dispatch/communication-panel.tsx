@@ -13,6 +13,7 @@ import {
   type DrawerMessage,
 } from "@/app/(app)/dispatch/board-actions";
 import { cn } from "@/lib/utils";
+import { formatPhone } from "@/lib/utils/phone";
 
 // Phase 2I.1 (Part B) -- the Dispatch Drawer's Communication section:
 // Call Driver info/logging + the merged call+message timeline + the
@@ -184,8 +185,8 @@ export function CommunicationPanel({
           <span className="text-muted-foreground">Driver</span>
           <span className="text-right font-medium">{driver?.name ?? "--"}</span>
           <span className="text-muted-foreground">Phone</span>
-          <span className="text-right font-medium">{driver?.phone ?? "Not on file"}</span>
-          <span className="text-muted-foreground">Current Status</span>
+          <span className="text-right font-medium">{driver?.phone ? formatPhone(driver.phone) : "Not on file"}</span>
+          <span className="text-muted-foreground">Driver Status</span>
           <span className="text-right font-medium capitalize">{driver?.status?.replace(/_/g, " ") ?? "--"}</span>
         </div>
         {canManageDispatchOps && (
@@ -235,7 +236,7 @@ export function CommunicationPanel({
 
       {/* Merged timeline */}
       <div>
-        <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">Communication</p>
+        <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">Call &amp; Message History</p>
         {hasMore && (
           <button type="button" onClick={handleLoadMore} disabled={loadingMore} className="mb-1.5 w-full rounded-sm border border-desktop-border py-1 text-[11px] text-muted-foreground hover:bg-desktop-muted">
             {loadingMore ? <Loader2 className="mx-auto size-3.5 animate-spin" /> : "Load earlier"}

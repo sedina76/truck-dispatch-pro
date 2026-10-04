@@ -18,3 +18,11 @@ test("Driver & Equipment: formatted phone, truck details on the Truck row, truck
   assert.match(drawer, /href=\{`\/trucks\/\$\{data\.truck\.id\}`\}/);
   assert.match(drawer, /href=\{`\/trailers\/\$\{data\.trailer\.id\}`\}/);
 });
+
+test("Communication: formatted phone, 'Driver Status', no second 'Communication' heading", () => {
+  const panel = readFileSync(new URL("../../components/dispatch/communication-panel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /driver\?\.phone \? formatPhone\(driver\.phone\) : "Not on file"/);
+  assert.match(panel, />Call &amp; Message History</);
+  assert.ok(!panel.includes(">Current Status<"));
+  assert.match(panel, /href=\{`tel:\$\{driver\.phone\}`\}/, "the call link still dials the stored number");
+});
