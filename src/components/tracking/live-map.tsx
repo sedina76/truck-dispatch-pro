@@ -75,6 +75,57 @@ function markerColor(marker: DriverMarker) {
   return marker.dispatchStatus ? "#0ea472" : "#2f5be0";
 }
 
+// The driver's position is drawn as a truck badge (white truck on the status
+// color: green = on a load, blue = no active load, grey = location stale),
+// with the truck number underneath when known.
+const TRUCK_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>';
+
+export function buildTruckMarkerElement(color: string, unit: string | null): HTMLDivElement {
+  const el = document.createElement("div");
+  el.style.display = "flex";
+  el.style.flexDirection = "column";
+  el.style.alignItems = "center";
+  el.style.cursor = "pointer";
+  const badge = document.createElement("div");
+  badge.dataset.role = "truck-badge";
+  badge.style.width = "30px";
+  badge.style.height = "30px";
+  badge.style.borderRadius = "8px";
+  badge.style.border = "2px solid white";
+  badge.style.boxShadow = "0 1px 5px rgba(0,0,0,0.45)";
+  badge.style.backgroundColor = color;
+  badge.style.display = "flex";
+  badge.style.alignItems = "center";
+  badge.style.justifyContent = "center";
+  badge.innerHTML = TRUCK_SVG;
+  el.appendChild(badge);
+  const label = document.createElement("div");
+  label.dataset.role = "truck-label";
+  label.style.marginTop = "2px";
+  label.style.padding = "0 4px";
+  label.style.borderRadius = "4px";
+  label.style.background = "rgba(255,255,255,0.92)";
+  label.style.color = "#0f172a";
+  label.style.font = "600 10px/14px system-ui, sans-serif";
+  label.style.whiteSpace = "nowrap";
+  label.style.boxShadow = "0 1px 2px rgba(0,0,0,0.25)";
+  label.textContent = unit ?? "";
+  label.style.display = unit ? "block" : "none";
+  el.appendChild(label);
+  return el;
+}
+
+function updateTruckMarkerElement(el: HTMLElement, color: string, unit: string | null) {
+  const badge = el.querySelector<HTMLElement>('[data-role="truck-badge"]');
+  if (badge) badge.style.backgroundColor = color;
+  const label = el.querySelector<HTMLElement>('[data-role="truck-label"]');
+  if (label) {
+    label.textContent = unit ?? "";
+    label.style.display = unit ? "block" : "none";
+  }
+}
+
 const STATUS_LABEL: Record<string, string> = {
   assigned: "Assigned",
   accepted: "Assigned",
@@ -275,18 +326,10 @@ export function LiveMap({
     if (existing) {
       existing.setLngLat([marker.longitude, marker.latitude]);
       existing.getPopup()?.setHTML(popupHtml(marker));
-      const el = existing.getElement();
-      el.style.backgroundColor = markerColor(marker);
+      updateTruckMarkerElement(existing.getElement(), markerColor(marker), marker.truckUnit);
       return;
     }
-    const el = document.createElement("div");
-    el.style.width = "16px";
-    el.style.height = "16px";
-    el.style.borderRadius = "50%";
-    el.style.border = "2px solid white";
-    el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.4)";
-    el.style.backgroundColor = markerColor(marker);
-    el.style.cursor = "pointer";
+    const el = buildTruckMarkerElement(markerColor(marker), marker.truckUnit);
     // Selecting a truck (spec section 19) is separate from the popup --
     // the popup is a quick glance, the side panel is the full route-
     // intelligence detail. Reads from the ref, not the closed-over
@@ -296,8 +339,9 @@ export function LiveMap({
       if (dispatchId) onSelectDispatch(dispatchId);
     });
 
-    const popup = new maplibregl.Popup({ offset: 12 }).setHTML(popupHtml(marker));
-    const mapMarker = new maplibregl.Marker({ element: el })
+    const popup = new maplibregl.Popup({ offset: 18 }).setHTML(popupHtml(marker));
+    // anchor "top" + offset puts the badge's center on the GPS point
+    const mapMarker = new maplibregl.Marker({ element: el, anchor: "top", offset: [0, -15] })
       .setLngLat([marker.longitude, marker.latitude])
       .setPopup(popup)
       .addTo(map);
