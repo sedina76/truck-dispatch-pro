@@ -55,71 +55,93 @@ type PayableDriverLoad = {
   gross_pay: number | null;
 };
 
-export async function createDriverSettlement(formData: FormData) {
-  await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
-  const driverId = String(formData.get("driver_id") || "");
-  const periodStart = String(formData.get("period_start") || "");
-  const periodEnd = String(formData.get("period_end") || "");
-  if (!driverId || !periodStart || !periodEnd) throw new Error("Select a driver and period.");
+export type CreateSettlementState = { error: string | null };
 
-  const supabase = await createClient();
-  const organizationId = await getCurrentOrgId();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+// Returns { error } instead of throwing: a thrown server-action message is
+// replaced by the generic error page in production, which hid the real
+// reason (e.g. the driver has no pay rate) and left a voided settlement
+// behind on every try. Everything is checked BEFORE anything is created.
+export async function createDriverSettlement(_prev: CreateSettlementState, formData: FormData): Promise<CreateSettlementState> {
+  let settlementId: string;
+  try {
+    await requireOperationalAccess(); // D.2.11 SaaS paywall -- before any write.
+    const driverId = String(formData.get("driver_id") || "");
+    const periodStart = String(formData.get("period_start") || "");
+    const periodEnd = String(formData.get("period_end") || "");
+    if (!driverId || !periodStart || !periodEnd) return { error: "Select a driver and period." };
+    if (periodEnd < periodStart) return { error: "The period end must be on or after its start." };
 
-  const { data: driver } = await supabase.from("drivers").select("carrier_id").eq("id", driverId).single();
-  if (!driver) throw new Error("Driver not found.");
+    const supabase = await createClient();
+    const organizationId = await getCurrentOrgId();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  const { data: settlement, error } = await supabase
-    .from("driver_settlements")
-    .insert({
+    const { data: driver } = await supabase.from("drivers").select("carrier_id, first_name, last_name").eq("id", driverId).single();
+    if (!driver) return { error: "Driver not found." };
+    const name = `${driver.first_name ?? ""} ${driver.last_name ?? ""}`.trim() || "this driver";
+
+    // Every currently-eligible load for this driver/period (spec section 15:
+    // delivered loads NOT already settled), read before anything is created.
+    const { data: payable, error: payableError } = await supabase.rpc("get_payable_loads", {
+      p_driver_id: driverId,
+      p_period_start: periodStart,
+      p_period_end: periodEnd,
+    });
+    if (payableError) return { error: "Could not look up this driver's delivered loads. Please try again." };
+    const rows = (payable ?? []) as PayableDriverLoad[];
+    if (rows.length === 0) {
+      return { error: `${name} has no delivered loads in this period that aren't already on a settlement. Check the dates (loads count by delivery date).` };
+    }
+    const unpriced = rows.filter((r) => !r.pay_method || r.gross_pay == null);
+    if (unpriced.length > 0) {
+      return {
+        error: `${name} has no pay rate for ${unpriced.map((r) => r.load_number).join(", ")}. Add one on the driver's page (Driver Pay section: percentage, per mile or flat), with a start date on or before the delivery, then create the settlement again.`,
+      };
+    }
+
+    const { data: settlement, error } = await supabase
+      .from("driver_settlements")
+      .insert({
+        organization_id: organizationId,
+        driver_id: driverId,
+        carrier_id: driver.carrier_id,
+        period_start: periodStart,
+        period_end: periodEnd,
+        created_by: user?.id ?? null,
+      })
+      .select("id")
+      .single();
+    if (error || !settlement) return { error: /row-level security|permission/i.test(error?.message ?? "") ? "Your role can't create driver settlements." : "Could not create the settlement. Please try again." };
+    settlementId = settlement.id as string;
+
+    // One insert for all loads (all-or-nothing) -- a failed load must never
+    // silently go missing from the driver's pay.
+    const items = rows.map((row) => ({
       organization_id: organizationId,
-      driver_id: driverId,
-      carrier_id: driver.carrier_id,
-      period_start: periodStart,
-      period_end: periodEnd,
+      driver_settlement_id: settlementId,
+      load_id: row.load_id,
+      dispatch_id: row.dispatch_id,
+      load_number: row.load_number,
+      delivery_date: row.delivery_date,
+      miles: row.miles,
+      load_rate: row.load_rate,
+      pay_method: row.pay_method,
+      pay_rate: row.pay_rate,
+      gross_pay: row.gross_pay,
       created_by: user?.id ?? null,
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(error.message);
-
-  // Auto-populate with every currently-eligible load for this driver/period
-  // (spec section 15: "System automatically finds eligible delivered loads
-  // ... that have NOT already been settled"). Each insert re-validates
-  // duplicate-protection itself (guard_driver_settlement_item_duplicate).
-  const { data: payable, error: payableError } = await supabase.rpc("get_payable_loads", {
-    p_driver_id: driverId,
-    p_period_start: periodStart,
-    p_period_end: periodEnd,
-  });
-
-  // One insert for all loads (all-or-nothing) -- a failed load must never
-  // silently go missing from the driver's pay.
-  const items = (payable ?? []).map((row: PayableDriverLoad) => ({
-    organization_id: organizationId,
-    driver_settlement_id: settlement.id,
-    load_id: row.load_id,
-    dispatch_id: row.dispatch_id,
-    load_number: row.load_number,
-    delivery_date: row.delivery_date,
-    miles: row.miles,
-    load_rate: row.load_rate,
-    pay_method: row.pay_method,
-    pay_rate: row.pay_rate,
-    gross_pay: row.gross_pay,
-    created_by: user?.id ?? null,
-  }));
-  const itemsError = payableError ?? (items.length ? (await supabase.from("driver_settlement_items").insert(items)).error : null);
-  if (itemsError) {
-    // Never leave a half-built settlement behind: void it (no delete policy; voiding keeps the audit trail).
-    await supabase.rpc("void_driver_settlement", { p_settlement_id: settlement.id, p_reason: "Could not add the payable loads; created again after the error was fixed." });
-    throw new Error(`Could not add the payable loads to this settlement: ${itemsError.message}`);
+    }));
+    const { error: itemsError } = await supabase.from("driver_settlement_items").insert(items);
+    if (itemsError) {
+      // Never leave a half-built settlement behind: void it (no delete policy; voiding keeps the audit trail).
+      await supabase.rpc("void_driver_settlement", { p_settlement_id: settlementId, p_reason: "Could not add the payable loads; created again after the error was fixed." });
+      return { error: /already/i.test(itemsError.message) ? "One of these loads is already on another settlement. Refresh and try again." : "Could not add the loads to this settlement, so it was not created. Please try again." };
+    }
+    revalidatePath("/driver-settlements");
+  } catch (err) {
+    return { error: err instanceof Error && err.message ? err.message : "Could not create the settlement. Please try again." };
   }
-
-  revalidatePath("/driver-settlements");
-  redirect(`/driver-settlements/${settlement.id}`);
+  redirect(`/driver-settlements/${settlementId}`);
 }
 
 export async function addSettlementLoad(settlementId: string, driverId: string, formData: FormData) {

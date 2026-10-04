@@ -20,7 +20,7 @@ for (const [name, src, table, rpc] of [
     assert.match(body, /payableError/);
     assert.match(body, /if \(itemsError\)/);
     assert.match(body, new RegExp(`rpc\\("${rpc}"`), "half-built settlement is voided");
-    assert.match(body, /throw new Error\(`Could not add the payable loads/);
+    assert.match(body, /throw new Error\(`Could not add the payable loads|return \{ error: [^\n]*Could not add the loads/, "a failed insert is reported, never ignored");
   });
 }
 

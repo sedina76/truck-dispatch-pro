@@ -1,7 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import { FormCard } from "@/components/ui/form-card";
-import { FormField, FormGrid, FormSelect } from "@/components/ui/form-field";
-import { createDriverSettlement } from "../actions";
+import { NewSettlementForm } from "@/components/driver-settlements/new-settlement-form";
 
 function isoDate(d: Date) {
   return d.toISOString().slice(0, 10);
@@ -17,23 +15,16 @@ export default async function NewDriverSettlementPage() {
   weekAgo.setDate(weekAgo.getDate() - 6);
 
   return (
-    <FormCard
-      title="New Settlement"
-      description="Select a driver and period -- eligible delivered loads not already settled will be added automatically. Review before approving."
-      action={createDriverSettlement}
-      cancelHref="/driver-settlements"
-      submitLabel="Create Settlement"
-    >
-      <FormGrid>
-        <FormSelect
-          label="Driver"
-          name="driver_id"
-          required
-          options={(drivers ?? []).map((d) => ({ value: d.id, label: `${d.first_name} ${d.last_name}` }))}
-        />
-        <FormField label="Period Start" name="period_start" type="date" defaultValue={isoDate(weekAgo)} required />
-        <FormField label="Period End" name="period_end" type="date" defaultValue={isoDate(today)} required />
-      </FormGrid>
-    </FormCard>
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-[15px] font-semibold tracking-tight text-desktop-text">New Settlement</h1>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Select a driver and period -- delivered loads not already settled are added automatically, priced with the driver&apos;s pay rate. Review before approving.
+        </p>
+      </div>
+      <div className="rounded-md border border-desktop-border bg-card p-4 shadow-elevation-1">
+        <NewSettlementForm drivers={(drivers ?? []).map((d) => ({ value: d.id, label: `${d.first_name} ${d.last_name}` }))} defaultStart={isoDate(weekAgo)} defaultEnd={isoDate(today)} />
+      </div>
+    </div>
   );
 }
