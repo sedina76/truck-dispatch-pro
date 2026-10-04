@@ -7,7 +7,7 @@ import { getNextOperationalStop, type OperationalStop } from "./next-stop";
 import { classifyRisk, classifyConfidence, type RiskStatus } from "./risk";
 import { RoutingProviderError } from "./types";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
-import { formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
+import { formatStopDayTime, formatAppointment, dateOnlyDayEnd } from "@/lib/timezone/format";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 
 type ServiceRoleClient = ReturnType<typeof createServiceRoleClient>;
@@ -251,7 +251,9 @@ async function runEvaluation(supabase: ServiceRoleClient, input: PingInput, forc
 
     const estimatedArrivalAt = new Date(new Date(result.calculatedAt).getTime() + result.durationSeconds * 1000).toISOString();
     const appointmentAt = targetStop.scheduled_at ? new Date(targetStop.scheduled_at) : null;
-    const appointmentWindowEnd = targetStop.scheduled_window_end ? new Date(targetStop.scheduled_window_end) : null;
+    // A date with no time = any time that day (deadline: end of the stop's local day).
+    const dayEnd = dateOnlyDayEnd(targetStop.scheduled_at, targetStop.scheduled_window_end, targetStopTimezone);
+    const appointmentWindowEnd = targetStop.scheduled_window_end ? new Date(targetStop.scheduled_window_end) : dayEnd ? new Date(dayEnd) : null;
     const { status: riskStatus, scheduleVarianceMinutes } = classifyRisk(new Date(estimatedArrivalAt), appointmentAt, appointmentWindowEnd, false);
     const confidence = classifyConfidence({ gpsAgeMinutes: 0, gpsAccuracyMeters: input.accuracyMeters, routeAgeMinutes: 0, distanceRemainingMeters: result.distanceMeters });
     const initialDistanceMeters = existing?.initial_distance_meters ?? result.distanceMeters;

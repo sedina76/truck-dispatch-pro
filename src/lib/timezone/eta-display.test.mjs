@@ -49,3 +49,17 @@ test("every Tracking surface uses the new formats", () => {
   assert.match(src("../../app/driver-portal/trip/page.tsx"), /appointmentLabel: formatAppointment\(/);
   assert.ok(!/m LATE`/.test(src("../../app/(app)/dispatch/board/page.tsx")));
 });
+
+test("a date-only appointment is due by the end of that day, not 12:00 AM", async () => {
+  const { dateOnlyDayEnd } = await import("./format.ts");
+  const midnight = "2026-10-03T06:00:00Z"; // Oct 3 00:00 in Denver
+  assert.equal(dateOnlyDayEnd(midnight, null, DEN), "2026-10-04T05:59:00.000Z"); // Oct 3 23:59 MT
+  assert.equal(dateOnlyDayEnd(midnight, "2026-10-03T08:00:00Z", DEN), null, "a window keeps its own end");
+  assert.equal(dateOnlyDayEnd("2026-10-03T15:00:00Z", null, DEN), null, "a real time is a real time");
+  const { classifyRisk } = await import("../routing/risk.ts");
+  const eta = new Date("2026-10-05T02:37:00Z"); // Sun Oct 4, 8:37 PM MT
+  const r = classifyRisk(eta, new Date(midnight), new Date(dateOnlyDayEnd(midnight, null, DEN)), false);
+  assert.equal(r.status, "late");
+  assert.equal(r.scheduleVarianceMinutes, -(20 * 60 + 38)); // 20 h 38 min after the day ended, not 1 day 20 h
+  assert.match(src("../routing/evaluate-route.ts"), /dateOnlyDayEnd\(targetStop\.scheduled_at, targetStop\.scheduled_window_end, targetStopTimezone\)/);
+});

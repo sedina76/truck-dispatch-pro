@@ -134,3 +134,14 @@ export function formatAppointment(iso: string | null, windowEndIso: string | nul
   const end = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(windowEndIso));
   return `${start.replace(/ \S+$/, "")}-${end} ${shortZoneLabel(tz, iso)}`;
 }
+
+/**
+ * An appointment saved as a date only (stop-local midnight, no window) means
+ * "any time that day": lateness is measured against the end of that day, not
+ * 12:00 AM. Returns that day-end instant, or null for a real time/window.
+ * (Midnight + 23 h 59 min: on the two DST-change days a year this is an hour off.)
+ */
+export function dateOnlyDayEnd(iso: string | null, windowEndIso: string | null, timezone: string | null): string | null {
+  if (!iso || windowEndIso || !isMidnightLocal(iso, timezone)) return null;
+  return new Date(new Date(iso).getTime() + (23 * 60 + 59) * 60 * 1000).toISOString();
+}
