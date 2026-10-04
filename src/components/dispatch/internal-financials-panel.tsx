@@ -1,39 +1,54 @@
 function money(n: number): string {
-  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Reuses the existing trigger-computed columns verbatim (dispatches.
-// load_rate/dispatch_fee_percentage/dispatch_fee_amount/carrier_net_amount,
-// sync_dispatch_financials(), 0009) -- no second margin formula. This is
-// deliberately NOT the canonical company-margin figure the Load Detail
-// page's Profitability section shows (get_load_profitability, which also
-// factors in other direct expenses) -- it's the simpler, real
-// dispatch-level breakdown the spec's own mockup shows. A link to the
-// fuller Profitability view is offered alongside it, not duplicated here.
+export type BrokerPays = "dispatcher_receives_funds" | "carrier_paid_directly" | null;
+
+// The dispatch's money, in dispatch-service terms (one place, used by the
+// dispatch panel and the dispatch page): the load rate belongs to the carrier;
+// your income is the dispatch fee. Who the broker pays decides how the money
+// moves -- you collect the rate and pass the carrier its share, or the carrier
+// is paid directly and you bill it the fee. Values are the trigger-computed
+// dispatch_financials columns (0009/0068); no second formula. The Load page's
+// Profitability section adds other direct expenses on top.
 export function InternalFinancialsPanel({
   loadRate,
   feePercentage,
   feeAmount,
   carrierNet,
+  brokerPays = null,
+  compact = false,
 }: {
   loadRate: number | null;
   feePercentage: number;
   feeAmount: number | null;
   carrierNet: number | null;
+  brokerPays?: BrokerPays;
+  compact?: boolean;
 }) {
-  if (loadRate === null) {
-    return <p className="text-[12.5px] text-desktop-text-muted">Load revenue, dispatch fee, and carrier pay are calculated automatically once this dispatch is created.</p>;
+  if (loadRate === null || Number.isNaN(loadRate)) {
+    return <p className="text-[12.5px] text-desktop-text-muted">The load rate, dispatch fee and carrier&apos;s share are calculated automatically once this dispatch is created.</p>;
   }
+  const fee = feeAmount ?? 0;
+  const share = carrierNet ?? 0;
+  const pct = Number(feePercentage);
+  const pctLabel = Number.isInteger(pct) ? `${pct}%` : `${pct.toFixed(2)}%`;
 
   return (
-    <div className="max-w-sm space-y-1 text-[13px]">
-      <Row label="Load Revenue" value={money(loadRate)} />
-      <Row label={`Dispatch Fee (${Number(feePercentage).toFixed(2)}%)`} value={money(feeAmount ?? 0)} />
-      <Row label="Carrier Pay" value={money(carrierNet ?? 0)} />
-      <div className="flex items-center justify-between border-t border-desktop-border pt-1.5 font-semibold">
-        <span>Company Gross Margin</span>
-        <span>{money(feeAmount ?? 0)}</span>
+    <div className={`${compact ? "" : "max-w-sm "}space-y-1 text-[13px]`} data-testid="dispatch-money">
+      <Row label="Load Rate (from broker)" value={money(loadRate)} />
+      <Row label="Carrier's Share" value={money(share)} />
+      <div className="flex items-center justify-between border-t border-desktop-border pt-1.5 font-semibold text-desktop-text">
+        <span>Your Dispatch Fee ({pctLabel})</span>
+        <span className={fee < 0 ? "text-danger" : "text-desktop-success"}>{money(fee)}</span>
       </div>
+      {brokerPays && (
+        <p className="pt-0.5 text-[11.5px] text-desktop-text-muted">
+          {brokerPays === "carrier_paid_directly"
+            ? `The broker pays the carrier ${money(loadRate)}; you bill the carrier your ${money(fee)} fee.`
+            : `The broker pays you ${money(loadRate)}; you pay the carrier ${money(share)} and keep ${money(fee)}.`}
+        </p>
+      )}
     </div>
   );
 }

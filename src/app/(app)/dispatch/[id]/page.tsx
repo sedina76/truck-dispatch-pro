@@ -75,7 +75,7 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
     updated_at: string;
   };
 
-  const [summary, options, rateConDoc, financialsRes, notesRes] = await Promise.all([
+  const [summary, options, rateConDoc, financialsRes, proceedsRes, notesRes] = await Promise.all([
     getLoadSummary(supabase, dispatch.load_id),
     // Phase 3A.3 (item 5): pass this dispatch's OWN current assignment so a
     // driver/truck/trailer that has since gone inactive (or, for a trailer,
@@ -95,12 +95,15 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
     canSeeFinancials
       ? supabase.from("dispatch_financials").select("load_rate, dispatch_fee_percentage, dispatch_fee_amount, carrier_net_amount").eq("dispatch_id", id).maybeSingle()
       : Promise.resolve({ data: null }),
+    canSeeFinancials ? supabase.from("dispatches").select("proceeds_model").eq("id", id).maybeSingle() : Promise.resolve({ data: null }),
     canSeeFinancials
       ? supabase.from("dispatch_internal_notes").select("notes").eq("dispatch_id", id).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
   if (!summary) notFound();
   const financials = financialsRes.data;
+  const proceeds = (proceedsRes.data as { proceeds_model?: string | null } | null)?.proceeds_model ?? null;
+  const brokerPays = proceeds === "dispatcher_receives_funds" || proceeds === "carrier_paid_directly" ? proceeds : null;
   const notes = notesRes.data?.notes ?? null;
 
   return (
@@ -189,9 +192,10 @@ export default async function DispatchDetailPage({ params }: { params: Promise<{
                   feePercentage={Number(financials?.dispatch_fee_percentage)}
                   feeAmount={Number(financials?.dispatch_fee_amount)}
                   carrierNet={Number(financials?.carrier_net_amount)}
+                  brokerPays={brokerPays}
                 />
                 <Link href={`/loads/${dispatch.load_id}`} className="mt-2 inline-block text-[11.5px] font-medium text-primary hover:underline">
-                  View full Profitability breakdown (revenue, all direct costs, margin) &rarr;
+                  Full profitability for this load (all direct costs) &rarr;
                 </Link>
               </DesktopCollapsibleSection>
             )}

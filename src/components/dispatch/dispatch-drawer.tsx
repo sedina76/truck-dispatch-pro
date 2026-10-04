@@ -43,6 +43,7 @@ import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes,
 import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
+import { InternalFinancialsPanel } from "@/components/dispatch/internal-financials-panel";
 
 // Phase 2I.1: 'documents' and 'communication' default OPEN (unlike every
 // other secondary section) -- both are now primary operational surfaces
@@ -104,9 +105,6 @@ function DispatchStatusBadge({ status }: { status: string }) {
   );
 }
 
-function money(n: number): string {
-  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-}
 function fmtDateTime(iso: string | null): string {
   if (!iso) return "--";
   return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -217,8 +215,10 @@ export function DispatchDrawer({ dispatchId, onClose }: { dispatchId: string | n
               {data ? data.load.loadNumber : loading ? "Loading..." : "Dispatch Details"}
             </p>
             {data && (
-              <div className="mt-0.5">
-                <DispatchStatusBadge status={data.dispatch.status} />
+              <div className="mt-1">
+                <span className="rounded-full bg-white px-2 py-0.5">
+                  <DispatchStatusBadge status={data.dispatch.status} />
+                </span>
               </div>
             )}
           </div>
@@ -467,29 +467,23 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 function OverviewSection({ data }: { data: DispatchDrawerData }) {
   return (
     <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
-      <Row label="Dispatch #" value={data.dispatch.id.slice(0, 8).toUpperCase()} />
       <Row label="Load #" value={data.load.loadNumber} />
       <Row label="Status" value={<DispatchStatusBadge status={data.dispatch.status} />} />
       <Row label="Broker / Customer" value={data.load.brokerName ?? data.load.customerName ?? "--"} />
       <Row label="Carrier" value={data.carrier.name} />
       <Row label="Total Miles" value={data.load.totalMiles ? Number(data.load.totalMiles).toLocaleString() : "--"} />
       {data.financials ? (
-        <>
-          <div className="col-span-2 mt-1 border-t border-desktop-border pt-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Internal Financials -- Staff Only
-          </div>
-          <Row label="Revenue" value={money(data.financials.loadRate)} />
-          <Row label="Carrier Cost" value={money(data.financials.carrierCost)} />
-          <Row label="Dispatch Fee" value={`${money(data.financials.dispatchFeeAmount)} (${data.financials.dispatchFeePercentage}%)`} />
-          <Row
-            label="Estimated Profit"
-            value={
-              <span className={data.financials.estimatedProfit != null && data.financials.estimatedProfit < 0 ? "text-danger" : "text-desktop-success"}>
-                {data.financials.estimatedProfit != null ? money(data.financials.estimatedProfit) : "--"}
-              </span>
-            }
+        <div className="col-span-2 mt-1 border-t border-desktop-border pt-1.5">
+          <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">Money -- Staff Only</div>
+          <InternalFinancialsPanel
+            compact
+            loadRate={data.financials.loadRate}
+            feePercentage={data.financials.dispatchFeePercentage}
+            feeAmount={data.financials.dispatchFeeAmount}
+            carrierNet={data.financials.carrierNetAmount}
+            brokerPays={data.financials.brokerPays}
           />
-        </>
+        </div>
       ) : (
         <div className="col-span-2 mt-1 border-t border-desktop-border pt-1.5 text-[12px] text-muted-foreground">
           Financial details are not available for your role.

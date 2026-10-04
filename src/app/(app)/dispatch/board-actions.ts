@@ -314,7 +314,8 @@ export type DispatchDrawerData = {
     dispatchFeePercentage: number;
     dispatchFeeAmount: number;
     carrierNetAmount: number;
-    estimatedProfit: number | null;
+    /** Who the broker pays on this dispatch (0125), null when not recorded. */
+    brokerPays: "dispatcher_receives_funds" | "carrier_paid_directly" | null;
   } | null;
   driver: { id: string; name: string; phone: string | null; status: string } | null;
   carrier: { id: string; name: string };
@@ -987,7 +988,15 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
 
   const grossRevenue = Number(d.load_rate);
   const carrierCost = Number(d.carrier_net_amount);
-  const estimatedProfit = grossRevenue - carrierCost;
+  // Who the broker pays (0125) -- separate, degradable read like the other
+  // optional drawer data; financial roles only.
+  let brokerPays: "dispatcher_receives_funds" | "carrier_paid_directly" | null = null;
+  if (canSeeFinancials) {
+    const { data: pm, error: pmError } = await supabase.from("dispatches").select("proceeds_model").eq("id", dispatchId).maybeSingle();
+    if (pmError) console.warn(`[dispatch drawer] proceeds model unavailable for dispatch ${dispatchId}:`, pmError.message);
+    const v = (pm as { proceeds_model?: string | null } | null)?.proceeds_model ?? null;
+    brokerPays = v === "dispatcher_receives_funds" || v === "carrier_paid_directly" ? v : null;
+  }
 
   // Phase 2C (0060_route_intelligence.sql) -- degradable, same pattern as
   // geofence/detention above: a not-yet-applied migration means this
@@ -1098,7 +1107,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
           dispatchFeePercentage: Number(d.dispatch_fee_percentage),
           dispatchFeeAmount: Number(d.dispatch_fee_amount),
           carrierNetAmount: carrierCost,
-          estimatedProfit,
+          brokerPays,
         }
       : null,
     driver: d.drivers ? { id: dispatch.driver_id, name: `${d.drivers.first_name} ${d.drivers.last_name}`, phone: d.drivers.phone, status: d.drivers.status } : null,
