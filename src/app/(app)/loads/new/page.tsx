@@ -11,10 +11,14 @@ import {
 } from "@/components/desktop/collapsible-section";
 import { AdditionalStopsFields } from "@/components/loads/additional-stops-fields";
 import { RevenuePerMileLive } from "@/components/loads/rate-financials-fields";
+import { RateConAutofill } from "@/components/loads/rate-con-autofill";
 import { createLoadWithStops } from "../create-actions";
 import { getCurrentOrgId } from "@/lib/actions/records";
 import { COMMON_TIMEZONES, isValidIanaTimezone } from "@/lib/timezone/iana";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
+
+// Reading a rate confirmation with AI can take up to ~30 s.
+export const maxDuration = 60;
 
 const EQUIPMENT_OPTIONS = [
   { value: "dry_van", label: "Dry Van" },
@@ -103,6 +107,8 @@ export default async function NewLoadPage({
             </div>
             <CollapsibleSectionsToolbar />
           </div>
+
+          {canSeeFinancials && <RateConAutofill />}
 
           <div className="space-y-3">
             <DesktopCollapsibleSection id="load_info" title="Load Information">

@@ -2,7 +2,9 @@ import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormTextarea } from "@/components/ui/form-field";
 import { createBroker } from "../actions";
 
-export default function NewBrokerPage() {
+export default async function NewBrokerPage({ searchParams }: { searchParams: Promise<{ legal_name?: string; mc_number?: string }> }) {
+  // Prefilled when opened from "Fill from rate confirmation" (broker not in your list yet).
+  const { legal_name, mc_number } = await searchParams;
   return (
     <FormCard
       title="New Broker"
@@ -12,9 +14,9 @@ export default function NewBrokerPage() {
       submitLabel="Create Broker"
     >
       <FormGrid>
-        <FormField label="Legal name" name="legal_name" required />
+        <FormField label="Legal name" name="legal_name" required defaultValue={legal_name ?? ""} />
         <FormField label="DBA name" name="dba_name" />
-        <FormField label="MC number" name="mc_number" placeholder="MC-123456" />
+        <FormField label="MC number" name="mc_number" placeholder="MC-123456" defaultValue={mc_number ?? ""} />
         <FormField label="USDOT number" name="dot_number" />
         <FormField label="Website" name="website" type="url" />
         <FormField label="Contact name" name="contact_name" />

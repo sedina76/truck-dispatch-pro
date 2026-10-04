@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 
@@ -15,7 +15,10 @@ import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 // is Pickup -> these additional stops in the order added -> Delivery,
 // which stop_sequence records; see KNOWN LIMITATIONS in the final report.
 
-type ExtraStop = { key: string; type: "pickup" | "delivery" };
+type ExtraStop = { key: string; type: "pickup" | "delivery"; values?: Record<string, string> };
+
+/** Event the "Fill from rate confirmation" box sends to add filled-in stops. */
+export type ExtraStopsEvent = CustomEvent<{ stop_type: "pickup" | "delivery"; values: Record<string, string> }[]>;
 
 const inputClass = "h-8 w-full rounded-sm border border-desktop-border bg-card px-2.5 text-[13px] shadow-elevation-1 outline-none transition-[box-shadow,border-color] focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20";
 const labelClass = "text-[12px] font-medium text-desktop-text";
@@ -24,6 +27,15 @@ let nextKey = 0;
 
 export function AdditionalStopsFields({ defaultTimezone }: { defaultTimezone: string }) {
   const [stops, setStops] = useState<ExtraStop[]>([]);
+
+  useEffect(() => {
+    const onAdd = (e: Event) => {
+      const list = (e as ExtraStopsEvent).detail ?? [];
+      setStops((s) => [...s.filter((st) => !st.values), ...list.map((x) => ({ key: `extra-${nextKey++}`, type: x.stop_type, values: x.values }))]);
+    };
+    window.addEventListener("tdp:set-extra-stops", onAdd);
+    return () => window.removeEventListener("tdp:set-extra-stops", onAdd);
+  }, []);
 
   function addStop(type: "pickup" | "delivery") {
     setStops((s) => [...s, { key: `extra-${nextKey++}`, type }]);
@@ -50,37 +62,37 @@ export function AdditionalStopsFields({ defaultTimezone }: { defaultTimezone: st
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <div className="space-y-1 sm:col-span-2">
               <label className={labelClass}>Facility / Company Name</label>
-              <input name={`extra_stops[${stop.key}][facility_name]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][facility_name]`} defaultValue={stop.values?.facility_name} className={inputClass} />
             </div>
             <div className="space-y-1 sm:col-span-2">
               <label className={labelClass}>Address</label>
-              <input name={`extra_stops[${stop.key}][address_line1]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][address_line1]`} defaultValue={stop.values?.address_line1} className={inputClass} />
             </div>
             <div className="space-y-1">
               <label className={labelClass}>City *</label>
-              <input name={`extra_stops[${stop.key}][city]`} required className={inputClass} />
+              <input name={`extra_stops[${stop.key}][city]`} defaultValue={stop.values?.city} required className={inputClass} />
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <div className="space-y-1">
                 <label className={labelClass}>State *</label>
-                <input name={`extra_stops[${stop.key}][state]`} required maxLength={2} className={inputClass} />
+                <input name={`extra_stops[${stop.key}][state]`} defaultValue={stop.values?.state} required maxLength={2} className={inputClass} />
               </div>
               <div className="space-y-1">
                 <label className={labelClass}>ZIP</label>
-                <input name={`extra_stops[${stop.key}][postal_code]`} className={inputClass} />
+                <input name={`extra_stops[${stop.key}][postal_code]`} defaultValue={stop.values?.postal_code} className={inputClass} />
               </div>
             </div>
             <div className="space-y-1">
               <label className={labelClass}>{stop.type === "pickup" ? "Pickup" : "Delivery"} Date *</label>
-              <input type="date" name={`extra_stops[${stop.key}][date]`} required className={inputClass} />
+              <input type="date" name={`extra_stops[${stop.key}][date]`} defaultValue={stop.values?.date} required className={inputClass} />
             </div>
             <div className="space-y-1">
               <label className={labelClass}>Appointment Time</label>
-              <input type="time" name={`extra_stops[${stop.key}][time]`} className={inputClass} />
+              <input type="time" name={`extra_stops[${stop.key}][time]`} defaultValue={stop.values?.time} className={inputClass} />
             </div>
             <div className="space-y-1">
               <label className={labelClass}>Timezone</label>
-              <select name={`extra_stops[${stop.key}][timezone]`} defaultValue={defaultTimezone} className={inputClass}>
+              <select name={`extra_stops[${stop.key}][timezone]`} defaultValue={stop.values?.timezone || defaultTimezone} className={inputClass}>
                 {COMMON_TIMEZONES.map((tz) => (
                   <option key={tz.value} value={tz.value}>{tz.label}</option>
                 ))}
@@ -88,19 +100,19 @@ export function AdditionalStopsFields({ defaultTimezone }: { defaultTimezone: st
             </div>
             <div className="space-y-1">
               <label className={labelClass}>Reference #</label>
-              <input name={`extra_stops[${stop.key}][reference_number]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][reference_number]`} defaultValue={stop.values?.reference_number} className={inputClass} />
             </div>
             <div className="space-y-1">
               <label className={labelClass}>Contact Name</label>
-              <input name={`extra_stops[${stop.key}][contact_name]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][contact_name]`} defaultValue={stop.values?.contact_name} className={inputClass} />
             </div>
             <div className="space-y-1">
               <label className={labelClass}>Contact Phone</label>
-              <input name={`extra_stops[${stop.key}][contact_phone]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][contact_phone]`} defaultValue={stop.values?.contact_phone} className={inputClass} />
             </div>
             <div className="space-y-1 sm:col-span-2">
               <label className={labelClass}>Notes</label>
-              <input name={`extra_stops[${stop.key}][notes]`} className={inputClass} />
+              <input name={`extra_stops[${stop.key}][notes]`} defaultValue={stop.values?.notes} className={inputClass} />
             </div>
           </div>
         </div>

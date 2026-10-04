@@ -49,6 +49,17 @@ export function CollapsibleSectionsProvider({
 }) {
   const [openMap, setOpenMap] = useState<Record<string, boolean>>(defaults);
 
+  // Other parts of a page (e.g. "Fill from rate confirmation") can ask for
+  // given sections -- or all of them -- to open, so filled fields are visible.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const ids = (e as CustomEvent<string[] | undefined>).detail;
+      setOpenMap((m) => ({ ...m, ...Object.fromEntries((ids ?? Object.keys(m)).map((k) => [k, true])) }));
+    };
+    window.addEventListener("tdp:open-sections", onOpen);
+    return () => window.removeEventListener("tdp:open-sections", onOpen);
+  }, []);
+
   useEffect(() => {
     if (!storageKey) return;
     try {
