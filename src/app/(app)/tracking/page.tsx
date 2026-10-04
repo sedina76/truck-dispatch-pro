@@ -20,12 +20,9 @@ export default async function TrackingPage() {
   // driver, kept in sync by a trigger on every driver_locations insert --
   // the Live Tracking screen reads this indexed table instead of scanning/
   // deduping raw ping history.
-  const [{ data: latest }, { count: activeDriversCount }] = await Promise.all([
-    supabase
-      .from("driver_latest_locations")
-      .select("driver_id, truck_id, dispatch_id, latitude, longitude, accuracy_meters, speed_kph, recorded_at"),
-    supabase.from("drivers").select("id", { count: "exact", head: true }).eq("status", "active"),
-  ]);
+  const { data: latest } = await supabase
+    .from("driver_latest_locations")
+    .select("driver_id, truck_id, dispatch_id, latitude, longitude, accuracy_meters, speed_kph, recorded_at");
 
   const rows = latest ?? [];
   const driverIds = rows.map((r) => r.driver_id);
@@ -171,10 +168,10 @@ export default async function TrackingPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
         title="Live Tracking"
-        description={`Where every truck is, where it's headed and when it gets there -- from each driver's phone while the driver app is open.${activeDriversCount ? ` ${activeDriversCount} active driver${activeDriversCount === 1 ? "" : "s"}.` : ""}`}
+        description="Where every truck is, where it's headed and when it gets there (GPS from each driver's phone while the driver app is open)."
       />
 
       {markers.length === 0 ? (

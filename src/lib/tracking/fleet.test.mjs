@@ -50,3 +50,10 @@ test("page and board wiring", () => {
   assert.match(map, /map\.flyTo\(\{ center: marker\.getLngLat\(\)/);
   assert.match(map, /etaIncludesRest\(info\.routeDurationSeconds\)/);
 });
+
+test("one slim filter row replaces the big count cards and the duplicate chips", () => {
+  const board = readFileSync(new URL("../../components/tracking/tracking-board.tsx", import.meta.url), "utf8");
+  assert.equal((board.match(/role="tablist"/g) ?? []).length, 1, "one set of filters");
+  assert.ok(!/text-2xl/.test(board), "no big number cards");
+  assert.match(board, /\{counts\.reportingLive\} of \{rows\.length\} reporting live/);
+});

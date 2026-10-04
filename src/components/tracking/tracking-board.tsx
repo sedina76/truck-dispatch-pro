@@ -89,31 +89,43 @@ export function TrackingBoard({
     });
   }
 
-  const tiles: { key: FleetFilter; label: string; value: number; tone: string; hint: string }[] = [
-    { key: "on_load", label: "On a Load", value: counts.onLoad, tone: "text-desktop-text", hint: `${counts.reportingLive} reporting live` },
-    { key: "late", label: "Late", value: counts.late, tone: counts.late ? "text-danger" : "text-desktop-text", hint: "past the appointment" },
-    { key: "at_risk", label: "At Risk", value: counts.atRisk, tone: counts.atRisk ? "text-warning" : "text-desktop-text", hint: "cutting it close" },
-    { key: "quiet", label: "GPS Quiet", value: counts.quiet, tone: counts.quiet ? "text-warning" : "text-desktop-text", hint: "no update in 15+ min" },
-  ];
+  // One slim row of status pills (the counts AND the list filter) -- the map
+  // gets the space four big cards used to take.
+  const TONE: Partial<Record<FleetFilter, string>> = {
+    late: counts.late ? "text-danger" : "",
+    at_risk: counts.atRisk ? "text-warning" : "",
+    quiet: counts.quiet ? "text-warning" : "",
+  };
+  const DOT: Partial<Record<FleetFilter, string>> = { late: "bg-danger", at_risk: "bg-warning", quiet: "bg-warning", on_load: "bg-success", idle: "bg-muted-foreground" };
+  const activeLabel = FILTERS.find((f) => f.key === filter)?.label ?? "All";
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="fleet-counts">
-        {tiles.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setFilter(filter === t.key ? "all" : t.key)}
-            className={cn(
-              "rounded-md border bg-card px-4 py-3 text-left transition-colors hover:border-primary/50",
-              filter === t.key ? "border-primary ring-1 ring-primary/30" : "border-desktop-border"
-            )}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t.label}</p>
-            <p className={cn("mt-1 text-2xl font-semibold tabular-nums", t.tone)}>{t.value}</p>
-            <p className="text-[11px] text-muted-foreground">{t.hint}</p>
-          </button>
-        ))}
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter trucks" data-testid="fleet-counts">
+        {FILTERS.map((f) => {
+          const n = rows.filter((r) => matchesFilter(r, f.key, now)).length;
+          const on = filter === f.key;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              onClick={() => setFilter(on && f.key !== "all" ? "all" : f.key)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12.5px] font-medium transition-colors",
+                on ? "border-primary bg-primary text-primary-foreground" : "border-desktop-border bg-card hover:bg-muted"
+              )}
+            >
+              {DOT[f.key] && <span className={cn("size-2 rounded-full", on ? "bg-primary-foreground" : DOT[f.key])} />}
+              {f.label}
+              <span className={cn("font-semibold tabular-nums", !on && TONE[f.key])}>{n}</span>
+            </button>
+          );
+        })}
+        <span className="ml-auto text-[12px] text-muted-foreground">
+          {counts.reportingLive} of {rows.length} reporting live
+        </span>
       </div>
 
       <div id="live-map">
@@ -121,28 +133,15 @@ export function TrackingBoard({
       </div>
 
       <div className="rounded-md border border-desktop-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-desktop-border px-3 py-2">
-          <p className="text-sm font-semibold">Trucks</p>
-          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Filter trucks">
-            {FILTERS.map((f) => {
-              const n = rows.filter((r) => matchesFilter(r, f.key, now)).length;
-              return (
-                <button
-                  key={f.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={filter === f.key}
-                  onClick={() => setFilter(f.key)}
-                  className={cn(
-                    "rounded-full border px-2.5 py-0.5 text-[12px] font-medium",
-                    filter === f.key ? "border-primary bg-primary text-primary-foreground" : "border-desktop-border text-muted-foreground hover:bg-muted"
-                  )}
-                >
-                  {f.label} {n}
-                </button>
-              );
-            })}
-          </div>
+        <div className="flex items-center justify-between gap-2 border-b border-desktop-border px-3 py-2">
+          <p className="text-sm font-semibold">
+            Trucks <span className="font-normal text-muted-foreground">· {activeLabel} ({visible.length})</span>
+          </p>
+          {filter !== "all" && (
+            <button type="button" onClick={() => setFilter("all")} className="text-[12px] font-medium text-primary hover:underline">
+              Show all
+            </button>
+          )}
         </div>
 
         {visible.length === 0 ? (
