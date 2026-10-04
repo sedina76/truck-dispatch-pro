@@ -26,6 +26,7 @@ import {
   LifeBuoy,
   AlertTriangle,
   Radio,
+  CalendarDays,
 } from "lucide-react";
 
 // Phase 2G.6: pulled out of sidebar.tsx so the new mobile nav (bottom bar +
@@ -82,6 +83,7 @@ export const SECTIONS: NavSection[] = [
       { label: "Dispatch Board", href: "/dispatch/board", icon: KanbanSquare },
       { label: "Loads", href: "/loads", icon: Package },
       { label: "Live Tracking", href: "/tracking", icon: Radio },
+      { label: "Schedule", href: "/schedule", icon: CalendarDays },
       { label: "Exception Center", href: "/dispatch/exceptions", icon: AlertTriangle },
     ],
   },

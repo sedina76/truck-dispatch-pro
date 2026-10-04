@@ -118,6 +118,7 @@ export function DesktopMenuBar() {
       { label: "Dispatch Board", href: "/dispatch/board" },
       { label: "Loads", href: "/loads" },
       { label: "Live Tracking", href: "/tracking" },
+      { label: "Schedule", href: "/schedule" },
       { label: "Exception Center", href: "/dispatch/exceptions" },
       "separator",
       { label: "Carriers", href: "/carriers" },
