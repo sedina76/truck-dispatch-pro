@@ -7,7 +7,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Loader2, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getRouteIntelligenceForDispatch, refreshDispatchEta, type LiveTrackingRouteInfo } from "@/app/(app)/dispatch/route-actions";
-import { formatMiles, formatLateLabel, formatMarginLabel } from "@/lib/routing/risk";
+import { formatMiles, formatLateLabel, formatMarginLabel, formatDurationMinutes, etaIncludesRest } from "@/lib/routing/risk";
 import { formatStopDateTime, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { cn } from "@/lib/utils";
 
@@ -182,6 +182,7 @@ export function LiveMap({
   organizationId,
   initialDispatchStops = {},
   geofenceRadii = { pickup: 300, delivery: 300 },
+  focus = null,
 }: {
   initialMarkers: DriverMarker[];
   organizationId: string;
@@ -191,6 +192,8 @@ export function LiveMap({
    * section 21: don't display all historical pings, geometry is static). */
   initialDispatchStops?: Record<string, DispatchStopCoords>;
   geofenceRadii?: { pickup: number; delivery: number };
+  /** Zoom to this driver's truck and open its panel (set by the truck list). */
+  focus?: { driverId: string; dispatchId: string | null; nonce: number } | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -383,6 +386,18 @@ export function LiveMap({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The truck list asked to show a truck: fly there, open its popup and panel.
+  useEffect(() => {
+    if (!focus) return;
+    const map = mapRef.current;
+    const marker = markersRef.current.get(focus.driverId);
+    if (!map || !marker) return;
+    map.flyTo({ center: marker.getLngLat(), zoom: Math.max(map.getZoom(), 8), essential: true });
+    if (!marker.getPopup()?.isOpen()) marker.togglePopup();
+    if (focus.dispatchId) void onSelectDispatch(focus.dispatchId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
 
   // Subscribes to driver_latest_locations (0058_driver_phone_gps.sql)
   // rather than driver_locations INSERTs -- each driver's row is upserted
@@ -611,6 +626,9 @@ function SelectedTruckPanel({
                 {info.riskStatus === "late" && ` -- ${formatLateLabel(info.scheduleVarianceMinutes)}`}
                 {info.riskStatus === "on_time" && formatMarginLabel(info.scheduleVarianceMinutes) && ` -- ${formatMarginLabel(info.scheduleVarianceMinutes)}`}
               </div>
+              {etaIncludesRest(info.routeDurationSeconds) && (
+                <p className="text-[11px] text-muted-foreground">ETA includes required breaks and 10 h rests for a solo driver ({formatDurationMinutes((info.routeDurationSeconds ?? 0) / 60)} of driving).</p>
+              )}
               <p className="text-[11px] text-muted-foreground">Route Updated {info.calculatedAt ? `${Math.round((Date.now() - new Date(info.calculatedAt).getTime()) / 60000)} min ago` : "--"}</p>
             </>
           ) : (

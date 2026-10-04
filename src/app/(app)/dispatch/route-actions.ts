@@ -25,6 +25,8 @@ export type LiveTrackingRouteInfo = {
   targetStopLabel: string | null;
   targetStopTimezone: string;
   routeDistanceMeters: number | null;
+  /** Pure driving time; the ETA adds required rest on top (risk.ts addRequiredRest). */
+  routeDurationSeconds: number | null;
   routeGeometry: [number, number][] | null;
   estimatedArrivalAt: string | null;
   appointmentAt: string | null;
@@ -88,7 +90,7 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
   const { data: routeRow } = await supabase
     .from("dispatch_route_intelligence")
     .select(
-      "target_stop_id, route_distance_meters, route_geometry, estimated_arrival_at, appointment_at, appointment_window_end, schedule_variance_minutes, risk_status, calculation_status, calculated_at"
+      "target_stop_id, route_distance_meters, route_duration_seconds, route_geometry, estimated_arrival_at, appointment_at, appointment_window_end, schedule_variance_minutes, risk_status, calculation_status, calculated_at"
     )
     .eq("dispatch_id", dispatchId)
     .order("updated_at", { ascending: false })
@@ -157,6 +159,7 @@ export async function getRouteIntelligenceForDispatch(dispatchId: string): Promi
     targetStopLabel,
     targetStopTimezone,
     routeDistanceMeters: routeRow?.route_distance_meters ?? null,
+    routeDurationSeconds: routeRow?.route_duration_seconds ?? null,
     routeGeometry: (routeRow?.route_geometry as [number, number][] | null) ?? null,
     estimatedArrivalAt: routeRow?.estimated_arrival_at ?? null,
     appointmentAt: routeRow?.appointment_at ?? null,
