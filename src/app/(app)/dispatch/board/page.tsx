@@ -8,6 +8,7 @@ import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { calculateDetention } from "@/lib/dispatch/detention";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
+import { formatDurationMinutes } from "@/lib/routing/risk";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 import { boardRetentionOrFilter, boardHiddenByRetentionFilter } from "@/lib/dispatch/board-retention";
 
@@ -342,7 +343,7 @@ export default async function DispatchBoardPage({
     const route = routeByDispatch.get(d.id) ?? null;
     const riskStatus = route?.risk_status ?? null;
     if (riskStatus === "late" && route?.schedule_variance_minutes != null) {
-      exceptions.unshift(`${-route.schedule_variance_minutes}m LATE`);
+      exceptions.unshift(`LATE ${formatDurationMinutes(-route.schedule_variance_minutes)}`);
     } else if (riskStatus === "at_risk") {
       exceptions.unshift("AT RISK");
     }

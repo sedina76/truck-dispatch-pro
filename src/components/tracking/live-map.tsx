@@ -8,7 +8,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getRouteIntelligenceForDispatch, refreshDispatchEta, type LiveTrackingRouteInfo } from "@/app/(app)/dispatch/route-actions";
 import { formatMiles, formatLateLabel, formatMarginLabel } from "@/lib/routing/risk";
-import { formatStopDateTime } from "@/lib/timezone/format";
+import { formatStopDateTime, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { cn } from "@/lib/utils";
 
 export type DriverMarker = {
@@ -558,9 +558,9 @@ function SelectedTruckPanel({
                 <span className="text-muted-foreground">Miles Remaining</span>
                 <span className="text-right font-medium">{formatMiles(info.routeDistanceMeters)}</span>
                 <span className="text-muted-foreground">ETA</span>
-                <span className="text-right font-medium">{formatStopDateTime(info.estimatedArrivalAt, info.targetStopTimezone, { timeOnly: true })}</span>
+                <span className="text-right font-medium">{formatStopDayTime(info.estimatedArrivalAt, info.targetStopTimezone)}</span>
                 <span className="text-muted-foreground">Appointment</span>
-                <span className="text-right font-medium">{info.appointmentAt ? formatStopDateTime(info.appointmentAt, info.targetStopTimezone, { timeOnly: true }) : "Not set"}</span>
+                <span className="text-right font-medium">{formatAppointment(info.appointmentAt, info.appointmentWindowEnd, info.targetStopTimezone)}</span>
               </div>
               <div className={cn("rounded-sm border px-2 py-1.5 font-semibold", RISK_TONE[info.riskStatus])}>
                 {RISK_LABEL[info.riskStatus]}

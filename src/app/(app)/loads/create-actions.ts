@@ -300,11 +300,14 @@ export async function createLoadWithStops(formData: FormData) {
     throw new Error(error.message);
   }
 
-  // Look up each stop's map point from its address once the page has been
-  // sent, so ETA and automatic arrived/departed work without typing
-  // coordinates (lib/geo/stop-geocoding.ts).
+  // Look up each stop's map point from its address, so ETA and automatic
+  // arrived/departed work without typing coordinates, and a wrong address
+  // (city/state/ZIP that don't match) is flagged on the load page right away.
+  // Waits up to 6 s; a slower lookup finishes in the background.
   const newLoadId = String(loadId);
-  after(() => fillStopCoordinates(newLoadId).then(() => undefined, (err) => console.warn("[geocode] new-load lookup failed:", err)));
+  const lookup = fillStopCoordinates(newLoadId).then(() => undefined, (err) => console.warn("[geocode] new-load lookup failed:", err));
+  after(() => lookup);
+  await Promise.race([lookup, new Promise((resolve) => setTimeout(resolve, 6000))]);
 
   // ---- Optional Rate Confirmation upload (spec section 10) ---------------
   // Reuses uploadLoadDocument verbatim -- the exact same staff-only upload

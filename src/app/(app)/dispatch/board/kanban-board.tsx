@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { updateDispatchBoardStatus } from "../board-actions";
 import { useToast } from "@/components/ui/toast";
 import { DispatchDrawer } from "@/components/dispatch/dispatch-drawer";
-import { formatStopDateTime } from "@/lib/timezone/format";
+import { formatStopDateTime, formatStopDayTime } from "@/lib/timezone/format";
 
 export type DispatchCard = {
   id: string;
@@ -162,7 +162,7 @@ function DispatchDraggableCard({ card, onOpen }: { card: DispatchCard; onOpen: (
       )}
       {showRouteIntel && (
         <p className="mt-1 text-[11px] font-medium text-muted-foreground">
-          {card.eta_at && `ETA ${formatStopDateTime(card.eta_at, card.eta_timezone, { timeOnly: true })}`}
+          {card.eta_at && `ETA ${formatStopDayTime(card.eta_at, card.eta_timezone)}`}
           {card.eta_at && card.miles_remaining_meters != null && " · "}
           {card.miles_remaining_meters != null && `${Math.round(card.miles_remaining_meters / 1609.344)} mi`}
         </p>

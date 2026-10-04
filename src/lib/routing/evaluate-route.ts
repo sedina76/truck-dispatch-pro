@@ -7,7 +7,7 @@ import { getNextOperationalStop, type OperationalStop } from "./next-stop";
 import { classifyRisk, classifyConfidence, type RiskStatus } from "./risk";
 import { RoutingProviderError } from "./types";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
-import { formatStopDateTime } from "@/lib/timezone/format";
+import { formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 
 type ServiceRoleClient = ReturnType<typeof createServiceRoleClient>;
@@ -294,8 +294,8 @@ async function runEvaluation(supabase: ServiceRoleClient, input: PingInput, forc
       return { ok: false, error: "Could not save route intelligence." };
     }
 
-    const etaLabel = formatStopDateTime(estimatedArrivalAt, targetStopTimezone, { timeOnly: true });
-    const appointmentLabel = appointmentAt ? formatStopDateTime(appointmentAt.toISOString(), targetStopTimezone, { timeOnly: true }) : null;
+    const etaLabel = formatStopDayTime(estimatedArrivalAt, targetStopTimezone);
+    const appointmentLabel = appointmentAt ? formatAppointment(appointmentAt.toISOString(), null, targetStopTimezone) : null;
     await maybeAlertRiskTransition(supabase, { organizationId: input.organizationId, dispatchId: input.dispatchId, loadNumber: loadRow?.load_number ?? null }, existing?.risk_status ?? null, riskStatus, etaLabel, appointmentLabel);
 
     // "Next operational stop changed" (spec section 30): fires once, the

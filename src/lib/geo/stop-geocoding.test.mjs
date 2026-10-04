@@ -68,7 +68,7 @@ test("lookups never overwrite a typed-in or found point, and failures aren't ret
 });
 
 test("wired in: new loads, GPS pings (in the background), Refresh ETA and Find on map", () => {
-  assert.match(src("../../app/(app)/loads/create-actions.ts"), /after\(\(\) => fillStopCoordinates\(newLoadId\)/);
+  assert.match(src("../../app/(app)/loads/create-actions.ts"), /after\(\(\) => lookup\)/);
   assert.match(src("../../app/api/driver-portal/location/route.ts"), /after\(\(\) => fillStopCoordinatesForDispatch\(dispatchId\)/);
   const refresh = src("../../app/(app)/dispatch/route-actions.ts");
   assert.match(refresh, /fillStopCoordinatesForDispatch\(dispatchId, \{ force: true \}\)/);
@@ -77,4 +77,38 @@ test("wired in: new loads, GPS pings (in the background), Refresh ETA and Find o
   assert.match(board, /export async function findStopCoordinates\(dispatchId: string, stopId: string\)/);
   assert.match(board, /\.eq\("id", stopId\)\.eq\("load_id", dispatch\.load_id\)/);
   assert.match(src("../../components/dispatch/dispatch-drawer.tsx"), /Find on map/);
+});
+
+test("the truck's GPS point shows as a town (city level, cached, short wait)", async () => {
+  const { nominatimReverseUrl, parseNominatimReverse } = await import("./geocode-providers.ts");
+  const u = new URL(nominatimReverseUrl("https://nominatim.openstreetmap.org", 45.05301, -93.24841));
+  assert.equal(u.pathname, "/reverse");
+  assert.equal(u.searchParams.get("zoom"), "10");
+  assert.equal(u.searchParams.get("lat"), "45.0530");
+  assert.equal(parseNominatimReverse({ address: { city: "Minneapolis", state: "Minnesota", "ISO3166-2-lvl4": "US-MN" } }), "Minneapolis, MN");
+  assert.equal(parseNominatimReverse({ address: { town: "Fridley", state: "Minnesota" } }), "Fridley, Minnesota");
+  assert.equal(parseNominatimReverse({ error: "Unable to geocode" }), null);
+  const lib = src("./stop-geocoding.ts");
+  assert.match(lib, /export async function nearPlace\(/);
+  assert.match(lib, /PLACE_TTL_MS = 60 \* 60 \* 1000/);
+  assert.match(lib, /, 2500\)\)/);
+});
+
+test("wrong addresses are flagged and fixable: Edit Address clears the old point and looks the new one up", async () => {
+  const { addressProblem } = await import("./stop-point.ts");
+  assert.equal(addressProblem("lookup_failed", "3500 Redwood Road"), "not_found");
+  assert.equal(addressProblem("city_center", "3500 Redwood Road"), "city_only");
+  assert.equal(addressProblem("city_center", null), null, "no street entered: city center is all there is");
+  assert.equal(addressProblem("census", "x"), null);
+  const board = src("../../app/(app)/dispatch/board-actions.ts");
+  assert.match(board, /export async function updateStopAddress\(/);
+  assert.match(board, /\.update\(\{ \.\.\.after, latitude: null, longitude: null, geocoded_at: null, geocode_source: null \}\)/);
+  assert.match(board, /fillStopCoordinates\(String\(d\.load_id\), \{ force: true, stopIds: \[stopId\] \}\)/);
+  assert.match(board, /p_action: "stop_address_updated"/);
+  const drawer = src("../../components/dispatch/dispatch-drawer.tsx");
+  assert.match(drawer, /<AddressEditor stop=\{stop\}/);
+  assert.match(drawer, /Save Address/);
+  assert.match(src("../../app/(app)/loads/[id]/page.tsx"), /data-testid="stop-address-problem"/);
+  const create = src("../../app/(app)/loads/create-actions.ts");
+  assert.match(create, /await Promise\.race\(\[lookup, new Promise\(\(resolve\) => setTimeout\(resolve, 6000\)\)\]\)/);
 });

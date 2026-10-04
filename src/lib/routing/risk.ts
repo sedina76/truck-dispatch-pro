@@ -74,14 +74,28 @@ export function formatMiles(meters: number | null): string {
   return `${miles.toFixed(1)} mi`;
 }
 
+/** 45 -> "45 min", 312 -> "5 h 12 min", 2656 -> "1 day 20 h" (minutes, never "m", which reads as meters). */
+export function formatDurationMinutes(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  if (m < 24 * 60) {
+    const h = Math.floor(m / 60);
+    const rest = m % 60;
+    return rest ? `${h} h ${rest} min` : `${h} h`;
+  }
+  const d = Math.floor(m / (24 * 60));
+  const h = Math.floor((m % (24 * 60)) / 60);
+  return `${d} ${d === 1 ? "day" : "days"}${h ? ` ${h} h` : ""}`;
+}
+
 export function formatLateLabel(scheduleVarianceMinutes: number | null): string {
   if (scheduleVarianceMinutes == null) return "";
   const lateBy = -scheduleVarianceMinutes;
   if (lateBy <= 0) return "";
-  return `${lateBy}m LATE`;
+  return `by ${formatDurationMinutes(lateBy)}`;
 }
 
 export function formatMarginLabel(scheduleVarianceMinutes: number | null): string {
   if (scheduleVarianceMinutes == null || scheduleVarianceMinutes <= 0) return "";
-  return `${scheduleVarianceMinutes} min margin`;
+  return `${formatDurationMinutes(scheduleVarianceMinutes)} to spare`;
 }

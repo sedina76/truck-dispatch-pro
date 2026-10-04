@@ -30,6 +30,7 @@ import {
   updateDispatchBoardStatus,
   setStopCoordinates,
   findStopCoordinates,
+  updateStopAddress,
   setStopAppointment,
   setStopTimezone,
   dismissRouteDeviation,
@@ -39,7 +40,7 @@ import {
 import { refreshDispatchEta } from "@/app/(app)/dispatch/route-actions";
 import { formatMinutes } from "@/lib/dispatch/detention";
 import { formatMiles, formatLateLabel, formatMarginLabel } from "@/lib/routing/risk";
-import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue } from "@/lib/timezone/format";
+import { formatStopDateTime, formatStopWindow, stopLocalDateInputValue, stopLocalTimeInputValue, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
 import { cn } from "@/lib/utils";
 
@@ -556,7 +557,7 @@ function StopSection({
     <div className="space-y-2 text-[13px]">
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
         <Row label="Company" value={stop.companyName ?? "--"} />
-        <Row label="City/State" value={[stop.city, stop.state].filter(Boolean).join(", ") || "--"} />
+        <Row label="Address" value={stopAddressLine(stop)} />
         <Row
           label="Appointment"
           value={stop.scheduledWindowEnd ? formatStopWindow(stop.scheduledAt, stop.scheduledWindowEnd, stop.timezone) : formatStopDateTime(stop.scheduledAt, stop.timezone)}
@@ -580,6 +581,17 @@ function StopSection({
           DETENTION -- {formatMinutes(stop.detention.minutes)}
         </div>
       )}
+
+      {stop.addressProblem && (
+        <p className="flex items-start gap-1.5 rounded-sm border border-warning/40 bg-warning/10 px-2 py-1.5 text-[12px] text-warning">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          {stop.addressProblem === "not_found"
+            ? "This address couldn't be found on the map -- the city, state and ZIP may not match. Fix it with Edit Address."
+            : "Only the city was found on the map, not the street -- the ETA is approximate. Check the street with Edit Address."}
+        </p>
+      )}
+
+      <AddressEditor stop={stop} dispatchId={dispatchId} onSaved={onSaved} />
 
       <AppointmentEditor stop={stop} dispatchId={dispatchId} onSaved={onSaved} />
 
@@ -608,6 +620,77 @@ function StopSection({
             </Button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function stopAddressLine(stop: NonNullable<DispatchDrawerData["pickup"]>): string {
+  const street = [stop.addressLine1, stop.addressLine2].filter(Boolean).join(", ");
+  const place = [stop.city, [stop.state, stop.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [street, place].filter(Boolean).join(", ") || "--";
+}
+
+// "Edit Address": fixes a wrong street / city / state / ZIP. Saving clears
+// the old map point and looks the new address up (updateStopAddress).
+function AddressEditor({ stop, dispatchId, onSaved }: { stop: NonNullable<DispatchDrawerData["pickup"]>; dispatchId: string; onSaved: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [f, setF] = useState({
+    facilityName: stop.companyName ?? "",
+    addressLine1: stop.addressLine1 ?? "",
+    addressLine2: stop.addressLine2 ?? "",
+    city: stop.city ?? "",
+    state: stop.state ?? "",
+    postalCode: stop.postalCode ?? "",
+  });
+  const toast = useToast();
+  const input = "h-7 w-full rounded-sm border border-desktop-border bg-card px-2 text-[12px] outline-none focus-visible:border-primary";
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="text-[12px] font-medium text-primary hover:underline">
+        Edit Address
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-1.5 rounded-sm border border-desktop-border bg-desktop-panel px-2.5 py-2">
+      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">Edit Address</p>
+      <input aria-label="Company" placeholder="Company" value={f.facilityName} onChange={set("facilityName")} className={input} />
+      <input aria-label="Street address" placeholder="Street address" value={f.addressLine1} onChange={set("addressLine1")} className={input} />
+      <input aria-label="Suite / unit" placeholder="Suite / unit (optional)" value={f.addressLine2} onChange={set("addressLine2")} className={input} />
+      <div className="grid grid-cols-[1fr_4rem_5.5rem] gap-1.5">
+        <input aria-label="City" placeholder="City" value={f.city} onChange={set("city")} className={input} />
+        <input aria-label="State" placeholder="State" maxLength={3} value={f.state} onChange={set("state")} className={input} />
+        <input aria-label="ZIP" placeholder="ZIP" value={f.postalCode} onChange={set("postalCode")} className={input} />
+      </div>
+      {error && <p className="text-[11px] text-danger">{error}</p>}
+      <div className="flex gap-1.5">
+        <Button
+          size="sm"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            setError(null);
+            const result = await updateStopAddress(dispatchId, stop.id, f);
+            setSaving(false);
+            if (result.ok) {
+              toast.show("success", result.message);
+              setOpen(false);
+              await onSaved();
+            } else {
+              setError(result.error);
+            }
+          }}
+        >
+          {saving ? "Saving..." : "Save Address"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+          Cancel
+        </Button>
       </div>
     </div>
   );
@@ -951,7 +1034,7 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
         <div className="rounded-sm border border-desktop-success/40 bg-desktop-success/10 px-2.5 py-2">
           <p className="text-[13px] font-bold text-desktop-success">ARRIVED</p>
           <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[13px]">
-            <Row label="Appointment" value={formatStopDateTime(r.appointmentAt ?? r.appointmentWindowEnd, r.targetStopTimezone, { timeOnly: true })} />
+            <Row label="Appointment" value={formatAppointment(r.appointmentAt ?? r.appointmentWindowEnd, r.appointmentAt ? r.appointmentWindowEnd : null, r.targetStopTimezone)} />
           </div>
         </div>
       ) : r && r.calculationStatus === "no_coordinates" ? (
@@ -963,17 +1046,8 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
             <Row label="Next Stop" value={r.targetStopLabel ?? "--"} />
             <Row label="Miles Remaining" value={formatMiles(r.routeDistanceMeters)} />
-            <Row label="ETA" value={formatStopDateTime(r.estimatedArrivalAt, r.targetStopTimezone, { timeOnly: true })} />
-            <Row
-              label="Appointment"
-              value={
-                r.appointmentAt
-                  ? r.appointmentWindowEnd
-                    ? `${formatStopDateTime(r.appointmentAt, r.targetStopTimezone, { timeOnly: true })}-${formatStopDateTime(r.appointmentWindowEnd, r.targetStopTimezone, { timeOnly: true })}`
-                    : formatStopDateTime(r.appointmentAt, r.targetStopTimezone, { timeOnly: true })
-                  : "Not set"
-              }
-            />
+            <Row label="ETA" value={formatStopDayTime(r.estimatedArrivalAt, r.targetStopTimezone)} />
+            <Row label="Appointment" value={formatAppointment(r.appointmentAt, r.appointmentWindowEnd, r.targetStopTimezone)} />
           </div>
           <div className={cn("rounded-sm border px-2 py-1.5 text-[12px] font-semibold", RISK_TONE[r.riskStatus])}>
             {RISK_LABEL[r.riskStatus]}
@@ -1002,7 +1076,7 @@ function TrackingSection({ data, dispatchId, onRefreshed }: { data: DispatchDraw
       {data.routeDeviation && <RouteDeviationBlock deviation={data.routeDeviation} dispatchId={dispatchId} onDismissed={onRefreshed} />}
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-desktop-border pt-2 text-[13px]">
-        <Row label="Last Location" value={<span className="flex items-center gap-1"><MapPin className="size-3.5" />{t.currentLocation ?? "--"}</span>} />
+        <Row label="Last Location" value={<span className="flex items-center gap-1" title={t.currentLocation ?? undefined}><MapPin className="size-3.5" />{t.placeName ? `Near ${t.placeName}` : (t.currentLocation ?? "--")}</span>} />
         <Row label="GPS Updated" value={fmtAgo(t.lastGpsUpdate)} />
         <Row label="Speed" value={t.speedMph != null ? `${t.speedMph} mph` : "--"} />
         <Row

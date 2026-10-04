@@ -15,8 +15,8 @@ import { syncExceptionsForDispatch } from "@/lib/exceptions/sync";
 import { isWithinActiveRetention, deliveredRetentionCountdown } from "@/lib/dispatch/board-retention";
 import { rpcDispatchConflict } from "@/lib/dispatch/conflicts";
 import { appendNoteLine } from "@/lib/dispatch/internal-notes";
-import { stopLabel, hasExactStopPoint, hasStopPoint, CITY_CENTER } from "@/lib/geo/stop-point";
-import { fillStopCoordinates } from "@/lib/geo/stop-geocoding";
+import { stopLabel, hasExactStopPoint, hasStopPoint, addressProblem, CITY_CENTER } from "@/lib/geo/stop-point";
+import { fillStopCoordinates, nearPlace } from "@/lib/geo/stop-geocoding";
 
 const DELIVERED_LIKE_STATUSES = new Set(["delivered", "completed"]); // mirrors dispatch/board/page.tsx's DELIVERED_LIKE
 
@@ -331,6 +331,8 @@ export type DispatchDrawerData = {
     available: boolean;
     reason: string;
     currentLocation: string | null;
+    /** "Minneapolis, MN" for the GPS point, when the lookup answered. */
+    placeName: string | null;
     lastGpsUpdate: string | null;
     speedMph: number | null;
     accuracyMeters: number | null;
@@ -424,8 +426,12 @@ type StopDetail = {
   id: string;
   companyName: string | null;
   addressLine1: string | null;
+  addressLine2: string | null;
   city: string | null;
   state: string | null;
+  postalCode: string | null;
+  /** The map lookup couldn't find the address ("not_found"), or found only the city ("city_only"). */
+  addressProblem: "not_found" | "city_only" | null;
   scheduledAt: string | null;
   scheduledWindowEnd: string | null;
   referenceNumber: string | null;
@@ -485,9 +491,8 @@ const LOW_ACCURACY_METERS = 200;
 // row's own dispatch_id still matches -- a driver whose tracking session
 // has since moved to a different dispatch has, correctly, no current
 // location for this one. No reverse geocoding is configured anywhere in
-// this app (no Nominatim/Google/Mapbox geocoding call exists) -- rather
-// than fabricate a "Near <City>, <State>" label, the real coordinates are
-// shown as-is.
+// The town name is looked up separately (nearPlace, city level, cached);
+// the raw coordinates are always kept and shown when it doesn't answer.
 function buildTrackingInfo(
   latest: { latitude: number; longitude: number; accuracy_meters: number | null; speed_kph: number | null; dispatch_id: string | null; recorded_at: string } | null,
   dispatchId: string
@@ -497,6 +502,7 @@ function buildTrackingInfo(
       available: false,
       reason: "Driver location not available.",
       currentLocation: null,
+      placeName: null,
       lastGpsUpdate: null,
       speedMph: null,
       accuracyMeters: null,
@@ -513,6 +519,7 @@ function buildTrackingInfo(
     available: true,
     reason: stale ? `Location stale -- last update ${Math.round(ageMinutes)} min ago.` : "",
     currentLocation: `${latest.latitude.toFixed(4)}, ${latest.longitude.toFixed(4)}`,
+    placeName: null,
     lastGpsUpdate: latest.recorded_at,
     speedMph: latest.speed_kph != null ? Math.round(latest.speed_kph * 0.621371) : null,
     accuracyMeters: latest.accuracy_meters,
@@ -678,7 +685,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       .single(),
     supabase
       .from("load_stops")
-      .select("id, stop_type, stop_sequence, facility_name, address_line1, city, state, scheduled_at, scheduled_window_end, reference_number, contact_name, contact_phone, arrived_at, departed_at")
+      .select("id, stop_type, stop_sequence, facility_name, address_line1, address_line2, city, state, postal_code, scheduled_at, scheduled_window_end, reference_number, contact_name, contact_phone, arrived_at, departed_at")
       .eq("load_id", d.load_id)
       .order("stop_sequence"),
     supabase.from("organizations").select("pickup_detention_free_minutes, delivery_detention_free_minutes").eq("id", organizationId).single(),
@@ -769,8 +776,10 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     stop_sequence: number;
     facility_name: string | null;
     address_line1: string | null;
+    address_line2: string | null;
     city: string | null;
     state: string | null;
+    postal_code: string | null;
     scheduled_at: string | null;
     scheduled_window_end: string | null;
     reference_number: string | null;
@@ -825,9 +834,11 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
   // Geofences need the stop's exact location -- a city-center point (stop
   // with no findable street address) only feeds the approximate ETA.
   const approxByStopId = new Map<string, boolean>();
+  const sourceByStopId = new Map<string, string | null>();
   for (const row of (stopCoords ?? []) as { id: string; latitude: number | null; longitude: number | null; geocode_source: string | null }[]) {
     coordsByStopId.set(row.id, hasExactStopPoint(row));
     approxByStopId.set(row.id, row.geocode_source === CITY_CENTER && hasStopPoint(row));
+    sourceByStopId.set(row.id, row.geocode_source);
   }
   type GeofenceRow = { load_stop_id: string; state: string; last_distance_m: number | null; last_accuracy_m: number | null; last_location_at: string | null; confirmed_inside_at: string | null; status_applied_at: string | null };
   for (const row of (geofenceRows ?? []) as GeofenceRow[]) {
@@ -858,8 +869,11 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       id: stop.id,
       companyName: stop.facility_name,
       addressLine1: stop.address_line1,
+      addressLine2: stop.address_line2,
       city: stop.city,
       state: stop.state,
+      postalCode: stop.postal_code,
+      addressProblem: addressProblem(sourceByStopId.get(stop.id) ?? null, stop.address_line1),
       scheduledAt: stop.scheduled_at,
       scheduledWindowEnd: stop.scheduled_window_end,
       referenceNumber: stop.reference_number,
@@ -1050,6 +1064,9 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
     }
   }
 
+  const tracking = buildTrackingInfo(latestLocation, dispatchId);
+  if (tracking.available && latestLocation) tracking.placeName = await nearPlace(latestLocation.latitude, latestLocation.longitude).catch(() => null);
+
   return {
     canManageDispatchOps,
     dispatch: {
@@ -1095,7 +1112,7 @@ export async function getDispatchDrawerData(dispatchId: string): Promise<Dispatc
       pickup: toGeofenceInfo(pickupStop, pickupRadiusM),
       delivery: toGeofenceInfo(deliveryStop, deliveryRadiusM),
     },
-    tracking: buildTrackingInfo(latestLocation, dispatchId),
+    tracking,
     routeIntelligence,
     routeDeviation,
     documents,
@@ -1508,6 +1525,69 @@ async function requireStopOwnership(dispatchId: string, stopId: string) {
   if (!stop) return { ok: false as const, error: "Stop not found on this load." };
 
   return { ok: true as const, supabase, organizationId, stop };
+}
+
+// ---------------------------------------------------------------------------
+// updateStopAddress -- "Edit Address" on a stop: fix a wrong street, city,
+// state or ZIP from the dispatch panel. The old map point no longer matches,
+// so it is cleared and the new address is looked up right away (street first,
+// city center only as a fallback). Appointment and timezone are not touched.
+// ---------------------------------------------------------------------------
+const US_ZIP = /^\d{5}(-\d{4})?$/;
+const CA_POSTAL = /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/;
+
+export async function updateStopAddress(
+  dispatchId: string,
+  stopId: string,
+  input: { facilityName: string; addressLine1: string; addressLine2: string; city: string; state: string; postalCode: string }
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const owned = await requireStopOwnership(dispatchId, stopId);
+  if (!owned.ok) return owned;
+  const { supabase, organizationId, stop } = owned;
+
+  const t = (v: string) => v.replace(/\s+/g, " ").trim();
+  const city = t(input.city);
+  const state = t(input.state).toUpperCase();
+  const zip = t(input.postalCode).toUpperCase();
+  if (!city) return { ok: false, error: "Enter the city." };
+  if (!state) return { ok: false, error: "Enter the state (e.g. UT)." };
+  if (zip && !US_ZIP.test(zip) && !CA_POSTAL.test(zip)) return { ok: false, error: "The ZIP code doesn't look right (e.g. 84119)." };
+
+  const { data: before } = await supabase.from("load_stops").select("facility_name, address_line1, address_line2, city, state, postal_code").eq("id", stopId).maybeSingle();
+  const after = {
+    facility_name: t(input.facilityName) || null,
+    address_line1: t(input.addressLine1) || null,
+    address_line2: t(input.addressLine2) || null,
+    city,
+    state,
+    postal_code: zip || null,
+  };
+  const { error } = await supabase
+    .from("load_stops")
+    .update({ ...after, latitude: null, longitude: null, geocoded_at: null, geocode_source: null })
+    .eq("id", stopId);
+  if (error) {
+    console.error("[dispatch drawer] updateStopAddress failed:", error);
+    return { ok: false, error: "Could not save the address. Please try again." };
+  }
+
+  await supabase.rpc("log_activity", {
+    p_entity_type: "dispatch",
+    p_entity_id: dispatchId,
+    p_action: "stop_address_updated",
+    p_changes: { stop_type: stop.stop_type, before, after },
+    p_organization_id: organizationId,
+  });
+
+  const { data: d } = await supabase.from("dispatches").select("load_id").eq("id", dispatchId).maybeSingle();
+  const found = d?.load_id ? await fillStopCoordinates(String(d.load_id), { force: true, stopIds: [stopId] }).catch(() => null) : null;
+
+  revalidatePath("/dispatch/board");
+  revalidatePath(`/dispatch/${dispatchId}`);
+  if (d?.load_id) revalidatePath(`/loads/${d.load_id}`);
+  if (found?.found) return { ok: true, message: "Address saved and found on the map. Click Refresh ETA to update the ETA." };
+  if (found?.approximate) return { ok: true, message: "Address saved. Only the city was found on the map, so the ETA is approximate -- check the street." };
+  return { ok: true, message: "Address saved, but it couldn't be found on the map. Check the city, state and ZIP match." };
 }
 
 export async function setStopAppointment(

@@ -26,6 +26,7 @@ import { FINANCIAL_ROLES, OWNER_ADMIN_ROLES, type OrgRole } from "@/lib/auth/req
 import { canUseBilling } from "@/lib/auth/billing-access";
 import { carrierPaidBillingForLoad } from "@/lib/billing/load-billing-status";
 import { ChangeLoadNumberDialog } from "@/components/loads/change-load-number-dialog";
+import { addressProblem } from "@/lib/geo/stop-point";
 
 // Phase POST-0069 finding: rate/detention_rate/layover_rate were dropped
 // from `loads` entirely by 0069 -- this page's own select(canSeeFinancials
@@ -114,7 +115,7 @@ export default async function LoadDetailPage({
       supabase.from("customers").select("id, company_name").order("company_name"),
       supabase
         .from("load_stops")
-        .select("id, stop_type, stop_sequence, facility_name, city, state, scheduled_at")
+        .select("id, stop_type, stop_sequence, facility_name, address_line1, city, state, postal_code, scheduled_at")
         .eq("load_id", id)
         .order("stop_sequence"),
       supabase
@@ -135,7 +136,7 @@ export default async function LoadDetailPage({
       // Phase 2C.1 -- separate, degradable query from the core stop fields
       // above (same reasoning as every other split in this app: a
       // not-yet-applied 0061 must never take the stop list down with it).
-      supabase.from("load_stops").select("id, timezone").eq("load_id", id),
+      supabase.from("load_stops").select("id, timezone, geocode_source").eq("load_id", id),
       supabase.from("organizations").select("timezone").single(),
       // load_financials is the sole authoritative source for rate/
       // detention_rate/layover_rate (0067/0068 cutover, 0069 dropped the
@@ -180,6 +181,7 @@ export default async function LoadDetailPage({
   } | null;
 
   const stopTimezoneById = new Map((stopTzRows ?? []).map((row) => [row.id, row.timezone as string | null]));
+  const geocodeSourceById = new Map((stopTzRows ?? []).map((row) => [row.id, (row as { geocode_source?: string | null }).geocode_source ?? null]));
   const organizationTimezone = orgTzRow?.timezone ?? null;
 
   // POD status is always derived from this row (or its absence) -- see
@@ -402,7 +404,14 @@ export default async function LoadDetailPage({
                         {stop.facility_name ?? "Unnamed facility"}
                       </span>
                       <span className="text-right text-[var(--color-text-muted)]">
-                        <span className="block">{stop.city}, {stop.state}</span>
+                        <span className="block">{stop.city}, {stop.state}{stop.postal_code ? ` ${stop.postal_code}` : ""}</span>
+                        {addressProblem(geocodeSourceById.get(stop.id) ?? null, stop.address_line1) && (
+                          <span className="block text-xs text-warning" data-testid="stop-address-problem">
+                            {addressProblem(geocodeSourceById.get(stop.id) ?? null, stop.address_line1) === "not_found"
+                              ? "Address not found on the map -- check city/state/ZIP (Edit Address in the dispatch panel)"
+                              : "Only the city was found -- ETA approximate"}
+                          </span>
+                        )}
                         {stop.scheduled_at && (
                           <span className="block text-xs">
                             {formatStopDateTime(stop.scheduled_at, resolveStopTimezone(stopTimezoneById.get(stop.id) ?? null, organizationTimezone).timezone, { includeYear: true })}

@@ -1,6 +1,6 @@
 import "server-only";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { censusUrl, parseCensus, nominatimUrl, parseNominatim, NOMINATIM_DEFAULT, type GeoPoint, type StopAddress } from "./geocode-providers";
+import { censusUrl, parseCensus, nominatimUrl, parseNominatim, nominatimReverseUrl, parseNominatimReverse, NOMINATIM_DEFAULT, type GeoPoint, type StopAddress } from "./geocode-providers";
 import { needsLookup, hasStopPoint, CITY_CENTER, LOOKUP_FAILED } from "./stop-point";
 
 // Fills in the map point (latitude/longitude) of a load's stops from their
@@ -19,14 +19,18 @@ const NOMINATIM_GAP_MS = 1100; // OSM policy: at most one request per second
 const USER_AGENT = "TruckDispatchPro/1.0 (load stop geocoding)";
 let lastNominatimAt = 0;
 
-async function getJson(url: string): Promise<unknown> {
+async function getJson(url: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Accept: "application/json" }, signal: ctrl.signal, cache: "no-store" });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`[geocode] ${new URL(url).host} answered ${res.status}`);
+      return null;
+    }
     return await res.json();
-  } catch {
+  } catch (err) {
+    console.warn(`[geocode] ${new URL(url).host} did not answer:`, err instanceof Error ? err.name : err);
     return null;
   } finally {
     clearTimeout(timer);
@@ -122,4 +126,25 @@ export async function fillStopCoordinatesForDispatch(dispatchId: string, opts: {
   const { data } = await supabase.from("dispatches").select("load_id").eq("id", dispatchId).maybeSingle();
   if (!data?.load_id) return null;
   return fillStopCoordinates(String(data.load_id), opts);
+}
+
+// "Near Minneapolis, MN" for the truck's last GPS point. City level only, cached
+// per ~1 km square for an hour, and given at most 2.5 s -- the panel shows the
+// raw coordinates if the answer is slow or missing.
+const placeCache = new Map<string, { name: string | null; at: number }>();
+const PLACE_TTL_MS = 60 * 60 * 1000;
+
+export async function nearPlace(latitude: number, longitude: number): Promise<string | null> {
+  if (process.env.GEOCODER === "none") return null;
+  const key = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
+  const hit = placeCache.get(key);
+  if (hit && Date.now() - hit.at < PLACE_TTL_MS) return hit.name;
+  const wait = lastNominatimAt + NOMINATIM_GAP_MS - Date.now();
+  if (wait > 1500) return hit?.name ?? null; // don't hold the panel up behind other lookups
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastNominatimAt = Date.now();
+  const name = parseNominatimReverse(await getJson(nominatimReverseUrl(process.env.NOMINATIM_BASE_URL || NOMINATIM_DEFAULT, latitude, longitude), 2500));
+  if (placeCache.size > 500) placeCache.clear();
+  placeCache.set(key, { name, at: Date.now() });
+  return name;
 }

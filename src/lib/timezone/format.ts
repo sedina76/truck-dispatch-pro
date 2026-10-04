@@ -87,3 +87,50 @@ export function formatStopWindow(startIso: string | null, endIso: string | null,
   const date = new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric" }).format(new Date(startIso));
   return `${date}, ${startTime}–${endTime} ${shortZoneLabel(tz, startIso)}`;
 }
+
+// ---------------------------------------------------------------------------
+// ETA / appointment display that never hides the day: "Today, 8:16 PM MT",
+// "Tomorrow, 8:16 PM MT", or "Mon, Oct 5, 8:16 PM MT" -- a 1,000-mile ETA
+// shown as just "8:16 PM" reads as tonight. The day is the stop's own local
+// day (same zone as the time). `nowIso` is injectable for tests.
+// ---------------------------------------------------------------------------
+function localDayKey(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+}
+
+export function formatStopDayTime(iso: string | null, timezone: string | null, nowIso: string = new Date().toISOString()): string {
+  if (!iso) return "--";
+  const tz = timezone ?? "UTC";
+  try {
+    const time = `${new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(iso))} ${shortZoneLabel(tz, iso)}`;
+    const day = localDayKey(iso, tz);
+    const today = localDayKey(nowIso, tz);
+    const tomorrow = localDayKey(new Date(new Date(nowIso).getTime() + 24 * 3600 * 1000).toISOString(), tz);
+    if (day === today) return `Today, ${time}`;
+    if (day === tomorrow) return `Tomorrow, ${time}`;
+    const date = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" }).format(new Date(iso));
+    return `${date}, ${time}`;
+  } catch {
+    return formatStopDateTime(iso, timezone);
+  }
+}
+
+/** True when the stop-local time is exactly midnight -- what a date entered with no time is saved as. */
+export function isMidnightLocal(iso: string | null, timezone: string | null): boolean {
+  if (!iso) return false;
+  return stopLocalTimeInputValue(iso, timezone ?? "UTC") === "00:00";
+}
+
+/** Appointment: like formatStopDayTime, but a date saved without a time says so instead of "12:00 AM". */
+export function formatAppointment(iso: string | null, windowEndIso: string | null, timezone: string | null, nowIso: string = new Date().toISOString()): string {
+  if (!iso) return "Not set";
+  const tz = timezone ?? "UTC";
+  if (isMidnightLocal(iso, tz) && !windowEndIso) {
+    const dayTime = formatStopDayTime(iso, tz, nowIso);
+    return `${dayTime.slice(0, dayTime.lastIndexOf(","))} (no time set)`;
+  }
+  const start = formatStopDayTime(iso, tz, nowIso);
+  if (!windowEndIso) return start;
+  const end = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(windowEndIso));
+  return `${start.replace(/ \S+$/, "")}-${end} ${shortZoneLabel(tz, iso)}`;
+}

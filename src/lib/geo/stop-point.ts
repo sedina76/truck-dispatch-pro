@@ -51,3 +51,10 @@ export function needsLookup(row: StopPointRow & { geocoded_at?: string | null; a
   if (row.geocode_source === LOOKUP_FAILED && row.geocoded_at) return now - new Date(row.geocoded_at).getTime() >= LOOKUP_RETRY_MS;
   return true;
 }
+
+/** What to tell the dispatcher about a stop's address, from the last lookup. */
+export function addressProblem(geocodeSource: string | null, addressLine1: string | null): "not_found" | "city_only" | null {
+  if (geocodeSource === LOOKUP_FAILED) return "not_found";
+  if (geocodeSource === CITY_CENTER && addressLine1?.trim()) return "city_only";
+  return null;
+}

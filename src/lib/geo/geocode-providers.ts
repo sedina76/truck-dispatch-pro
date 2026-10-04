@@ -93,3 +93,22 @@ export function parseNominatim(body: unknown, street: boolean): GeoPoint | null 
   if (street && Number(r.place_rank) < 26) return null;
   return validPoint(Number(r.lat), Number(r.lon));
 }
+
+// ---- Reverse: map point -> "Minneapolis, MN" --------------------------------
+
+export function nominatimReverseUrl(base: string, latitude: number, longitude: number): string {
+  // zoom 10 = city level: we only want the town name, never a street address
+  const q = new URLSearchParams({ format: "jsonv2", lat: latitude.toFixed(4), lon: longitude.toFixed(4), zoom: "10", addressdetails: "1" });
+  return `${base.replace(/\/+$/, "")}/reverse?${q.toString()}`;
+}
+
+/** {address:{city|town|village|hamlet|county, "ISO3166-2-lvl4": "US-MN", state}} -> "Minneapolis, MN". */
+export function parseNominatimReverse(body: unknown): string | null {
+  const a = (body as { address?: Record<string, string> } | null)?.address;
+  if (!a) return null;
+  const place = a.city || a.town || a.village || a.hamlet || a.municipality || a.county || null;
+  const iso = a["ISO3166-2-lvl4"];
+  const region = iso && /^[A-Z]{2}-[A-Z0-9]{1,3}$/.test(iso) ? iso.slice(3) : a.state || null;
+  if (!place && !region) return null;
+  return [place, region].filter(Boolean).join(", ");
+}

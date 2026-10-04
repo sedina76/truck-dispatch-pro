@@ -11,7 +11,7 @@ import { StatusUpdateControl } from "@/components/driver-portal/status-update-co
 import { LocationSharing } from "@/components/driver-portal/location-sharing";
 import { GeofenceStatusCard, type GeofenceStopInfo } from "@/components/driver-portal/geofence-status";
 import { formatMiles } from "@/lib/routing/risk";
-import { formatStopDateTime } from "@/lib/timezone/format";
+import { formatStopDateTime, formatStopDayTime, formatAppointment } from "@/lib/timezone/format";
 import { resolveStopTimezone } from "@/lib/timezone/resolve";
 import { stopLabel, hasExactStopPoint } from "@/lib/geo/stop-point";
 
@@ -286,7 +286,6 @@ async function getRouteIntelForTrip(supabase: any, dispatchId: string, organizat
     // Phase 2C.1: driver-facing ETA/appointment in the target stop's own
     // timezone, never the driver's phone timezone (spec section 24).
     const targetTimezone = resolveStopTimezone(stopRow?.timezone ?? null, orgRow?.timezone ?? null).timezone;
-    const fmtTime = (iso: string | null) => (iso ? formatStopDateTime(iso, targetTimezone, { timeOnly: true }) : null);
 
     // Phase 2D (spec section 35): the ONLY field surfaced from
     // dispatch_route_deviation_state on this page -- deliberately no
@@ -306,10 +305,8 @@ async function getRouteIntelForTrip(supabase: any, dispatchId: string, organizat
     return {
       targetStopLabel,
       milesLabel: formatMiles(row.route_distance_meters),
-      estimatedArrivalAtLabel: fmtTime(row.estimated_arrival_at),
-      appointmentLabel: row.appointment_window_end
-        ? `${fmtTime(row.appointment_at) ?? "--"} - ${fmtTime(row.appointment_window_end)}`
-        : (fmtTime(row.appointment_at) ?? "Not set"),
+      estimatedArrivalAtLabel: row.estimated_arrival_at ? formatStopDayTime(row.estimated_arrival_at, targetTimezone) : null,
+      appointmentLabel: formatAppointment(row.appointment_at, row.appointment_window_end, targetTimezone),
       riskStatus: row.risk_status as "unknown" | "on_time" | "at_risk" | "late" | "arrived",
       calculationStatus: row.calculation_status as string,
       routeStatus,
