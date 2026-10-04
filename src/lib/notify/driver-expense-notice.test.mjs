@@ -23,7 +23,7 @@ test("wired: submit notifies, bell and chime open the expense, Expenses page sho
   assert.match(submit, /await notifyOfficeOfDriverExpense\(supabase, \{/);
   assert.match(submit, /revalidatePath\("\/expenses"\)/);
   assert.match(src("./office-notify.ts"), /entity_type: "expense" as const,\s+entity_id: p\.expenseId/);
-  assert.match(src("../../components/nav/notifications-menu.tsx"), /n\.entity_type === "expense" && n\.entity_id \? \(\s+\/\/[^\n]*\n\s+<Link\s+key=\{n\.id\}\s+href=\{`\/expenses\/\$\{n\.entity_id\}`\}/);
+  assert.match(src("../../components/nav/notifications-menu.tsx"), /: `\/expenses\/\$\{n\.entity_id\}`/);
   assert.match(src("../../app/(app)/dispatch/message-alert-actions.ts"), /row\.entity_type === "expense" \? `\/expenses\/\$\{row\.entity_id\}`/);
   const page = src("../../app/(app)/expenses/page.tsx");
   assert.match(page, /if \(status === "pending"\) query = query\.in\("status", \["draft", "submitted"\]\)/);

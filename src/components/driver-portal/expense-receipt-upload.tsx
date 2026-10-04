@@ -3,10 +3,10 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Camera, FolderOpen, Loader2 } from "lucide-react";
-import { uploadDriverExpenseReceipt } from "@/app/driver-portal/actions";
+import { uploadDriverExpenseReceipt, uploadDriverFuelReceipt } from "@/app/driver-portal/actions";
 import { DocumentScanner } from "@/components/documents/document-scanner";
 
-export function ExpenseReceiptUpload({ expenseId, documentType }: { expenseId: string; documentType: string }) {
+export function ExpenseReceiptUpload({ expenseId, documentType, fuelLogId }: { expenseId?: string; documentType?: string; fuelLogId?: string }) {
   const router = useRouter();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +23,8 @@ export function ExpenseReceiptUpload({ expenseId, documentType }: { expenseId: s
     const formData = new FormData();
     formData.append("file", file);
     try {
-      await uploadDriverExpenseReceipt(expenseId, documentType, formData);
+      if (fuelLogId) await uploadDriverFuelReceipt(fuelLogId, formData);
+      else await uploadDriverExpenseReceipt(expenseId!, documentType ?? "expense_receipt", formData);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");

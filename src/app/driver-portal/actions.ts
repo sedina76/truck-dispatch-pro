@@ -1,12 +1,12 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { notifyOfficeOfDriverDocument, notifyOfficeOfDriverExpense } from "@/lib/notify/office-notify";
+import { notifyOfficeOfDriverDocument, notifyOfficeOfDriverExpense, notifyOfficeOfDriverFuel } from "@/lib/notify/office-notify";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getDriverPortalSession } from "@/lib/driver-portal/session";
 import { getCurrentDispatch, DISPATCH_STATUS_ORDER } from "@/lib/driver-portal/dashboard-data";
 import { getLatestDocument } from "@/lib/documents/latest-document";
-import { DRIVER_SUBMITTABLE_CATEGORIES } from "@/lib/driver-portal/constants";
+import { DRIVER_SUBMITTABLE_CATEGORIES, DRIVER_FUEL_PAID_BY } from "@/lib/driver-portal/constants";
 import { emptyToNull, toNumber } from "@/lib/utils/form";
 import { computeOperationalTimestampUpdates } from "@/lib/dispatch/operational-timestamps";
 
@@ -116,7 +116,7 @@ export async function updateMyDispatchStatus(dispatchId: string, targetStatus: s
 // driver's own current dispatch server-side every time (spec section 12:
 // "The driver should not manually browse all company loads").
 // ---------------------------------------------------------------------------
-export async function submitDriverExpense(formData: FormData): Promise<{ expenseId: string }> {
+export async function submitDriverExpense(formData: FormData): Promise<{ expenseId?: string; fuelLogId?: string }> {
   const identity = await requireIdentity();
   const supabase = createServiceRoleClient();
 
@@ -131,6 +131,13 @@ export async function submitDriverExpense(formData: FormData): Promise<{ expense
   }
   const amount = toNumber(formData.get("amount"));
   if (!amount || amount <= 0) throw new Error("Enter a valid amount.");
+
+  // Fuel goes to Fuel Logs (per truck: gallons, price, state, odometer, who
+  // paid) -- where the office manages fuel and its recovery -- not to
+  // Expenses.
+  if (category === "fuel") {
+    return { fuelLogId: await submitDriverFuel(identity, dispatch, amount, formData) };
+  }
 
   const { data, error } = await supabase
     .from("expenses")
@@ -168,6 +175,139 @@ export async function submitDriverExpense(formData: FormData): Promise<{ expense
   revalidatePath("/driver-portal");
   revalidatePath("/expenses");
   return { expenseId: data.id };
+}
+
+async function submitDriverFuel(
+  identity: { driverId: string; organizationId: string },
+  dispatch: { id: string; load_id: string | null },
+  amount: number,
+  formData: FormData
+): Promise<string> {
+  const supabase = createServiceRoleClient();
+  const gallons = toNumber(formData.get("gallons"));
+  if (!gallons || gallons <= 0) throw new Error("Enter the gallons.");
+  const pricePerGallon = toNumber(formData.get("price_per_gallon"));
+  const odometer = toNumber(formData.get("odometer_reading"));
+  const paidBy = String(formData.get("paid_by") || "carrier");
+  if (!DRIVER_FUEL_PAID_BY.some((o) => o.value === paidBy)) throw new Error("Choose how you paid.");
+  const state = emptyToNull(formData.get("state"));
+
+  const { data: trip } = await supabase.from("dispatches").select("truck_id").eq("id", dispatch.id).maybeSingle();
+  if (!trip?.truck_id) throw new Error("This trip has no truck yet. Ask dispatch to assign your truck, then submit the fuel.");
+
+  // A past date is logged at noon that day; today's at the current time.
+  const day = String(formData.get("expense_date") || "");
+  const today = new Date().toISOString().slice(0, 10);
+  const purchasedAt = /^\d{4}-\d{2}-\d{2}$/.test(day) && day !== today ? `${day}T12:00:00Z` : new Date().toISOString();
+
+  const { data: log, error } = await supabase
+    .from("fuel_logs")
+    .insert({
+      organization_id: identity.organizationId,
+      truck_id: trip.truck_id,
+      driver_id: identity.driverId,
+      gallons,
+      price_per_gallon: pricePerGallon && pricePerGallon > 0 ? pricePerGallon : Math.round((amount / gallons) * 1000) / 1000,
+      total_amount: amount,
+      odometer_reading: odometer && odometer > 0 ? Math.round(odometer) : null,
+      state: state ? String(state).toUpperCase().slice(0, 2) : null,
+      station_name: emptyToNull(formData.get("vendor_name")),
+      purchased_at: purchasedAt,
+      paid_by: paidBy,
+    })
+    .select("id")
+    .single();
+  if (error || !log) {
+    console.error("[driver-portal] fuel log insert failed:", error);
+    throw new Error("Could not save the fuel purchase. Please try again.");
+  }
+
+  const reference = emptyToNull(formData.get("reference_number"));
+  const notes = emptyToNull(formData.get("notes"));
+  await supabase.rpc("log_activity", {
+    p_entity_type: "fuel",
+    p_entity_id: log.id,
+    p_action: "submitted_by_driver",
+    p_changes: { load_id: dispatch.load_id, reference_number: reference, notes },
+    p_organization_id: identity.organizationId,
+  });
+
+  const { data: drv } = await supabase.from("drivers").select("first_name, last_name").eq("id", identity.driverId).maybeSingle();
+  const { data: truck } = await supabase.from("trucks").select("unit_number").eq("id", trip.truck_id).maybeSingle();
+  await notifyOfficeOfDriverFuel(supabase, {
+    organizationId: identity.organizationId,
+    fuelLogId: String(log.id),
+    loadId: dispatch.load_id,
+    amount,
+    gallons,
+    station: emptyToNull(formData.get("vendor_name")) as string | null,
+    truckUnit: truck?.unit_number ?? null,
+    paidByLabel: DRIVER_FUEL_PAID_BY.find((o) => o.value === paidBy)?.label ?? paidBy,
+    driverName: drv ? `${drv.first_name} ${drv.last_name}` : null,
+  });
+
+  revalidatePath("/driver-portal/expenses");
+  revalidatePath("/fuel");
+  return String(log.id);
+}
+
+/** Receipt for a fuel purchase the driver logged: stored like the office's fuel receipts (entity "fuel"). */
+export async function uploadDriverFuelReceipt(fuelLogId: string, formData: FormData) {
+  const identity = await requireIdentity();
+  const file = formData.get("file");
+  if (!(file instanceof File)) throw new Error("No file provided.");
+  if (file.size > MAX_BYTES) throw new Error("File is too large (15 MB max).");
+  if (!RECEIPT_ALLOWED_TYPES.has(file.type)) throw new Error("Unsupported file type. Use PDF, JPG, or PNG.");
+
+  const supabase = createServiceRoleClient();
+  const { data: log } = await supabase.from("fuel_logs").select("id, organization_id, driver_id").eq("id", fuelLogId).maybeSingle();
+  if (!log || log.driver_id !== identity.driverId || log.organization_id !== identity.organizationId) throw new Error("Fuel purchase not found.");
+
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
+  const storagePath = `${identity.organizationId}/${fuelLogId}/${Date.now()}_${safeName}`;
+  const { error: uploadError } = await supabase.storage.from("expense-documents").upload(storagePath, await file.arrayBuffer(), { contentType: file.type, upsert: false });
+  if (uploadError) throw new Error(uploadError.message);
+
+  const { data: doc, error: insertError } = await supabase
+    .from("documents")
+    .insert({
+      organization_id: identity.organizationId,
+      entity_type: "fuel",
+      entity_id: fuelLogId,
+      document_type: "fuel_receipt",
+      file_name: file.name,
+      file_path: storagePath,
+      file_size_bytes: file.size,
+      mime_type: file.type,
+      uploaded_by: null,
+    })
+    .select("id")
+    .single();
+  if (insertError || !doc) throw new Error(insertError?.message ?? "Could not save the receipt.");
+
+  await supabase.from("fuel_logs").update({ receipt_document_id: doc.id }).eq("id", fuelLogId);
+  await supabase.rpc("log_activity", { p_entity_type: "fuel", p_entity_id: fuelLogId, p_action: "fuel_receipt_uploaded", p_changes: null, p_organization_id: identity.organizationId });
+  revalidatePath(`/driver-portal/expenses/fuel/${fuelLogId}`);
+  revalidatePath(`/fuel/${fuelLogId}`);
+}
+
+/** Signed link to a fuel receipt -- only for this driver's own fuel purchase. */
+export async function getDriverFuelReceiptSignedUrl(storagePath: string, download: boolean): Promise<string> {
+  const identity = await requireIdentity();
+  const supabase = createServiceRoleClient();
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("entity_id")
+    .eq("file_path", storagePath)
+    .eq("entity_type", "fuel")
+    .eq("organization_id", identity.organizationId)
+    .maybeSingle();
+  if (!doc) throw new Error("Document not found.");
+  const { data: log } = await supabase.from("fuel_logs").select("driver_id").eq("id", doc.entity_id).maybeSingle();
+  if (!log || log.driver_id !== identity.driverId) throw new Error("Document not found.");
+  const { data, error } = await supabase.storage.from("expense-documents").createSignedUrl(storagePath, 300, download ? { download: true } : undefined);
+  if (error || !data) throw new Error("Could not generate a document link.");
+  return data.signedUrl;
 }
 
 const RECEIPT_ALLOWED_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);

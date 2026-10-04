@@ -128,11 +128,11 @@ export function NotificationsMenu({ notifications: initialNotifications }: { not
                   </div>
                   {n.body && <p className="line-clamp-2 pl-3.5 text-xs text-muted-foreground">{n.body}</p>}
                 </Link>
-              ) : n.entity_type === "expense" && n.entity_id ? (
-                // A driver submitted an expense: open it to check and approve.
+              ) : (n.entity_type === "expense" || n.entity_type === "fuel") && n.entity_id ? (
+                // A driver submitted an expense / logged fuel: open it to review.
                 <Link
                   key={n.id}
-                  href={`/expenses/${n.entity_id}`}
+                  href={n.entity_type === "fuel" ? `/fuel/${n.entity_id}` : `/expenses/${n.entity_id}`}
                   onClick={() => {
                     markNotificationRead(n.id).catch(() => {});
                   }}
