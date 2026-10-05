@@ -5,7 +5,7 @@ import { FormCard } from "@/components/ui/form-card";
 import { FormField, FormGrid, FormSelect, FormTextarea } from "@/components/ui/form-field";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
 import { getBillingParty } from "@/lib/billing/party";
-import { InvoicePicker, type InvoicePaymentCandidate } from "@/components/payments/invoice-picker";
+import { InvoicePicker, type InvoicePaymentCandidate, type InvoicePickerHints } from "@/components/payments/invoice-picker";
 import { recordPayment } from "../actions";
 
 const PAYMENT_METHODS = [
@@ -244,12 +244,29 @@ export default async function NewPaymentPage({
   // so was explicitly out of scope for this repair; if any exist among
   // eligible invoices they will appear like any other, and their cleanup
   // is a separate, deliberate decision.
-  const { data: invoicesRaw } = await supabase
-    .from("invoices")
-    .select("id, invoice_number, bill_to_name, total_amount, balance_due, due_date, status, loads(load_number)")
-    .in("status", ["sent", "viewed", "overdue", "partially_paid"])
-    .gt("balance_due", 0)
-    .order("due_date", { ascending: true, nullsFirst: false });
+  const [{ data: invoicesRaw }, { data: draftsRaw }, { data: carrierRaw }] = await Promise.all([
+    supabase
+      .from("invoices")
+      .select("id, invoice_number, bill_to_name, total_amount, balance_due, due_date, status, loads(load_number)")
+      .in("status", ["sent", "viewed", "overdue", "partially_paid"])
+      .gt("balance_due", 0)
+      .order("due_date", { ascending: true, nullsFirst: false }),
+    // Only to explain an empty list: drafts can't take a payment until sent,
+    // and carrier's invoices are paid on their own page.
+    supabase.from("invoices").select("id, invoice_number, total_amount").eq("status", "draft").gt("total_amount", 0).order("created_at").limit(5),
+    supabase
+      .from("carrier_invoices")
+      .select("id, invoice_number, balance_due")
+      .eq("issuance_status", "issued")
+      .neq("payment_status", "paid")
+      .gt("balance_due", 0)
+      .order("created_at")
+      .limit(5),
+  ]);
+  const pickerHints: InvoicePickerHints = {
+    drafts: ((draftsRaw ?? []) as { id: string; invoice_number: string; total_amount: number }[]).map((d) => ({ id: d.id, invoiceNumber: d.invoice_number, total: Number(d.total_amount) })),
+    carrierInvoices: ((carrierRaw ?? []) as { id: string; invoice_number: string | null; balance_due: number }[]).map((c) => ({ id: c.id, invoiceNumber: c.invoice_number ?? "Carrier invoice", balanceDue: Number(c.balance_due) })),
+  };
 
   const pickerInvoices: InvoicePaymentCandidate[] = (invoicesRaw ?? []).map((i) => ({
     id: i.id,
@@ -275,7 +292,7 @@ export default async function NewPaymentPage({
             submitting invoice_id as part of THIS form at all, so there is
             no invoice_id field here to forge or leave stale. */}
         <div className="sm:col-span-2">
-          <InvoicePicker invoices={pickerInvoices} />
+          <InvoicePicker invoices={pickerInvoices} hints={pickerHints} />
         </div>
         <FormField label="Payment Date" name="payment_date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
         <FormField label="Amount ($)" name="amount" type="number" step="0.01" required />

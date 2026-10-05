@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronsUpDown, Search } from "lucide-react";
@@ -44,7 +45,55 @@ export type InvoicePaymentCandidate = {
 const ROW_HEIGHT_REM = 2.75;
 const VISIBLE_ROWS = 6;
 
-export function InvoicePicker({ invoices }: { invoices: InvoicePaymentCandidate[] }) {
+/** Invoices that can't take a payment here yet, so an empty list can say why. */
+export type InvoicePickerHints = {
+  drafts: { id: string; invoiceNumber: string; total: number }[];
+  carrierInvoices: { id: string; invoiceNumber: string; balanceDue: number }[];
+};
+
+function EmptyHelp({ hints }: { hints?: InvoicePickerHints }) {
+  const drafts = hints?.drafts ?? [];
+  const carrier = hints?.carrierInvoices ?? [];
+  return (
+    <div className="space-y-2 px-3 py-4 text-left text-[12.5px]" data-testid="invoice-picker-empty">
+      <p className="font-medium text-desktop-text">No sent invoices are waiting for payment.</p>
+      {drafts.length > 0 && (
+        <div className="text-muted-foreground">
+          {drafts.length === 1 ? "This invoice is" : "These invoices are"} still a <strong className="text-desktop-text">draft</strong> -- send{" "}
+          {drafts.length === 1 ? "it" : "them"} to the broker first, then record the payment:
+          <ul className="mt-1 space-y-0.5">
+            {drafts.map((d) => (
+              <li key={d.id}>
+                <Link href={`/invoices/${d.id}`} className="font-medium text-primary hover:underline">
+                  {d.invoiceNumber}
+                </Link>{" "}
+                -- {formatMoney(d.total)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {carrier.length > 0 && (
+        <div className="text-muted-foreground">
+          Carrier&apos;s invoices (the broker pays the carrier) are recorded on the invoice&apos;s own page:
+          <ul className="mt-1 space-y-0.5">
+            {carrier.map((c) => (
+              <li key={c.id}>
+                <Link href={`/carrier-invoices/${c.id}`} className="font-medium text-primary hover:underline">
+                  {c.invoiceNumber}
+                </Link>{" "}
+                -- {formatMoney(c.balanceDue)} due
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {drafts.length === 0 && carrier.length === 0 && <p className="text-muted-foreground">Every invoice is paid or void.</p>}
+    </div>
+  );
+}
+
+export function InvoicePicker({ invoices, hints }: { invoices: InvoicePaymentCandidate[]; hints?: InvoicePickerHints }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -90,7 +139,7 @@ export function InvoicePicker({ invoices }: { invoices: InvoicePaymentCandidate[
           >
             <span className="flex min-w-0 items-center gap-1.5 truncate text-muted-foreground">
               <Search className="size-3.5 shrink-0" />
-              Search an invoice with a balance due&hellip;
+              {invoices.length === 0 ? "No invoices waiting for payment -- click for details" : `Choose an invoice (${invoices.length} with a balance due)…`}
             </span>
             <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
           </button>
@@ -107,7 +156,7 @@ export function InvoicePicker({ invoices }: { invoices: InvoicePaymentCandidate[
               <span className="w-20 shrink-0 text-right">Due Date</span>
             </div>
             <CommandList style={{ maxHeight: `${ROW_HEIGHT_REM * VISIBLE_ROWS}rem` }}>
-              <CommandEmpty>{invoices.length === 0 ? "No invoices with a balance due are on file." : "No eligible invoices match your search."}</CommandEmpty>
+              <CommandEmpty>{invoices.length === 0 ? <EmptyHelp hints={hints} /> : "No eligible invoices match your search."}</CommandEmpty>
               {filtered.map((i) => (
                 <CommandItem
                   key={i.id}
@@ -130,7 +179,7 @@ export function InvoicePicker({ invoices }: { invoices: InvoicePaymentCandidate[
           </Command>
         </PopoverContent>
       </Popover>
-      <p className="text-[11px] text-muted-foreground">Only invoices with a balance due are listed. Paid and void invoices are never shown here.</p>
+      <p className="text-[11px] text-muted-foreground">Lists sent invoices with a balance due. Drafts must be sent first; paid and void invoices never show here.</p>
     </div>
   );
 }
