@@ -39,7 +39,10 @@ test("menus hide money destinations by role", () => {
   assert.match(palette, /NAV_ITEMS\.filter\(\(item\) => hrefAllowedForRole\(item\.href, role\)\)/);
   assert.match(read("../../app/(app)/layout.tsx"), /<RoleProvider role=\{profile\.role\}>/);
   const nav = read("../../components/nav/nav-config.ts");
-  assert.match(nav, /href: "\/settlements", icon: HandCoins, roles: \["owner", "admin", "accountant"\]/);
-  assert.match(nav, /href: "\/driver-settlements", icon: UserRound, roles: \["owner", "admin", "accountant"\]/);
+  // Settlements are tabs inside "Pay & Expenses"; the tab row hides them by role.
+  const ws = read("../../components/nav/workspaces.ts");
+  assert.match(ws, /label: "Carrier Settlements", href: "\/settlements"/);
+  assert.match(ws, /label: "Driver Settlements", href: "\/driver-settlements"/);
+  assert.match(read("../../components/desktop/workspace-tabs-auto.tsx"), /ws\.tabs\.filter\(\(t\) => hrefAllowedForRole\(t\.href, role\)\)/);
   assert.match(nav, /href: "\/dispatch-fee-invoices", icon: FileText, roles: \["owner", "admin", "accountant"\]/);
 });

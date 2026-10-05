@@ -3,7 +3,6 @@ import { createClient } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { KanbanBoard, type DispatchCard, type BookedLoadCard } from "./kanban-board";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { getLatestDocumentsByEntity } from "@/lib/documents/latest-document";
 import { calculateDetention } from "@/lib/dispatch/detention";
@@ -384,7 +383,6 @@ export default async function DispatchBoardPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Dispatch Board", href: "/dispatch/board" }]} />
       <PageHeader
         title="Dispatch Board"
         description="Drag a card between columns to update its status in real time."

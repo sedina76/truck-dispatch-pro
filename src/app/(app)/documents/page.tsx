@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server";
 import { deleteRecord } from "@/lib/actions/records";
 import { PageHeader } from "@/components/ui/page-header";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -227,7 +226,6 @@ export default async function DocumentsPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Documents", href: "/documents" }]} />
       <PageHeader
         title="Documents"
         description="Business-readable document library across carriers, applicants, loads, drivers, brokers, and customers."

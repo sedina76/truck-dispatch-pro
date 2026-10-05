@@ -4,30 +4,19 @@ import {
   Package,
   Truck,
   Building2,
-  Users,
   UserRound,
   Container,
   Wrench,
-  Fuel,
   FileText,
-  ShieldCheck,
   Receipt,
   Wallet,
-  HandCoins,
-  ReceiptText,
   BarChart3,
-  Mail,
-  Plug,
-  Inbox,
-  UserPlus,
-  UserCog,
   Settings,
-  Landmark,
   LifeBuoy,
-  AlertTriangle,
   Radio,
   CalendarDays,
   ShieldAlert,
+  FolderOpen,
 } from "lucide-react";
 
 // Phase 2G.6: pulled out of sidebar.tsx so the new mobile nav (bottom bar +
@@ -35,10 +24,12 @@ import {
 // -maintaining a second copy that could silently drift from the desktop
 // sidebar -- the two navs must always agree about what exists and who can
 // see it.
+export { WORKSPACES, workspaceFor, navItemActive, type WorkspaceTab } from "./workspaces";
+
 export type OrgRole = "owner" | "admin" | "dispatcher" | "accountant" | "driver" | "viewer";
 export const ALL_ROLES: OrgRole[] = ["owner", "admin", "dispatcher", "accountant", "driver", "viewer"];
 
-export type NavItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }>; roles?: OrgRole[] };
+export type NavItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }>; roles?: OrgRole[]; /** Paths that also highlight this item (its workspace tabs). */ match?: string[] };
 export type NavSection = { title: string; items: NavItem[]; roles?: OrgRole[] };
 
 // Every route BillingSubnav links to (src/components/desktop/billing-subnav.tsx).
@@ -81,93 +72,54 @@ export const SECTIONS: NavSection[] = [
   {
     title: "Operations",
     items: [
-      { label: "Dispatch Board", href: "/dispatch/board", icon: KanbanSquare },
+      // Exception Center is a tab inside the Dispatch workspace (WORKSPACES below).
+      { label: "Dispatch Board", href: "/dispatch/board", icon: KanbanSquare, match: ["/dispatch"] },
       { label: "Loads", href: "/loads", icon: Package },
       { label: "Live Tracking", href: "/tracking", icon: Radio },
       { label: "Schedule", href: "/schedule", icon: CalendarDays },
-      { label: "Exception Center", href: "/dispatch/exceptions", icon: AlertTriangle },
     ],
   },
   {
     title: "Fleet",
     items: [
       { label: "Drivers", href: "/drivers", icon: UserRound },
-      { label: "Driver Applications", href: "/drivers/applications", icon: UserPlus },
-      { label: "Trucks", href: "/trucks", icon: Truck },
-      { label: "Trailers", href: "/trailers", icon: Container },
-      { label: "Maintenance", href: "/maintenance", icon: Wrench },
-      { label: "Fuel Logs", href: "/fuel", icon: Fuel },
-      { label: "Safety Incidents", href: "/safety", icon: ShieldAlert, roles: ["owner", "admin", "dispatcher", "accountant", "viewer"] },
+      { label: "Equipment", href: "/trucks", icon: Truck, match: ["/trucks", "/trailers"] },
+      { label: "Maintenance & Fuel", href: "/maintenance", icon: Wrench, match: ["/maintenance", "/fuel"] },
+      { label: "Safety", href: "/safety", icon: ShieldAlert, roles: ["owner", "admin", "dispatcher", "accountant", "viewer"] },
     ],
   },
   {
-    title: "Business",
+    title: "Partners",
     items: [
-      { label: "Customers", href: "/customers", icon: Users },
-      { label: "Brokers", href: "/brokers", icon: Building2 },
-      { label: "Carriers", href: "/carriers", icon: Truck },
-      { label: "Carrier Onboarding", href: "/carriers/onboarding", icon: UserPlus },
+      { label: "Carriers", href: "/carriers", icon: Container },
+      { label: "Brokers & Customers", href: "/brokers", icon: Building2, match: ["/brokers", "/customers"] },
     ],
   },
   {
-    title: "Billing",
-    // Same access tier the invoices/settlements RLS insert/update/delete
-    // policies already require (owner/admin/accountant), plus dispatcher
-    // -- dispatchers are the ones moving loads to Delivered, so they're
-    // the ones who most need to see Ready to Bill. Matches FINANCIAL_ROLES
-    // in src/lib/auth/require-role.ts exactly.
+    title: "Money",
+    // Same tier as FINANCIAL_ROLES in src/lib/auth/require-role.ts.
     roles: ["owner", "admin", "dispatcher", "accountant"],
     items: [
-      { label: "Billing", href: "/billing", icon: Receipt },
-      // The old Factoring workspace (/factoring) is no longer in the menu:
-      // it only covers the legacy factored_invoices flow, which the database
-      // now refuses. Factoring lives on each carrier's invoice (Factoring
-      // box); the old page stays reachable for its historical records.
-      // Settlements: owner/admin/accountant only (the roles the database lets
-      // write settlements) -- see lib/auth/billing-access.ts.
-      { label: "Carrier Settlements", href: "/settlements", icon: HandCoins, roles: ["owner", "admin", "accountant"] },
-      { label: "Driver Settlements", href: "/driver-settlements", icon: UserRound, roles: ["owner", "admin", "accountant"] },
+      { label: "Billing", href: "/billing", icon: Receipt, match: BILLING_WORKSPACE_PREFIXES },
       // Dispatch company -> carrier: dispatch fees plus advances, fuel and
       // repairs the dispatch company paid. Billing roles only.
       { label: "Dispatch Fee Invoices", href: "/dispatch-fee-invoices", icon: FileText, roles: ["owner", "admin", "accountant"] },
-      { label: "Advances", href: "/advances", icon: Wallet },
-      { label: "Expenses", href: "/expenses", icon: ReceiptText },
+      // Carrier Settlements, Driver Settlements, Advances and Expenses are
+      // tabs inside this one workspace.
+      { label: "Pay & Expenses", href: "/expenses", icon: Wallet, match: ["/expenses", "/advances", "/settlements", "/driver-settlements"] },
     ],
   },
   {
-    title: "Documents & Compliance",
+    title: "Records",
     items: [
-      { label: "Documents", href: "/documents", icon: FileText },
-      { label: "Compliance", href: "/compliance", icon: ShieldCheck },
+      { label: "Documents", href: "/documents", icon: FolderOpen, match: ["/documents", "/compliance"] },
+      { label: "Reports", href: "/reports", icon: BarChart3, roles: ["owner", "admin", "dispatcher", "accountant"], match: ["/reports", "/email-history"] },
     ],
   },
   {
-    title: "Reports",
-    roles: ["owner", "admin", "dispatcher", "accountant"],
-    items: [{ label: "Reports", href: "/reports", icon: BarChart3 }],
-  },
-  {
-    title: "Communications",
-    roles: ["owner", "admin", "dispatcher", "accountant"],
-    items: [{ label: "Email History", href: "/email-history", icon: Inbox }],
-  },
-  {
-    title: "Administration",
-    roles: ["owner", "admin"],
+    title: "Settings",
     items: [
-      { label: "Users", href: "/settings/users", icon: UserCog },
-      { label: "Settings", href: "/settings/organization", icon: Settings },
-      // Phase 2H.3: configuration/master-data only (factoring companies +
-      // commercial relationships) -- deliberately visible to the same
-      // FINANCIAL_ROLES tier as Billing, not the section's own
-      // owner/admin-only default (an item's own `roles` overrides its
-      // section's, same override mechanism "Help" below already uses).
-      // The operational Factoring workspace (submitting invoices, funding,
-      // reserve release) is a separate, later Phase 2H checkpoint and does
-      // NOT live here.
-      { label: "Factoring", href: "/settings/factoring", icon: Landmark, roles: ["owner", "admin", "dispatcher", "accountant"] },
-      { label: "Email & Sending Domain", href: "/settings/email", icon: Mail },
-      { label: "Integrations", href: "/settings/integrations", icon: Plug },
+      { label: "Settings", href: "/settings/organization", icon: Settings, roles: ["owner", "admin"], match: ["/settings/organization", "/settings/users", "/settings/email", "/settings/integrations", "/settings/subscription", "/settings/factoring"] },
       { label: "Help", href: "/settings/profile", icon: LifeBuoy, roles: ALL_ROLES },
     ],
   },

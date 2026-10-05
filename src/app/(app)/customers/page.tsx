@@ -2,7 +2,6 @@ import { createClient } from "@/lib/supabase/server";
 import { deleteRecord } from "@/lib/actions/records";
 import { PageHeader } from "@/components/ui/page-header";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { SearchBar } from "@/components/ui/search-bar";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -73,7 +72,6 @@ export default async function CustomersPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Customers", href: "/customers" }]} />
       <PageHeader
         title="Customers"
         description="Direct shipper relationships outside the broker network."

@@ -7,7 +7,7 @@ import { ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, LogOut } from "
 import { cn } from "@/lib/utils";
 import { logout } from "@/lib/supabase/actions";
 import { Avatar, AvatarFallback, initialsFromName } from "@/components/ui/avatar";
-import { type OrgRole, BILLING_WORKSPACE_PREFIXES, visibleSections } from "@/components/nav/nav-config";
+import { type OrgRole, navItemActive, visibleSections } from "@/components/nav/nav-config";
 
 // Phase 2G.6: the section/role data itself moved to nav-config.ts so the
 // new mobile drawer (mobile-nav.tsx) can share it exactly -- this file is
@@ -61,15 +61,8 @@ export function Sidebar({
               {!groupCollapsed && (
                 <div className="space-y-px pb-1.5">
                   {section.items.map((item) => {
-                    // "Billing" highlights across the whole workspace
-                    // (/billing itself plus the five routes its own
-                    // internal subnav links to), not just /billing --
-                    // otherwise the sidebar would go dark the moment a
-                    // user follows the Billing subnav into e.g. /invoices,
-                    // undermining the "one workspace" goal this section
-                    // exists for. Nothing else needs this treatment.
-                    const matchPrefixes = item.href === "/billing" ? BILLING_WORKSPACE_PREFIXES : [item.href];
-                    const active = matchPrefixes.some((p) => pathname === p || (pathname.startsWith(p + "/") && p !== "/dashboard"));
+                    // Highlights across the item's whole workspace (nav-config `match`).
+                    const active = navItemActive(item, pathname);
                     return (
                       <Link
                         key={item.label + item.href}

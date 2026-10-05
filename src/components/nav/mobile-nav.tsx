@@ -9,7 +9,7 @@ import { logout } from "@/lib/supabase/actions";
 import { Avatar, AvatarFallback, initialsFromName } from "@/components/ui/avatar";
 import { useDesktopActions } from "@/components/desktop/actions-context";
 import { NotificationsMenu } from "@/components/nav/notifications-menu";
-import { type OrgRole, BILLING_WORKSPACE_PREFIXES, visibleSections } from "@/components/nav/nav-config";
+import { type OrgRole, BILLING_WORKSPACE_PREFIXES, navItemActive, visibleSections } from "@/components/nav/nav-config";
 
 type NotificationRow = { id: string; title: string; body: string | null; type: string; entity_type: string | null; entity_id: string | null; exception_id: string | null; read_at: string | null; created_at: string };
 
@@ -125,8 +125,7 @@ export function MobileShell({
                 <p className="px-1 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{section.title}</p>
                 <div className="space-y-0.5">
                   {section.items.map((item) => {
-                    const matchPrefixes = item.href === "/billing" ? BILLING_WORKSPACE_PREFIXES : [item.href];
-                    const active = matchPrefixes.some((p) => pathname === p || pathname.startsWith(p + "/"));
+                    const active = navItemActive(item, pathname);
                     return (
                       <Link
                         key={item.label + item.href}

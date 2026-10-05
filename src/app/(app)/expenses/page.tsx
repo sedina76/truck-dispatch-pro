@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopPanel, DesktopPanelHeader, DesktopPanelBody } from "@/components/desktop/panel";
 import { DesktopFilterBar, DesktopFilterField, desktopInputClass } from "@/components/desktop/filter-bar";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
@@ -94,7 +93,6 @@ export default async function ExpensesPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Expenses", href: "/expenses" }]} />
       <RegisterDesktopActions title="Expenses" exportOptions={[{ label: "Export CSV (Filtered)", href: `/expenses/export?${filterQs()}` }]} />
       <PageHeader title="Expenses" description="Direct load costs, fleet/truck costs, and general overhead in one place." primaryAction={{ label: "Add Expense", href: "/expenses/new" }} />
 

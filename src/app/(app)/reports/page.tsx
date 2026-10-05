@@ -2,7 +2,6 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/page-header";
 import { ChevronRight } from "lucide-react";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 
 const REPORTS = [
@@ -44,7 +43,6 @@ export default async function ReportsPage() {
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Reports", href: "/reports" }]} />
       <PageHeader
         title="Reports"
         description="Revenue, carrier performance, and broker performance reporting."

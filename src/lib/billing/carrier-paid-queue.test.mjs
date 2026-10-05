@@ -135,6 +135,6 @@ test("factoring is set up right on the carrier's invoice page (owner/admin), thr
 test("the old Factoring workspace is out of the menu (records kept, page still reachable and labeled as older)", () => {
   const nav = src("../../components/nav/nav-config.ts");
   assert.ok(!/href: "\/factoring"/.test(nav), "no sidebar link to the old workspace");
-  assert.match(nav, /href: "\/settings\/factoring"/, "Settings -> Factoring (setup) stays");
+  assert.match(src("../../components/nav/workspaces.ts"), /href: "\/settings\/factoring"/, "Settings -> Factoring (setup) stays");
   assert.match(src("../../app/(app)/factoring/page.tsx"), /data-testid="legacy-factoring-note"/);
 });

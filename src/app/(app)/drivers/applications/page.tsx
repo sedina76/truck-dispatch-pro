@@ -1,6 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/page-header";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -64,7 +63,6 @@ export default async function DriverApplicationsPage() {
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Driver Applications", href: "/drivers/applications" }]} />
       <PageHeader
         title="Driver Applications"
         description="Employment applications submitted through the public /driver-application form."

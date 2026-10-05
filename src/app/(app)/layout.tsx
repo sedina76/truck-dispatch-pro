@@ -6,6 +6,7 @@ import { CommandPalette } from "@/components/nav/command-palette";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DesktopTitleBar } from "@/components/desktop/title-bar";
 import { DesktopMenuBar } from "@/components/desktop/menu-bar";
+import { WorkspaceTabsAuto } from "@/components/desktop/workspace-tabs-auto";
 import { DesktopToolbar } from "@/components/desktop/toolbar";
 import { DesktopStatusBar } from "@/components/desktop/status-bar";
 import { DesktopActionsProvider } from "@/components/desktop/actions-context";
@@ -95,7 +96,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
           <div className="flex flex-1 overflow-hidden">
             <div className="no-print hidden lg:block"><Sidebar organizationName={organizationName} fullName={profile.full_name} role={profile.role} /></div>
-            <main className="flex-1 overflow-y-auto px-4 py-3 pb-20 lg:pb-3 print:overflow-visible print:p-0">{children}</main>
+            <main className="flex-1 overflow-y-auto px-4 py-3 pb-20 lg:pb-3 print:overflow-visible print:p-0"><WorkspaceTabsAuto />{children}</main>
           </div>
           <div className="no-print hidden lg:block"><DesktopStatusBar fullName={profile.full_name} role={profile.role} organizationName={organizationName} showMessageSound /></div>
         </div>

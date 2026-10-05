@@ -8,7 +8,6 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { isActiveLoadStatus, isCompletedLoadStatus } from "@/lib/loads/status";
-import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DesktopKpiStrip, DesktopKpiBox } from "@/components/desktop/kpi-box";
 import { RegisterDesktopActions } from "@/components/desktop/actions-context";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
@@ -152,7 +151,6 @@ export default async function DriversPage({
 
   return (
     <div className="space-y-3">
-      <DesktopWorkspaceTabs tabs={[{ label: "Drivers", href: "/drivers" }]} />
       <RegisterDesktopActions title="Drivers" exportOptions={[{ label: "Export CSV (Filtered)", href: `/drivers/export${q ? `?q=${encodeURIComponent(q)}` : ""}` }]} />
       {/* Phase 2Q.2: Invite Driver is now the primary onboarding action
           (business decision -- carrier-initiated invitation, not a staff

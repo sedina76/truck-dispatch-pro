@@ -61,7 +61,7 @@ test("pictures are stored as incident photos, everything else as other", () => {
 });
 
 test("reachable: sidebar, Insert menu, search, driver and truck pages", () => {
-  assert.match(src("../../components/nav/nav-config.ts"), /label: "Safety Incidents", href: "\/safety"/);
+  assert.match(src("../../components/nav/nav-config.ts"), /label: "Safety", href: "\/safety"/);
   assert.match(src("../../components/desktop/menu-bar.tsx"), /"Report Safety Incident", href: "\/safety\/new"/);
   assert.match(src("../../components/nav/command-palette.tsx"), /"Safety Incidents", href: "\/safety"/);
   assert.match(src("../../app/(app)/drivers/[id]/page.tsx"), /<SafetyHistorySection driverId=\{id\} \/>/);
