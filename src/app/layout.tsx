@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { NumberWheelGuard } from "@/components/ui/number-wheel-guard";
+import { SoftGetForms } from "@/components/ui/soft-get-forms";
 import "./globals.css";
 
 const inter = Inter({
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="font-sans antialiased">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <NumberWheelGuard />
+          <SoftGetForms />
           {children}
         </ThemeProvider>
       </body>
