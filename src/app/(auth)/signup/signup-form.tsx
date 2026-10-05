@@ -14,8 +14,7 @@ const initialState: ActionState = { error: null };
 // back to the email address for full_name when none is supplied via
 // signup metadata, so this doesn't leave the profile row in a broken
 // state -- the person can set their display name later from Settings ->
-// Profile. Underlying supabase.auth.signUp() call is unchanged from the
-// prior round -- this is a visual pass only.
+// Profile. Dark variant to sit on the same dark card as sign-in.
 export function SignupForm() {
   const [state, formAction, pending] = useActionState(signup, initialState);
   const [password, setPassword] = useState("");
@@ -24,15 +23,15 @@ export function SignupForm() {
   return (
     <form action={formAction} className="space-y-4" aria-busy={pending}>
       <div className="space-y-1.5">
-        <label htmlFor="email" className="text-sm font-medium text-[#3a3a34]">
+        <label htmlFor="email" className="text-sm font-medium text-white/90">
           Work Email
         </label>
-        <AuthInput id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required disabled={pending} />
+        <AuthInput dark id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required disabled={pending} />
       </div>
 
-      <PasswordField id="password" name="password" label="Password" autoComplete="new-password" value={password} onChange={setPassword} disabled={pending} strength />
+      <PasswordField dark id="password" name="password" label="Password" autoComplete="new-password" value={password} onChange={setPassword} disabled={pending} strength />
 
-      <PasswordField id="confirmPassword" name="confirmPassword" label="Confirm Password" autoComplete="new-password" value={confirmPassword} onChange={setConfirmPassword} disabled={pending} />
+      <PasswordField dark id="confirmPassword" name="confirmPassword" label="Confirm Password" autoComplete="new-password" value={confirmPassword} onChange={setConfirmPassword} disabled={pending} />
 
       {state.error && (
         <p role="alert" aria-live="polite" className="text-sm text-danger">

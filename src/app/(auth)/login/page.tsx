@@ -3,13 +3,14 @@ import { BarChart3, FileCheck2, MapPin } from "lucide-react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { AuthCard } from "@/components/auth/auth-card";
 import { LoginForm } from "./login-form";
+import { OAuthButtons } from "@/components/auth/oauth-buttons";
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ confirmEmail?: string; reset?: string }>;
+  searchParams: Promise<{ confirmEmail?: string; reset?: string; error?: string }>;
 }) {
-  const { confirmEmail, reset } = await searchParams;
+  const { confirmEmail, reset, error } = await searchParams;
 
   return (
     <AuthShell richEnvironment>
@@ -57,6 +58,14 @@ export default async function LoginPage({
                 Your password has been updated. Sign in with your new password.
               </p>
             )}
+
+            {error === "oauth" && (
+              <p role="alert" className="rounded-md border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-200">
+                That sign-in didn&apos;t finish. Try again, or use your email and password.
+              </p>
+            )}
+
+            <OAuthButtons mode="signin" dark />
 
             <LoginForm />
 

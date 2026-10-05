@@ -1,18 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { safeNext } from "@/lib/auth/oauth-providers";
 
-// The one PKCE code-exchange endpoint this app needs (spec section 12) --
-// used exclusively by the password-recovery email link today. Supabase's
-// @supabase/ssr server client uses the PKCE flow by default, so a
-// recovery link lands here with a `?code=...` that must be exchanged for
-// a real (short-lived, recovery-scoped) session BEFORE the visitor can
-// reach /reset-password and call auth.updateUser(). Signup verification
-// does NOT use this route -- it's OTP-based (verifySignupOtp(), typed
-// code, no link/redirect at all).
+// The PKCE code-exchange endpoint. Two kinds of visit land here:
+//  - the password-recovery email link (`?code=...&next=/reset-password`);
+//  - "Continue with Google / Microsoft" (`?flow=oauth&code=...`). A new
+//    person then has no company yet and the app layout sends them to
+//    company setup (/onboarding); an existing user goes to the dashboard.
+// Signup by email does NOT use this route -- it's OTP-based (typed code).
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/dashboard";
+  const oauth = searchParams.get("flow") === "oauth";
+  const next = safeNext(searchParams.get("next"));
 
   if (code) {
     const supabase = await createClient();
@@ -22,8 +22,13 @@ export async function GET(request: Request) {
     }
   }
 
-  // Missing/invalid/expired code -- send to reset-password so it can show
-  // its own honest "link expired" state (spec section 13) rather than a
-  // raw error page.
+  // Cancelled / failed provider sign-in -> back to sign-in with a plain message.
+  if (oauth || searchParams.get("error")) {
+    return NextResponse.redirect(`${origin}/login?error=oauth`);
+  }
+
+  // Missing/invalid/expired recovery code -- send to reset-password so it
+  // can show its own honest "link expired" state (spec section 13) rather
+  // than a raw error page.
   return NextResponse.redirect(`${origin}/reset-password?error=invalid_link`);
 }
