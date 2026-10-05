@@ -1,7 +1,7 @@
 import "server-only";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getSessionProfile } from "@/lib/auth/session";
 import { BILLING_ROLES as BILLING_ROLE_LIST } from "@/lib/auth/billing-access";
 
 // Phase 2G.6 -- the first real "deny before rendering" server-side route
@@ -23,14 +23,10 @@ import { BILLING_ROLES as BILLING_ROLE_LIST } from "@/lib/auth/billing-access";
 export type OrgRole = "owner" | "admin" | "dispatcher" | "accountant" | "driver" | "viewer";
 
 async function currentRole(): Promise<{ role: OrgRole | null; hasOrg: boolean }> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { role: null, hasOrg: false };
-
-  const { data: profile } = await supabase.from("profiles").select("role, organization_id").eq("id", user.id).maybeSingle();
-  return { role: (profile?.role as OrgRole | undefined) ?? null, hasOrg: Boolean(profile?.organization_id) };
+  // Same lookup as before, shared with the app layout for this request (lib/auth/session.ts).
+  const profile = await getSessionProfile();
+  if (!profile) return { role: null, hasOrg: false };
+  return { role: (profile.role as OrgRole | undefined) ?? null, hasOrg: Boolean(profile.organization_id) };
 }
 
 // For page.tsx / layout.tsx Server Components. Redirects (never renders

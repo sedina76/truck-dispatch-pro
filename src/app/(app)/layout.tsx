@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getSessionUser, getSessionProfile } from "@/lib/auth/session";
 import { Sidebar } from "@/components/nav/sidebar";
 import { MobileShell } from "@/components/nav/mobile-nav";
 import { CommandPalette } from "@/components/nav/command-palette";
@@ -19,28 +20,23 @@ import { MessageAlertWatcher } from "@/components/notify/message-alert-watcher";
 // forwarding needed to avoid redirect-looping on /settings/subscription.
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getSessionUser();
 
   if (!user) redirect("/login");
 
-  const { data } = await supabase
-    .from("profiles")
-    .select("full_name, role, organization_id, organizations(name)")
-    .eq("id", user.id)
-    .single();
-
-  // TODO: drop this cast once src/types/supabase.ts holds real generated
-  // types (see that file's header) -- the placeholder Database type can't
-  // express this shape, so Supabase's query builder falls back to `Json`.
-  const profile = data as unknown as {
-    full_name: string;
-    role: string;
-    organization_id: string | null;
-    organizations: { name: string } | null;
-  } | null;
+  // Profile (shared with requireRole() on the page, lib/auth/session.ts) and
+  // the bell's notifications are fetched side by side, not one after another.
+  // entity_type/entity_id (Phase 2I.1A section E) let a dispatch_message
+  // notification navigate straight to the dispatch it's about.
+  const [profile, { data: notifications }] = await Promise.all([
+    getSessionProfile(),
+    supabase
+      .from("notifications")
+      .select("id, title, body, type, entity_type, entity_id, exception_id, read_at, created_at")
+      .eq("profile_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(20),
+  ]);
 
   if (!profile?.organization_id) {
     const { data: isPlatformAdmin } = await supabase.rpc("is_platform_admin");
@@ -52,16 +48,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // driver-message part is limited to owner/admin/dispatcher on the server
   // (message-alert-actions.ts).
 
-  // entity_type/entity_id added (Phase 2I.1A section E) so a
-  // dispatch_message notification can navigate straight to the dispatch
-  // it's about -- both columns already existed on this table (0007), this
-  // is a select-list addition only, no schema change.
-  const { data: notifications } = await supabase
-    .from("notifications")
-    .select("id, title, body, type, entity_type, entity_id, exception_id, read_at, created_at")
-    .eq("profile_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(20);
 
   return (
     <RoleProvider role={profile.role}>

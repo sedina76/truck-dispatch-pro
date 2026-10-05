@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { requireOperationalAccess } from "@/lib/billing/operational-access";
+import { getSessionOrgId } from "@/lib/auth/session";
 
 // Allow-list guards against an arbitrary table name ever reaching a raw
 // Supabase query from these generic helpers. RLS is still the real
@@ -69,6 +70,10 @@ async function logActivity(table: string, id: string, action: "created" | "updat
 // can't populate it. Every insert must supply it explicitly, so this is
 // centralized here rather than duplicated in each entity's actions.ts.
 export async function getCurrentOrgId(): Promise<string> {
+  // Asked once per request (lib/auth/session.ts); a miss is re-asked fresh
+  // so a company created earlier in this same request is still found.
+  const cached = await getSessionOrgId();
+  if (cached.id && !cached.error) return cached.id;
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("current_org_id");
   if (error || !data) {
