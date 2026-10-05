@@ -55,8 +55,20 @@ export function OAuthButtons({ mode, dark = false }: { mode: "signin" | "signup"
             {busy === p ? (
               <Loader2 className="size-[18px] animate-spin" />
             ) : (
-              // eslint-disable-next-line @next/next/no-img-element -- tiny static brand file, may be absent
-              <img src={LOGO[p]} alt="" width={18} height={18} className="size-[18px]" onError={(e) => (e.currentTarget.style.display = "none")} />
+              // Google's official icon-only file is a 40x40 button with the "G" in
+              // its middle 20x20; show just that middle part (the file itself is
+              // used unchanged), so the "G" sits at text size without a box.
+              <span className="relative size-[18px] shrink-0 overflow-hidden" aria-hidden="true">
+                {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand file, may be absent */}
+                <img
+                  src={LOGO[p]}
+                  alt=""
+                  width={36}
+                  height={36}
+                  className="absolute left-[-9px] top-[-9px] size-9 max-w-none"
+                  onError={(e) => ((e.currentTarget.parentElement as HTMLElement).style.display = "none")}
+                />
+              </span>
             )}
             {mode === "signup" ? "Sign up" : "Continue"} with {PROVIDER_LABEL[p]}
           </button>
