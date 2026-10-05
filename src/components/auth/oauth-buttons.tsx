@@ -48,24 +48,25 @@ export function OAuthButtons({ mode, dark = false }: { mode: "signin" | "signup"
             onClick={() => go(p)}
             disabled={busy !== null}
             className={cn(
-              "flex h-11 w-full items-center justify-center gap-2 rounded-md border text-[14.5px] font-semibold transition-colors disabled:opacity-60",
-              dark ? "border-white/20 bg-white text-[#1a1a18] hover:bg-white/90" : "border-[#d9d9d4] bg-white text-[#1a1a18] hover:bg-[#f2f2ef]"
+              "flex h-11 w-full items-center justify-center gap-3 rounded-md border text-[14.5px] font-medium transition-colors disabled:opacity-60",
+              dark ? "border-white/20 bg-white/[0.04] text-white hover:border-white/35 hover:bg-white/[0.09]" : "border-[#d9d9d4] bg-white text-[#1a1a18] hover:bg-[#f2f2ef]"
             )}
           >
             {busy === p ? (
-              <Loader2 className="size-[18px] animate-spin" />
+              <Loader2 className="size-[22px] animate-spin" />
             ) : (
-              // Google's official icon-only file is a 40x40 button with the "G" in
-              // its middle 20x20; show just that middle part (the file itself is
-              // used unchanged), so the "G" sits at text size without a box.
-              <span className="relative size-[18px] shrink-0 overflow-hidden" aria-hidden="true">
+              // Google's official icon-only file is a 40x40 white button with the
+              // "G" in its middle 20x20. Shown through a round window (the file
+              // itself unchanged), it reads as a white badge with the "G" in it --
+              // clean on the dark card, without the file's square outline.
+              <span className="relative size-[28px] shrink-0 overflow-hidden rounded-full" aria-hidden="true">
                 {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand file, may be absent */}
                 <img
                   src={LOGO[p]}
                   alt=""
-                  width={36}
-                  height={36}
-                  className="absolute left-[-9px] top-[-9px] size-9 max-w-none"
+                  width={40}
+                  height={40}
+                  className="absolute left-[-6px] top-[-6px] size-10 max-w-none"
                   onError={(e) => ((e.currentTarget.parentElement as HTMLElement).style.display = "none")}
                 />
               </span>
