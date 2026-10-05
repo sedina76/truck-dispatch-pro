@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrgId } from "@/lib/actions/records";
+import { STARTER_TEMPLATES, renderStarter, unfilledBlanks, clauseKey } from "@/lib/carrier-onboarding/starter-templates";
 
 // Phase 2L.4 -- template/clause management. Every write here is a plain
 // RLS-scoped client update -- carrier_agreement_templates_insert/_update
@@ -224,8 +225,11 @@ export async function publishTemplate(templateId: string): Promise<{ ok: true } 
     return { ok: false, error: "Another version of this agreement is currently published. Retire it before publishing this version." };
   }
 
-  const { data: clauses } = await supabase.from("carrier_agreement_clauses").select("id").eq("agreement_template_id", templateId);
+  const { data: clauses } = await supabase.from("carrier_agreement_clauses").select("id, title, body").eq("agreement_template_id", templateId);
   if (!clauses || clauses.length === 0) return { ok: false, error: "Add at least one clause before publishing." };
+  // A blank like [STATE] left in the text would be locked in for good.
+  const blanks = unfilledBlanks(clauses.flatMap((c) => [c.title as string, c.body as string]));
+  if (blanks.length > 0) return { ok: false, error: `Fill in ${blanks.join(", ")} in the clause text before publishing.` };
 
   const { data: hash, error: hashError } = await supabase.rpc("compute_carrier_agreement_content_hash", { p_template_id: templateId });
   if (hashError) return { ok: false, error: hashError.message };
@@ -253,4 +257,66 @@ export async function retireTemplate(templateId: string): Promise<{ ok: true } |
   revalidatePath(`/carriers/onboarding/templates/${templateId}`);
   revalidatePath("/carriers/onboarding/templates");
   return { ok: true };
+}
+
+/**
+ * Adds the standard agreements (Dispatch Service Agreement, Limited
+ * Authorization, Tracking & Communications Consent) as DRAFTS with this
+ * company's name and state filled in. Skips any the company already has
+ * (same key, any version). Owner/admin only (RLS on the template tables).
+ */
+export async function addStarterTemplates(): Promise<{ ok: true; added: string[] } | { ok: false; error: string }> {
+  const supabase = await createClient();
+  const organizationId = await getCurrentOrgId();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const [{ data: org }, { data: existing }] = await Promise.all([
+    supabase.from("organizations").select("name, state").eq("id", organizationId).maybeSingle(),
+    supabase.from("carrier_agreement_templates").select("template_key").eq("organization_id", organizationId),
+  ]);
+  const have = new Set(((existing ?? []) as { template_key: string }[]).map((t) => t.template_key));
+  const added: string[] = [];
+
+  for (const starter of STARTER_TEMPLATES) {
+    if (have.has(starter.key)) continue;
+    const t = renderStarter(starter, { name: (org?.name as string | undefined) ?? "", state: (org?.state as string | null | undefined) ?? null });
+    const { data: created, error } = await supabase
+      .from("carrier_agreement_templates")
+      .insert({
+        organization_id: organizationId,
+        template_key: t.key,
+        version_number: 1,
+        name: t.name,
+        description: t.description,
+        is_required_for_onboarding: t.requiredForOnboarding,
+        requires_signer_title: t.requiresSignerTitle,
+        created_by: user?.id ?? null,
+      })
+      .select("id")
+      .single();
+    if (error || !created) {
+      return { ok: false, error: /row-level security|permission/i.test(error?.message ?? "") ? "Only an owner or admin can add agreement templates." : "Could not add the standard agreements. Please try again." };
+    }
+    const { error: clauseError } = await supabase.from("carrier_agreement_clauses").insert(
+      t.clauses.map((c, i) => ({
+        organization_id: organizationId,
+        agreement_template_id: created.id,
+        clause_key: clauseKey(c.title),
+        title: c.title,
+        body: c.body,
+        display_order: i,
+        requires_initials: c.requiresInitials,
+      }))
+    );
+    if (clauseError) {
+      await supabase.from("carrier_agreement_templates").delete().eq("id", created.id);
+      return { ok: false, error: "Could not add the standard agreements. Please try again." };
+    }
+    added.push(t.name);
+  }
+
+  revalidatePath("/carriers/onboarding/templates");
+  return { ok: true, added };
 }

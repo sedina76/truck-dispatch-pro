@@ -4,6 +4,8 @@ import { DesktopWorkspaceTabs } from "@/components/desktop/workspace-tabs";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { STARTER_TEMPLATES } from "@/lib/carrier-onboarding/starter-templates";
+import { AddStarterTemplates } from "./add-starter-templates";
 
 type TemplateRow = {
   id: string;
@@ -27,6 +29,8 @@ export default async function CarrierAgreementTemplatesPage() {
     .order("version_number", { ascending: false });
 
   const templates = (data ?? []) as TemplateRow[];
+  const haveKeys = new Set(templates.map((t) => t.template_key));
+  const missingStarters = STARTER_TEMPLATES.filter((t) => !haveKeys.has(t.key)).map((t) => t.name);
 
   const columns: Column<TemplateRow>[] = [
     { header: "Name", cell: (row) => <span className="font-medium">{row.name}</span> },
@@ -45,6 +49,8 @@ export default async function CarrierAgreementTemplatesPage() {
         description="Manage the dispatch agreements carriers sign during onboarding. Only owners and admins can create or edit templates."
         primaryAction={canManage ? { label: "New Template", href: "/carriers/onboarding/templates/new" } : undefined}
       />
+
+      {canManage && missingStarters.length > 0 && <AddStarterTemplates missing={missingStarters} />}
 
       {templates.length === 0 ? (
         <EmptyState title="No agreement templates yet" description={canManage ? "Create a template to start collecting dispatch agreement signatures during onboarding." : "No dispatch agreement templates have been configured yet."} />
