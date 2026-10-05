@@ -27,6 +27,7 @@ test("wired: callback handles provider sign-in; sign-in and sign-up pages show t
   const cb = src("../../app/auth/callback/route.ts");
   assert.match(cb, /const next = safeNext\(searchParams\.get\("next"\)\);/);
   assert.match(cb, /return NextResponse\.redirect\(`\$\{origin\}\/login\?error=oauth`\);/);
+  assert.match(src("../../components/auth/oauth-buttons.tsx"), /google: "\/brand\/google.svg"/);
   assert.match(src("../../components/auth/oauth-buttons.tsx"), /redirectTo: `\$\{window\.location\.origin\}\/auth\/callback\?flow=oauth&next=\/dashboard`/);
   assert.match(src("../../app/(auth)/signup/page.tsx"), /<OAuthButtons mode="signup" dark \/>/);
   assert.match(src("../../app/(auth)/login/page.tsx"), /<OAuthButtons mode="signin" dark \/>/);

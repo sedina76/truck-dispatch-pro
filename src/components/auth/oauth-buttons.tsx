@@ -8,6 +8,11 @@ import { cn } from "@/lib/utils";
 
 const PROVIDERS = enabledProviders(process.env.NEXT_PUBLIC_AUTH_PROVIDERS);
 
+// Each provider's official logo file, if one has been added to /public/brand
+// (google.svg, microsoft.svg -- the artwork each company publishes for
+// sign-in buttons). No file = the button simply shows its text.
+const LOGO: Record<OAuthProvider, string> = { google: "/brand/google.svg", azure: "/brand/microsoft.svg" };
+
 // "Continue with Google / Microsoft". New people land on company setup
 // (onboarding) after the provider sends them back; existing users land on
 // their dashboard. Renders nothing until a provider is switched on.
@@ -47,7 +52,12 @@ export function OAuthButtons({ mode, dark = false }: { mode: "signin" | "signup"
               dark ? "border-white/20 bg-white text-[#1a1a18] hover:bg-white/90" : "border-[#d9d9d4] bg-white text-[#1a1a18] hover:bg-[#f2f2ef]"
             )}
           >
-            {busy === p && <Loader2 className="size-4 animate-spin" />}
+            {busy === p ? (
+              <Loader2 className="size-[18px] animate-spin" />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element -- tiny static brand file, may be absent
+              <img src={LOGO[p]} alt="" width={18} height={18} className="size-[18px]" onError={(e) => (e.currentTarget.style.display = "none")} />
+            )}
             {mode === "signup" ? "Sign up" : "Continue"} with {PROVIDER_LABEL[p]}
           </button>
         ))}
