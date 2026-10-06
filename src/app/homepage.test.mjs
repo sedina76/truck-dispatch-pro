@@ -21,3 +21,9 @@ test("signed-in users skip the homepage; the offer matches the real trial", () =
   assert.match(page, /href="\/login"/);
   assert.doesNotMatch(page, /thousands|number one|best in class|unlimited/i, "no claims we can't back up");
 });
+
+test("every sign-in / sign-up screen leads back to the homepage", () => {
+  const shell = src("../components/auth/auth-shell.tsx");
+  assert.match(shell, /<Link href="\/" aria-label="Truck Dispatch Pro home"/);
+  assert.match(shell, /<ArrowLeft className="size-4" \/> Home/);
+});
