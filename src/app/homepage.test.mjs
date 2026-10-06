@@ -27,3 +27,12 @@ test("every sign-in / sign-up screen leads back to the homepage", () => {
   assert.match(shell, /<Link href="\/" aria-label="Truck Dispatch Pro home"/);
   assert.match(shell, /<ArrowLeft className="size-4" \/> Home/);
 });
+
+test("one brand mark: the logo, the app title bar and the tab icons all use the route mark", () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+  assert.match(read("../components/brand/logo.tsx"), /<BrandMark /);
+  assert.match(read("../components/desktop/title-bar.tsx"), /<BrandMark /);
+  const mark = read("../../public/brand/mark.svg");
+  const component = read("../components/brand/brand-mark.tsx");
+  for (const d of mark.match(/ d="M[^"]+"/g)) assert.ok(component.includes(d), `brand-mark.tsx should draw the same path as mark.svg: ${d}`);
+});

@@ -15,7 +15,7 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Dispatch operations, billing, and compliance for freight dispatch companies.",
     start_url: "/",
     display: "standalone",
-    background_color: "#ffffff",
+    background_color: "#070b18",
     theme_color: "#1c54b8",
     icons: [
       { src: "/icon-192.png", sizes: "192x192", type: "image/png" },

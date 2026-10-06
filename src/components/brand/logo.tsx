@@ -1,4 +1,4 @@
-import { Truck } from "lucide-react";
+import { BrandMark } from "@/components/brand/brand-mark";
 import { cn } from "@/lib/utils";
 
 // The ONE place the product name/wordmark is assembled for auth surfaces.
@@ -19,15 +19,7 @@ export function Logo({
   const lg = size === "lg";
   return (
     <div className={cn("flex items-center", lg ? "gap-3.5" : "gap-2.5", className)}>
-      <div
-        className={cn(
-          "flex shrink-0 items-center justify-center rounded-lg border",
-          lg ? "size-12" : "size-9",
-          dark ? "border-white/20 bg-white/5 text-white" : "border-primary/25 bg-primary/5 text-primary"
-        )}
-      >
-        <Truck className={lg ? "size-6" : "size-5"} />
-      </div>
+      <BrandMark className={cn("rounded-[22%]", lg ? "size-12" : "size-9", dark && "ring-1 ring-white/15")} />
       <div className="leading-tight">
         <div className={cn("font-bold uppercase tracking-wide", lg ? "text-xl" : "text-[15px]", dark ? "text-white" : "text-foreground")}>
           Truck Dispatch <span className="text-primary">Pro</span>

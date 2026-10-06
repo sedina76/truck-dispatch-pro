@@ -1,4 +1,4 @@
-import { Truck } from "lucide-react";
+import { BrandMark } from "@/components/brand/brand-mark";
 
 // Persistent top title strip. "Truck Dispatch Pro - Transportation
 // Management System (Live)" is fixed product branding text, not a claimed
@@ -8,7 +8,7 @@ import { Truck } from "lucide-react";
 export function DesktopTitleBar({ organizationName }: { organizationName: string }) {
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-desktop-border bg-desktop-header px-3 text-desktop-header-text">
-      <Truck className="size-3.5 shrink-0 opacity-90" />
+      <BrandMark className="size-4 rounded-[22%]" />
       <span className="text-[12.5px] font-semibold tracking-tight">
         Truck Dispatch Pro <span className="font-normal opacity-80">- Transportation Management System (Live)</span>
       </span>
