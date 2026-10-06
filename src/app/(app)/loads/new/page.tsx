@@ -10,11 +10,12 @@ import {
   CollapsibleSectionsToolbar,
 } from "@/components/desktop/collapsible-section";
 import { AdditionalStopsFields } from "@/components/loads/additional-stops-fields";
+import { AutoTimezoneSelect } from "@/components/loads/auto-timezone-select";
 import { RevenuePerMileLive } from "@/components/loads/rate-financials-fields";
 import { RateConAutofill } from "@/components/loads/rate-con-autofill";
 import { createLoadWithStops } from "../create-actions";
 import { getCurrentOrgId } from "@/lib/actions/records";
-import { COMMON_TIMEZONES, isValidIanaTimezone } from "@/lib/timezone/iana";
+import { isValidIanaTimezone } from "@/lib/timezone/iana";
 import { FINANCIAL_ROLES, type OrgRole } from "@/lib/auth/require-role";
 
 // Reading a rate confirmation with AI can take up to ~30 s.
@@ -243,7 +244,8 @@ function StopSection({ sectionId, title, prefix, defaultTimezone }: { sectionId:
         <FormField label={`${title} Date`} name={`${prefix}_date`} type="date" required />
         <FormField label="Appointment Time" name={`${prefix}_time`} type="time" />
         <FormField label="Appointment Window End (optional)" name={`${prefix}_window_end`} type="time" />
-        <FormSelect label="Timezone" name={`${prefix}_timezone`} defaultValue={defaultTimezone} options={COMMON_TIMEZONES} />
+        {/* Pre-selected from this stop's State / ZIP as they are typed; the dispatcher can still change it. */}
+        <AutoTimezoneSelect name={`${prefix}_timezone`} stateName={`${prefix}_state`} zipName={`${prefix}_postal_code`} defaultValue={defaultTimezone} />
         <FormField label={`${title} Number / Reference`} name={`${prefix}_reference_number`} />
         <FormTextarea label="Notes" name={`${prefix}_notes`} />
       </FormGrid>

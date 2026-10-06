@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { COMMON_TIMEZONES } from "@/lib/timezone/iana";
+import { AutoTimezoneSelect } from "@/components/loads/auto-timezone-select";
 
 // Dynamic "+ Add Stop" list for extra pickups/deliveries beyond the main
 // Pickup/Delivery sections (spec section 7). Plain uncontrolled inputs with
@@ -90,14 +90,14 @@ export function AdditionalStopsFields({ defaultTimezone }: { defaultTimezone: st
               <label className={labelClass}>Appointment Time</label>
               <input type="time" name={`extra_stops[${stop.key}][time]`} defaultValue={stop.values?.time} className={inputClass} />
             </div>
-            <div className="space-y-1">
-              <label className={labelClass}>Timezone</label>
-              <select name={`extra_stops[${stop.key}][timezone]`} defaultValue={stop.values?.timezone || defaultTimezone} className={inputClass}>
-                {COMMON_TIMEZONES.map((tz) => (
-                  <option key={tz.value} value={tz.value}>{tz.label}</option>
-                ))}
-              </select>
-            </div>
+            <AutoTimezoneSelect
+              name={`extra_stops[${stop.key}][timezone]`}
+              stateName={`extra_stops[${stop.key}][state]`}
+              zipName={`extra_stops[${stop.key}][postal_code]`}
+              defaultValue={stop.values?.timezone || defaultTimezone}
+              selectClassName={inputClass}
+              labelClassName={labelClass}
+            />
             <div className="space-y-1">
               <label className={labelClass}>Reference #</label>
               <input name={`extra_stops[${stop.key}][reference_number]`} defaultValue={stop.values?.reference_number} className={inputClass} />
