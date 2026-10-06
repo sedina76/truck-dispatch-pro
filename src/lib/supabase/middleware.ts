@@ -138,7 +138,10 @@ export async function updateSession(request: NextRequest) {
   }
   const user = data.user;
 
-  const isPublicPath = PUBLIC_PATHS.some((path) => matchesPath(request.nextUrl.pathname, path));
+  // The public homepage is exactly "/" -- deliberately NOT a PUBLIC_PATHS
+  // entry, where matchesPath's prefix rule would make everything public.
+  const isHomepage = request.nextUrl.pathname === "/";
+  const isPublicPath = isHomepage || PUBLIC_PATHS.some((path) => matchesPath(request.nextUrl.pathname, path));
 
   if (!user && !isPublicPath) {
     const loginUrl = request.nextUrl.clone();

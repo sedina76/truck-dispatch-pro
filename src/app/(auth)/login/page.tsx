@@ -29,7 +29,7 @@ export default async function LoginPage({
             Run your trucking operation from <span className="text-primary">one place.</span>
           </h1>
           <p className="mt-6 max-w-[600px] text-[16px] leading-7 text-white/58">
-            Dispatch, drivers, GPS tracking, billing, compliance, and customer communication -- built for real freight operations.
+            Dispatch, drivers, GPS tracking, billing, compliance, and customer communication — built for real freight operations.
           </p>
 
           <div className="mt-9 flex items-center gap-7 text-sm text-white/85 xl:gap-10">
