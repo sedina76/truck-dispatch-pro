@@ -246,7 +246,9 @@ test("D.2.10: the old BLOCKED_SUBSCRIPTION_STATUSES deny-list is removed entirel
 
 test("D.2.10: middleware passes the minimum facts, keyed on the authenticated profile org id", () => {
   // reads billing_required + the three subscription fields the resolver needs
-  assert.match(MW_CODE, /\.from\("organizations"\)\s*\.select\("billing_required"\)/s);
+  assert.match(MW_CODE, /\.from\("organizations"\)\s*\.select\("billing_required, is_active"\)/s);
+  // 0171: a Platform Console suspension (is_active = false) is passed to the resolver
+  assert.match(MW_CODE, /suspended: org\?\.is_active === false,/);
   assert.match(MW_CODE, /\.select\("status, grandfathered_at, past_due_since"\)/);
   // both keyed on profile.organization_id, never a request-supplied id
   assert.match(MW_CODE, /\.eq\("id", profile\.organization_id\)/);

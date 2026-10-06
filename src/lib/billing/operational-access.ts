@@ -89,7 +89,7 @@ const loadOperationalAccess = cache(async (): Promise<OperationalAccessResult> =
   const [orgResult, subscriptionResult] = await Promise.all([
     supabase
       .from("organizations")
-      .select("billing_required")
+      .select("billing_required, is_active")
       .eq("id", organizationId)
       .maybeSingle(),
     supabase
@@ -104,7 +104,7 @@ const loadOperationalAccess = cache(async (): Promise<OperationalAccessResult> =
     return { ok: false, code: "billing_state_unavailable", reason: "billing_read_failed" };
   }
 
-  const org = orgResult.data as { billing_required: boolean } | null;
+  const org = orgResult.data as { billing_required: boolean; is_active: boolean | null } | null;
   const subscription = subscriptionResult.data as {
     status: string | null;
     grandfathered_at: string | null;
@@ -112,6 +112,7 @@ const loadOperationalAccess = cache(async (): Promise<OperationalAccessResult> =
   } | null;
 
   const decision = resolveBillingAccess({
+    suspended: org?.is_active === false,
     billingRequired: org?.billing_required === true,
     subscriptionExists: subscription !== null,
     grandfatheredAt: subscription?.grandfathered_at ?? null,

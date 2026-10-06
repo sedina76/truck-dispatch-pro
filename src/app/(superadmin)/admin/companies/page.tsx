@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
+import { getPlatformOverview } from "@/lib/superadmin/platform-metrics";
+import { ACCESS_STYLE, type CompanyAccess } from "@/lib/superadmin/company-access";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataTable, type Column } from "@/components/ui/data-table";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 
 type CompanyRow = {
@@ -11,41 +11,34 @@ type CompanyRow = {
   slug: string;
   created_at: string;
   planName: string;
-  status: string | null;
+  access: CompanyAccess;
 };
 
 export default async function SuperAdminCompaniesPage() {
-  const supabase = await createClient();
-
-  const [{ data: orgs }, { data: subs }] = await Promise.all([
-    supabase.from("organizations").select("id, name, slug, created_at").order("created_at", { ascending: false }),
-    supabase
-      .from("organization_subscriptions")
-      .select("organization_id, status, subscription_plans(name)"),
-  ]);
-
-  type SubRow = { organization_id: string; status: string; subscription_plans: { name: string } | null };
-  const subByOrgId = new Map(
-    ((subs ?? []) as unknown as SubRow[]).map((s) => [s.organization_id, s])
-  );
-
-  const rows: CompanyRow[] = (orgs ?? []).map((org) => {
-    const sub = subByOrgId.get(org.id);
-    return {
-      id: org.id,
-      name: org.name,
-      slug: org.slug,
-      created_at: org.created_at,
-      planName: sub?.subscription_plans?.name ?? "No plan",
-      status: sub?.status ?? null,
-    };
-  });
+  // Same rows as the Overview table (one canonical source), including the
+  // company's real access state rather than only its subscription status.
+  const { companies } = await getPlatformOverview();
+  const rows: CompanyRow[] = companies.map((c) => ({
+    id: c.id,
+    name: c.name,
+    slug: c.slug,
+    created_at: c.createdAt,
+    planName: c.planName ?? "No plan",
+    access: c.access,
+  }));
 
   const columns: Column<CompanyRow>[] = [
     { header: "Company", cell: (r) => <span className="font-medium">{r.name}</span>, sortKey: "name" },
     { header: "Slug", cell: (r) => <span className="text-muted-foreground">{r.slug}</span> },
     { header: "Plan", cell: (r) => r.planName },
-    { header: "Status", cell: (r) => <StatusBadge status={r.status} /> },
+    {
+      header: "Access",
+      cell: (r) => (
+        <span title={r.access.detail} className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${ACCESS_STYLE[r.access.key]}`}>
+          {r.access.label}
+        </span>
+      ),
+    },
     {
       header: "Joined",
       cell: (r) => new Date(r.created_at).toLocaleDateString(),

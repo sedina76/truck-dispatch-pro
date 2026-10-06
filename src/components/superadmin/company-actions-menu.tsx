@@ -13,12 +13,12 @@ import { useSuspendCompanyAction, SuspendConfirmDialog } from "./suspend-company
 
 // Every item here routes to a real existing page/tab (the dedicated Edit
 // Company page, the Company Detail's Admins/Subscription tabs) or calls
-// the real existing updateOrgSubscription action via the SAME
+// setCompanySuspended() via the SAME
 // useSuspendCompanyAction hook the Company Detail page's Suspend/
 // Reactivate button uses -- one shared confirmation flow, not a
 // second bypassable path to the same destructive action.
-export function CompanyActionsMenu({ orgId, companyName, planId, status }: { orgId: string; companyName: string; planId: string | null; status: string | null }) {
-  const { suspended, submitting, confirming, error, canSuspend, requestToggle, confirmSuspend, cancelConfirm } = useSuspendCompanyAction(orgId, planId, status);
+export function CompanyActionsMenu({ orgId, companyName, suspended }: { orgId: string; companyName: string; suspended: boolean }) {
+  const { submitting, confirming, error, requestToggle, confirmSuspend, cancelConfirm } = useSuspendCompanyAction(orgId, suspended);
 
   return (
     <>
@@ -59,7 +59,6 @@ export function CompanyActionsMenu({ orgId, companyName, planId, status }: { org
               e.preventDefault();
               requestToggle();
             }}
-            disabled={!canSuspend}
             className={suspended ? "text-emerald-400 focus:text-emerald-400" : "text-red-400 focus:text-red-400"}
           >
             <span className="flex items-center gap-2">

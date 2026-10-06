@@ -47,7 +47,7 @@ export default async function SuperAdminDashboardPage() {
         <PlatformMetricCard label="MRR" value={formatCents(totals.mrrCents)} icon={DollarSign} tone="purple" />
         <PlatformMetricCard label="ARR" value={formatCents(totals.arrCents)} icon={TrendingUp} tone="purple" sub="MRR x 12" />
         <PlatformMetricCard label="Past Due" value={totals.pastDueCount} icon={AlertTriangle} tone={totals.pastDueCount > 0 ? "red" : "neutral"} />
-        <PlatformMetricCard label="At Risk" value={totals.atRiskCount} icon={ShieldAlert} tone={totals.atRiskCount > 0 ? "amber" : "neutral"} />
+        <PlatformMetricCard label="At Risk" value={totals.atRiskCount} icon={ShieldAlert} tone={totals.atRiskCount > 0 ? "amber" : "neutral"} sub={totals.lockedCount > 0 ? `${totals.lockedCount} locked out` : `${totals.freeCount} on free access`} />
       </div>
 
       {/* Analytics row: MRR/Growth chart, Subscription Breakdown, and the

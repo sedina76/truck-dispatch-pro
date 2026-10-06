@@ -14,15 +14,8 @@ const NAV_ITEMS = [
   { label: "Platform Admins", href: "/admin/admins", icon: ShieldCheck },
   { label: "Audit Log", href: "/admin/audit-log", icon: ScrollText },
   { label: "System Health", href: "/admin/system-health", icon: HeartPulse },
-];
-
-// Reports/Settings have no underlying feature yet (no report-generation
-// infra, no platform-console-specific settings storage) -- shown as
-// disabled "Coming soon" rather than routed to a fake destination, per
-// "only make an item functional if the underlying feature exists."
-const COMING_SOON_ITEMS = [
-  { label: "Reports", icon: BarChart3 },
-  { label: "Settings", icon: Settings },
+  { label: "Reports", href: "/admin/reports", icon: BarChart3 },
+  { label: "Settings", href: "/admin/settings", icon: Settings },
 ];
 
 export function SuperAdminSidebar() {
@@ -57,18 +50,6 @@ export function SuperAdminSidebar() {
             </Link>
           );
         })}
-
-        <div className="mt-3 border-t border-slate-800 pt-3">
-          {COMING_SOON_ITEMS.map((item) => (
-            <div key={item.label} className="flex cursor-not-allowed items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-slate-600">
-              <span className="flex items-center gap-2.5">
-                <item.icon className="size-[18px] shrink-0" />
-                {item.label}
-              </span>
-              <span className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-700">Soon</span>
-            </div>
-          ))}
-        </div>
       </div>
 
       <div className="border-t border-slate-800 p-3">

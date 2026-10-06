@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { getPlatformOverview } from "@/lib/superadmin/platform-metrics";
+import { ACCESS_STYLE } from "@/lib/superadmin/company-access";
 import { PageHeader } from "@/components/ui/page-header";
 
 function money(cents: number): string {
@@ -24,11 +26,13 @@ const STATUS_STYLE: Record<string, string> = {
 export default async function SuperAdminSubscriptionsPage() {
   const supabase = await createClient();
 
-  const [{ data: plans }, { data: orgs }, { data: subs }] = await Promise.all([
+  const [{ data: plans }, { data: orgs }, { data: subs }, overview] = await Promise.all([
     supabase.from("subscription_plans").select("id, name, tier, monthly_price_cents, annual_price_cents, max_users, max_trucks, max_active_loads, is_active").order("monthly_price_cents"),
     supabase.from("organizations").select("id, name, slug").order("name"),
     supabase.from("organization_subscriptions").select("organization_id, status, plan_id, subscription_plans(name)"),
+    getPlatformOverview(),
   ]);
+  const accessByOrg = new Map(overview.companies.map((c) => [c.id, c.access]));
 
   type SubRow = { organization_id: string; status: string; subscription_plans: { name: string } | null };
   const subByOrg = new Map(((subs ?? []) as unknown as SubRow[]).map((s) => [s.organization_id, s]));
@@ -65,6 +69,7 @@ export default async function SuperAdminSubscriptionsPage() {
                 <th className="px-4 py-2.5">Company</th>
                 <th className="px-3 py-2.5">Plan</th>
                 <th className="px-3 py-2.5">Status</th>
+                <th className="px-3 py-2.5">Access</th>
                 <th className="px-4 py-2.5 text-right">Manage</th>
               </tr>
             </thead>
@@ -79,6 +84,13 @@ export default async function SuperAdminSubscriptionsPage() {
                       <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_STYLE[sub?.status ?? ""] ?? "bg-slate-500/10 text-slate-400"}`}>
                         {sub?.status ? sub.status.replace(/_/g, " ") : "No subscription"}
                       </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {accessByOrg.get(org.id) && (
+                        <span title={accessByOrg.get(org.id)!.detail} className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${ACCESS_STYLE[accessByOrg.get(org.id)!.key]}`}>
+                          {accessByOrg.get(org.id)!.label}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-right">
                       <Link href={`/admin/companies/${org.id}`} className="text-[11px] font-medium text-blue-400 hover:text-blue-300">

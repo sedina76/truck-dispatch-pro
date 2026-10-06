@@ -9,6 +9,9 @@ import { CompanyTabs, type CompanyTab } from "@/components/superadmin/company-ta
 import { CompanyProfileForm } from "@/components/superadmin/company-profile-form";
 import { CompanyAdminsPanel, type AdminRow } from "@/components/superadmin/company-admins-panel";
 import { SuspendCompanyControl } from "@/components/superadmin/suspend-company-control";
+import { FreeAccessControl } from "@/components/superadmin/free-access-control";
+import { ACCESS_STYLE } from "@/lib/superadmin/company-access";
+import { companyAccess } from "@/lib/superadmin/company-access-resolve";
 import { PlatformMetricCard } from "@/components/superadmin/platform-metric-card";
 import { Building2, Users, Truck, Package, Receipt, DollarSign, Calendar } from "lucide-react";
 import Link from "next/link";
@@ -107,6 +110,16 @@ export default async function SuperAdminCompanyDetailPage({
 
   const initialTab = TAB_PARAM[tab ?? ""] ?? "Overview";
 
+  const sub = subscription as { status: string | null; grandfathered_at: string | null; past_due_since: string | null; trial_end: string | null } | null;
+  const access = companyAccess({
+    isActive: org.is_active,
+    billingRequired: org.billing_required,
+    status: sub?.status ?? null,
+    grandfatheredAt: sub?.grandfathered_at ?? null,
+    pastDueSince: sub?.past_due_since ?? null,
+    trialEnd: sub?.trial_end ?? null,
+  });
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -118,11 +131,9 @@ export default async function SuperAdminCompanyDetailPage({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-semibold text-slate-50">{org.name}</h1>
-                {subscription?.status === "paused" && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-red-400">
-                    Suspended
-                  </span>
-                )}
+                <span title={access.detail} className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${ACCESS_STYLE[access.key]}`}>
+                  {access.label}
+                </span>
               </div>
               <p className="text-[12.5px] text-slate-500">
                 {currentPlan?.name ?? "No plan"} &middot; <StatusBadge status={subscription?.status ?? null} /> &middot; /{org.slug}
@@ -140,7 +151,7 @@ export default async function SuperAdminCompanyDetailPage({
           <Link href={`/admin/companies/${id}?tab=subscription`} className="flex h-9 items-center rounded-lg border border-slate-700 px-3 text-[12.5px] font-medium text-slate-300 hover:bg-slate-800">
             Manage Subscription
           </Link>
-          <SuspendCompanyControl orgId={id} companyName={org.name} planId={subscription?.plan_id ?? null} currentStatus={subscription?.status ?? null} />
+          <SuspendCompanyControl orgId={id} companyName={org.name} suspended={access.key === "suspended"} />
         </div>
       </div>
 
@@ -162,6 +173,8 @@ export default async function SuperAdminCompanyDetailPage({
           "Company Profile": <CompanyProfileForm org={org} />,
           "Admins & Credentials": <CompanyAdminsPanel orgId={id} admins={adminRows} />,
           Subscription: (
+            <div className="space-y-4">
+            <FreeAccessControl orgId={id} freeAccess={org.billing_required === false} access={access} />
             <div className="max-w-lg rounded-xl border border-slate-800 bg-slate-900/60 p-5">
               <p className="mb-4 text-sm font-semibold text-slate-100">Manage Subscription</p>
               <form action={updateOrgSubscription.bind(null, id)} className="flex flex-wrap items-end gap-4">
@@ -192,8 +205,9 @@ export default async function SuperAdminCompanyDetailPage({
               </form>
               <p className="mt-3 text-xs text-slate-500">
                 Setting status to <span className="font-medium text-slate-300">Past Due</span>, <span className="font-medium text-slate-300">Paused</span>, or{" "}
-                <span className="font-medium text-slate-300">Canceled</span> blocks this company from the app until it&apos;s changed back (enforced in middleware).
+                <span className="font-medium text-slate-300">Canceled</span> blocks this company from the app until it&apos;s changed back, unless it has free access.
               </p>
+            </div>
             </div>
           ),
           Billing: (

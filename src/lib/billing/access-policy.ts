@@ -26,6 +26,7 @@
 export type BillingAccess = "full" | "billing_only";
 
 export type BillingAccessReason =
+  | "suspended"
   | "billing_not_required"
   | "grandfathered"
   | "no_subscription"
@@ -50,6 +51,13 @@ export interface BillingAccessResult {
 // their own rows -- the resolver never sees a Supabase row, an org id, a
 // Stripe id, or anything sensitive.
 export interface BillingFacts {
+  /**
+   * organizations.is_active === false: the company was suspended from the
+   * Platform Console. Blocks everyone at the company whatever its billing
+   * state (free access, legacy, paying). Optional so older call sites keep
+   * compiling; omitted means "not suspended".
+   */
+  suspended?: boolean;
   /** organizations.billing_required (org-level authority). */
   billingRequired: boolean;
   /** Whether an organization_subscriptions row exists for the org. */
@@ -92,6 +100,12 @@ function parseTimestampMs(iso: string | null): number | null {
 }
 
 export function resolveBillingAccess(facts: BillingFacts): BillingAccessResult {
+  // 0. Platform suspension outranks everything, including billing_required
+  //    = false. Before this, suspending a free-access company did nothing.
+  if (facts.suspended === true) {
+    return { access: "billing_only", reason: "suspended" };
+  }
+
   // 1. Not a Stripe-billed org -> never gated (0121: legacy/pre-billing
   //    organizations explicitly marked billing_required = false).
   if (facts.billingRequired !== true) {

@@ -173,7 +173,7 @@ export async function updateSession(request: NextRequest) {
       const [orgResult, subscriptionResult] = await Promise.all([
         supabase
           .from("organizations")
-          .select("billing_required")
+          .select("billing_required, is_active")
           .eq("id", profile.organization_id)
           .maybeSingle(),
         supabase
@@ -191,7 +191,7 @@ export async function updateSession(request: NextRequest) {
         return NextResponse.redirect(maintenanceUrl);
       }
 
-      const org = orgResult.data as { billing_required: boolean } | null;
+      const org = orgResult.data as { billing_required: boolean; is_active: boolean | null } | null;
       const subscription = subscriptionResult.data as {
         status: string | null;
         grandfathered_at: string | null;
@@ -199,6 +199,7 @@ export async function updateSession(request: NextRequest) {
       } | null;
 
       const decision = resolveBillingAccess({
+        suspended: org?.is_active === false,
         billingRequired: org?.billing_required === true,
         subscriptionExists: subscription !== null,
         grandfatheredAt: subscription?.grandfathered_at ?? null,

@@ -1,5 +1,7 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import type { CompanyAccess } from "@/lib/superadmin/company-access";
+import { companyAccess } from "@/lib/superadmin/company-access-resolve";
 
 // ONE canonical module for every number the Platform Console Overview
 // shows. Every query here runs through the caller's own RLS-scoped
@@ -16,7 +18,7 @@ import { createClient } from "@/lib/supabase/server";
 // MRR                     organization_subscriptions + plans        sum(monthly_price_cents) where status='active'          current
 // ARR                     (derived)                                 MRR * 12 -- no separate revenue system                  current
 // Past Due                organization_subscriptions                count(status = 'past_due')                             current
-// At Risk                 organization_subscriptions                count(status in ('past_due','incomplete'))             current
+// At Risk                 organizations + organization_subscriptions  past_due/incomplete subscriptions + companies locked out (company-access.ts)  current
 // Company Growth          organizations.created_at                  count grouped by month                                 REAL historical
 // MRR trend               --                                        NOT reconstructable -- no MRR snapshot/ledger table    UNAVAILABLE (honest)
 // Subscription breakdown  organization_subscriptions + plans        grouped by (status='trialing' ? 'Trialing' : plan.name) current
@@ -47,6 +49,9 @@ export type CompanyRow = {
   planId: string | null;
   status: SubscriptionStatus | null;
   mrrCents: number;
+  /** What the company can actually do right now (company-access.ts). */
+  access: CompanyAccess;
+  trialEnd: string | null;
 };
 
 export type BreakdownSlice = { label: string; count: number; mrrCents: number; percent: number };
@@ -66,6 +71,9 @@ export type PlatformOverview = {
     trialingCount: number;
     pastDueCount: number;
     atRiskCount: number;
+    lockedCount: number;
+    freeCount: number;
+    suspendedCount: number;
     mrrCents: number;
     arrCents: number;
   };
@@ -86,10 +94,10 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
   const supabase = await createClient();
 
   const [orgsRes, subsRes, recentSubsRes, recentBillingRes, snapshotRes, activityRes, profilesRes] = await Promise.all([
-    supabase.from("organizations").select("id, name, slug, created_at").order("created_at", { ascending: false }),
+    supabase.from("organizations").select("id, name, slug, created_at, billing_required, is_active").order("created_at", { ascending: false }),
     supabase
       .from("organization_subscriptions")
-      .select("organization_id, plan_id, status, updated_at, subscription_plans(name, monthly_price_cents)"),
+      .select("organization_id, plan_id, status, updated_at, trial_end, grandfathered_at, past_due_since, subscription_plans(name, monthly_price_cents)"),
     // Small slice for the activity feed -- most-recently-changed subscriptions only.
     supabase.from("organization_subscriptions").select("organization_id, status, updated_at").order("updated_at", { ascending: false }).limit(20),
     // Real paid billing history -- for the activity feed's "payment received" entries. Not a second MRR calculation.
@@ -120,10 +128,44 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
     usersByOrg.set(p.organization_id, (usersByOrg.get(p.organization_id) ?? 0) + 1);
   }
 
-  type SubRow = { organization_id: string; plan_id: string | null; status: SubscriptionStatus; updated_at: string; subscription_plans: { name: string; monthly_price_cents: number } | null };
+  type SubRow = {
+    organization_id: string;
+    plan_id: string | null;
+    status: SubscriptionStatus;
+    updated_at: string;
+    trial_end: string | null;
+    grandfathered_at: string | null;
+    past_due_since: string | null;
+    subscription_plans: { name: string; monthly_price_cents: number } | null;
+  };
   const subscriptions = (subs ?? []) as unknown as SubRow[];
   const subByOrg = new Map(subscriptions.map((s) => [s.organization_id, s]));
   const orgById = new Map((orgs ?? []).map((o) => [o.id, o]));
+
+  const now = new Date();
+  const accessByOrg = new Map<string, CompanyAccess>(
+    (orgs ?? []).map((o) => {
+      const sub = subByOrg.get(o.id);
+      return [
+        o.id,
+        companyAccess({
+          isActive: (o as { is_active?: boolean | null }).is_active ?? true,
+          billingRequired: (o as { billing_required?: boolean | null }).billing_required ?? true,
+          status: sub?.status ?? null,
+          grandfatheredAt: sub?.grandfathered_at ?? null,
+          pastDueSince: sub?.past_due_since ?? null,
+          trialEnd: sub?.trial_end ?? null,
+          now,
+        }),
+      ];
+    })
+  );
+  const accessCounts = { locked: 0, free: 0, suspended: 0 };
+  for (const a of accessByOrg.values()) {
+    if (a.key === "locked") accessCounts.locked += 1;
+    if (a.key === "free") accessCounts.free += 1;
+    if (a.key === "suspended") accessCounts.suspended += 1;
+  }
 
   const activeSubs = subscriptions.filter((s) => s.status === "active");
   const mrrCents = activeSubs.reduce((sum, s) => sum + (s.subscription_plans?.monthly_price_cents ?? 0), 0);
@@ -133,7 +175,15 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
     activeCount: activeSubs.length,
     trialingCount: subscriptions.filter((s) => s.status === "trialing").length,
     pastDueCount: subscriptions.filter((s) => s.status === "past_due").length,
-    atRiskCount: subscriptions.filter((s) => s.status === "past_due" || s.status === "incomplete").length,
+    // Companies that need attention: failed/unfinished payment, or locked out
+    // of the app entirely (needs a subscription it doesn't have).
+    atRiskCount: (orgs ?? []).filter((o) => {
+      const st = subByOrg.get(o.id)?.status;
+      return st === "past_due" || st === "incomplete" || accessByOrg.get(o.id)?.key === "locked";
+    }).length,
+    lockedCount: accessCounts.locked,
+    freeCount: accessCounts.free,
+    suspendedCount: accessCounts.suspended,
     mrrCents,
     arrCents: mrrCents * 12, // canonical: ARR = MRR x 12, no separate revenue system
   };
@@ -185,6 +235,8 @@ export async function getPlatformOverview(): Promise<PlatformOverview> {
       planId: sub?.plan_id ?? null,
       status: sub?.status ?? null,
       mrrCents: sub?.status === "active" ? sub.subscription_plans?.monthly_price_cents ?? 0 : 0,
+      access: accessByOrg.get(org.id)!,
+      trialEnd: sub?.trial_end ?? null,
     };
   });
 

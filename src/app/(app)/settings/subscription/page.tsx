@@ -41,7 +41,7 @@ export default async function SubscriptionSettingsPage({
         .select("*, subscription_plans(*)")
         .eq("organization_id", orgId)
         .maybeSingle(),
-      supabase.from("organizations").select("billing_required").eq("id", orgId).maybeSingle(),
+      supabase.from("organizations").select("billing_required, is_active").eq("id", orgId).maybeSingle(),
       supabase.from("subscription_plans").select("*").eq("is_active", true).eq("is_public", true).order("monthly_price_cents"),
       supabase.from("profiles").select("id", { count: "exact", head: true }),
       supabase.from("trucks").select("id", { count: "exact", head: true }),
@@ -66,6 +66,7 @@ export default async function SubscriptionSettingsPage({
   const status = sub?.status ?? null;
   const grandfatheredAt = sub?.grandfathered_at ?? null;
   const billingRequired = (org as { billing_required: boolean } | null)?.billing_required ?? true;
+  const suspended = (org as { is_active: boolean | null } | null)?.is_active === false;
 
   const gate = evaluateCheckoutGate({
     billingRequired,
@@ -79,6 +80,7 @@ export default async function SubscriptionSettingsPage({
   // Same authoritative resolver the middleware uses -- the "access is paused"
   // banner must never disagree with the redirect that landed the user here.
   const billingAccess = resolveBillingAccess({
+    suspended,
     billingRequired,
     subscriptionExists: sub !== null,
     grandfatheredAt,
@@ -104,7 +106,14 @@ export default async function SubscriptionSettingsPage({
         </div>
       )}
 
-      {isBlocked && !returnNotice && (
+      {suspended && (
+        <div className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
+          <p className="font-medium">This company&apos;s account is suspended.</p>
+          <p className="mt-1 text-danger/90">Contact Truck Dispatch Pro support to restore access. Your data is safe and has not been deleted.</p>
+        </div>
+      )}
+
+      {isBlocked && !suspended && !returnNotice && (
         <div className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
           <p className="font-medium">Access to the rest of the app is paused.</p>
           <p className="mt-1 text-danger/90">
@@ -163,7 +172,7 @@ export default async function SubscriptionSettingsPage({
         </div>
       </div>
 
-      {gate.canCheckout && planCards.length > 0 ? (
+      {!suspended && gate.canCheckout && planCards.length > 0 ? (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
           <CheckoutCta plans={planCards} />
         </div>

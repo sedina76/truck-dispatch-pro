@@ -46,7 +46,9 @@ test("D.2.11 #3/#4: organization id comes from the authenticated user's profile 
 // 9. billing-fact query -- billing_required + the three subscription fields
 // ==========================================================================
 test("D.2.11 #9: reads organizations.billing_required + subscription status/grandfathered_at/past_due_since", () => {
-  assert.match(HELPER_CODE, /\.from\("organizations"\)\s*\.select\("billing_required"\)/s);
+  assert.match(HELPER_CODE, /\.from\("organizations"\)\s*\.select\("billing_required, is_active"\)/s);
+  // 0171: a Platform Console suspension (is_active = false) is passed to the resolver
+  assert.match(HELPER_CODE, /suspended: org\?\.is_active === false,/);
   assert.match(HELPER_CODE, /\.select\("status, grandfathered_at, past_due_since"\)/);
   assert.equal(HELPER.includes("service_role"), false, "no service-role in the operational gate");
   assert.equal(HELPER.includes("SERVICE_ROLE"), false);
