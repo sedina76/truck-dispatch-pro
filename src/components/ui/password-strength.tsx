@@ -27,7 +27,7 @@ export function PasswordStrength({ password }: { password: string }) {
 
   return (
     <div className="flex items-center gap-2">
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/15">
         <div className={cn("h-full rounded-full transition-all duration-200", colorClass)} style={{ width: `${ratio * 100}%` }} />
       </div>
       <span

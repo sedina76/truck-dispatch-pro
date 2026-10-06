@@ -63,7 +63,7 @@ export function VerifyEmailForm({ email }: { email: string }) {
             own 30s client-side throttle. */}
 
         {verifyState.error && (
-          <p role="alert" aria-live="polite" className="text-center text-sm text-danger">
+          <p role="alert" aria-live="polite" className="text-center text-sm text-red-300">
             {verifyState.error}
           </p>
         )}
@@ -80,14 +80,14 @@ export function VerifyEmailForm({ email }: { email: string }) {
         </AuthButton>
       </form>
 
-      <div className="flex items-center justify-center gap-1 text-sm text-[#6b6b64]">
+      <div className="flex items-center justify-center gap-1 text-sm text-white/60">
         <span>Didn&apos;t receive it?</span>
         <form action={resendAction}>
           <input type="hidden" name="email" value={email} />
           <button
             type="submit"
             disabled={resendPending || cooldown > 0}
-            className="font-medium text-[#1c54b8] hover:underline disabled:cursor-not-allowed disabled:text-[#b0b0a8] disabled:no-underline"
+            className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline disabled:cursor-not-allowed disabled:text-white/35 disabled:no-underline"
           >
             {resendPending ? "Sending…" : cooldown > 0 ? `Resend code (${fmt(cooldown)})` : "Resend code"}
           </button>
@@ -95,19 +95,19 @@ export function VerifyEmailForm({ email }: { email: string }) {
       </div>
 
       {resendState.sent && cooldown > 0 && (
-        <p role="status" aria-live="polite" className="text-center text-sm text-emerald-600">
+        <p role="status" aria-live="polite" className="text-center text-sm text-emerald-300">
           A new code was sent. Your previous code is no longer valid—enter only the newest code.
         </p>
       )}
       {resendState.error && (
-        <p role="alert" aria-live="polite" className="text-center text-sm text-danger">
+        <p role="alert" aria-live="polite" className="text-center text-sm text-red-300">
           {resendState.error}
         </p>
       )}
 
-      <p className="text-center text-sm text-[#6b6b64]">
+      <p className="text-center text-sm text-white/60">
         Wrong email?{" "}
-        <Link href="/signup" className="font-medium text-[#1c54b8] hover:underline">
+        <Link href="/signup" className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline">
           Change email
         </Link>
       </p>

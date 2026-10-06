@@ -62,20 +62,18 @@ function OtpSlot({ char, isActive, hasFakeCaret }: SlotProps) {
   return (
     <div
       className={cn(
-        // Fixed light colors, not the theme-reactive border-desktop-border/
-        // bg-card/text-foreground -- this component is used exclusively
-        // inside AuthCard's deliberately-fixed white surface (see that
-        // component's header comment); a theme-reactive slot would render
-        // dark-on-dark for an OS-dark-mode visitor.
+        // Fixed dark colors, not the theme-reactive tokens -- this component
+        // is used only inside the dark AuthCard on verify-email, so it is
+        // pinned to that card's palette whatever the visitor's OS theme.
         "relative flex size-11 items-center justify-center rounded-md border text-lg font-semibold tabular-nums shadow-sm transition-colors sm:size-12",
-        "border-[#d8d8d2] bg-white text-[#1a1a18]",
-        isActive && "border-[#1c54b8] ring-2 ring-[#1c54b8]/20"
+        "border-white/20 bg-white/[0.045] text-white",
+        isActive && "border-[#2680ff] ring-2 ring-[#2680ff]/25"
       )}
     >
       {char}
       {hasFakeCaret && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center motion-reduce:hidden">
-          <div className="h-5 w-px animate-pulse bg-[#1a1a18]" />
+          <div className="h-5 w-px animate-pulse bg-white" />
         </div>
       )}
     </div>

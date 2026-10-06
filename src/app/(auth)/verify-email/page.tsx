@@ -10,17 +10,17 @@ export default async function VerifyEmailPage({ searchParams }: { searchParams: 
 
   return (
     <AuthShell centered>
-      <AuthCard>
+      <AuthCard dark>
         <div className="space-y-5 text-center">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-[#1c54b8]/10 text-[#1c54b8]">
+          <div className="mx-auto flex size-14 items-center justify-center rounded-full border border-[#2680ff]/35 bg-[#2680ff]/10 text-[#39a0ff]">
             <Mail className="size-6" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#1a1a18]">Verify Your Email</h1>
-            <p className="mt-2 text-sm text-[#6b6b64]">
+            <h1 className="text-2xl font-bold tracking-tight text-white">Verify Your Email</h1>
+            <p className="mt-2 text-sm text-white/60">
               We sent a verification code to
               <br />
-              <span className="font-semibold text-[#1a1a18]">{email}</span>
+              <span className="font-semibold text-white">{email}</span>
             </p>
           </div>
 

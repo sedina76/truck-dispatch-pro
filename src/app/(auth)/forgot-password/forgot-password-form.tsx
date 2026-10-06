@@ -15,12 +15,12 @@ export function ForgotPasswordForm() {
   if (state.sent) {
     return (
       <div className="space-y-4">
-        <p role="status" aria-live="polite" className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+        <p role="status" aria-live="polite" className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
           If an account exists for that email, we&apos;ve sent a Truck Dispatch Pro password-reset link. Check your inbox.
         </p>
-        <p className="text-center text-sm text-[#6b6b64]">
+        <p className="text-center text-sm text-white/60">
           Back to{" "}
-          <Link href="/login" className="font-medium text-[#1c54b8] hover:underline">
+          <Link href="/login" className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline">
             Sign In
           </Link>
         </p>
@@ -31,14 +31,14 @@ export function ForgotPasswordForm() {
   return (
     <form action={formAction} className="space-y-4 text-left" aria-busy={pending}>
       <div className="space-y-1.5">
-        <label htmlFor="email" className="text-sm font-medium text-[#3a3a34]">
+        <label htmlFor="email" className="text-sm font-medium text-white/90">
           Email
         </label>
-        <AuthInput id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required disabled={pending} />
+        <AuthInput dark id="email" name="email" type="email" autoComplete="email" placeholder="you@company.com" required disabled={pending} />
       </div>
 
       {state.error && (
-        <p role="alert" aria-live="polite" className="text-sm text-danger">
+        <p role="alert" aria-live="polite" className="text-sm text-red-300">
           {state.error}
         </p>
       )}
@@ -54,9 +54,9 @@ export function ForgotPasswordForm() {
         )}
       </AuthButton>
 
-      <p className="text-center text-sm text-[#6b6b64]">
+      <p className="text-center text-sm text-white/60">
         Back to{" "}
-        <Link href="/login" className="font-medium text-[#1c54b8] hover:underline">
+        <Link href="/login" className="font-medium text-[#39a0ff] hover:text-[#75bdff] hover:underline">
           Sign In
         </Link>
       </p>
