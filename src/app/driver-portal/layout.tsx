@@ -1,3 +1,4 @@
+import type { Viewport } from "next";
 import { DriverPortalBottomNav } from "@/components/driver-portal/bottom-nav";
 import { getMyUnreadMessageCount } from "@/app/driver-portal/actions";
 
@@ -5,6 +6,16 @@ import { getMyUnreadMessageCount } from "@/app/driver-portal/actions";
 // "approximately 500-700px") on tablet/desktop rather than stretching
 // driver cards across a wide monitor. Bottom padding clears the fixed
 // bottom nav (spec section 27) so the last card is never hidden behind it.
+// Edge-to-edge on phones with a notch / home bar (viewportFit "cover"); the
+// layout and tab bar pad themselves with the safe-area insets below so
+// nothing sits under the notch or the home indicator.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#1c54b8",
+};
+
 export default async function DriverPortalLayout({ children }: { children: React.ReactNode }) {
   // Phase 2I.1A section H -- best-effort initial seed for the bottom-nav
   // badge. getMyUnreadMessageCount() itself resolves identity from the
@@ -20,8 +31,12 @@ export default async function DriverPortalLayout({ children }: { children: React
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto flex min-h-screen w-full max-w-xl flex-col px-4 pb-24 pt-6">{children}</div>
+    <div className="driver-portal min-h-screen bg-background">
+      {/* Phone: full width. Tablet: a wider centered column (max-w-2xl), still
+          one comfortable reading column rather than stretched cards. */}
+      <div className="mx-auto flex min-h-screen w-full max-w-xl flex-col px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-[calc(1.5rem+env(safe-area-inset-top))] md:max-w-2xl md:px-6">
+        {children}
+      </div>
       <DriverPortalBottomNav initialUnreadMessageCount={initialUnreadMessageCount} />
     </div>
   );

@@ -72,7 +72,7 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
           type="button"
           disabled={uploading}
           onClick={() => setScannerOpen(true)}
-          className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs font-medium disabled:opacity-60"
+          className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm font-medium disabled:opacity-60"
         >
           {uploading ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
           Scan Document
@@ -81,7 +81,7 @@ export function TripDocumentUpload({ loadId, slot }: { loadId: string; slot: Tri
           type="button"
           disabled={uploading}
           onClick={() => fileRef.current?.click()}
-          className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs font-medium disabled:opacity-60"
+          className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm font-medium disabled:opacity-60"
         >
           <FolderOpen className="size-4" />
           {slot.fileName ? "Replace File" : "Choose Photo/PDF"}

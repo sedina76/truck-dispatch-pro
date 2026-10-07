@@ -24,7 +24,8 @@ const ITEMS = [
 // navigate to before authenticating). 44px+ touch targets throughout.
 export function DriverPortalBottomNav({ initialUnreadMessageCount = 0 }: { initialUnreadMessageCount?: number }) {
   const pathname = usePathname();
-  const isLoginPage = pathname === "/driver-portal/login";
+  // No tab bar before signing in (sign-in and Forgot PIN screens).
+  const isLoginPage = pathname === "/driver-portal/login" || pathname.startsWith("/driver-portal/forgot-pin");
   // Seeded from the server-rendered layout (no 0-then-flicker on first
   // paint), kept fresh client-side afterward.
   const [unreadMessageCount, setUnreadMessageCount] = useState(initialUnreadMessageCount);
@@ -91,7 +92,7 @@ export function DriverPortalBottomNav({ initialUnreadMessageCount = 0 }: { initi
   return (
     <>
     {showRejectionBanner && (
-      <div className="fixed inset-x-0 bottom-16 z-20 px-3 pb-2">
+      <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 px-3 pb-2">
         <div className="mx-auto flex w-full max-w-md items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 p-3 text-sm shadow-lg backdrop-blur" role="alert">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" />
           <Link href="/driver-portal/documents" className="min-w-0 flex-1">
@@ -106,8 +107,8 @@ export function DriverPortalBottomNav({ initialUnreadMessageCount = 0 }: { initi
         </div>
       </div>
     )}
-    <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-      <div className="mx-auto flex w-full max-w-md items-stretch justify-between px-1">
+    <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-card/80">
+      <div className="mx-auto flex w-full max-w-md items-stretch justify-between px-1 md:max-w-2xl">
         {ITEMS.map((item) => {
           const active = item.href === "/driver-portal" ? pathname === item.href : pathname.startsWith(item.href);
           const showBadge = item.href === "/driver-portal/messages" && unreadMessageCount > 0;
@@ -117,7 +118,7 @@ export function DriverPortalBottomNav({ initialUnreadMessageCount = 0 }: { initi
               key={item.href}
               href={item.href}
               className={cn(
-                "flex min-w-11 flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10.5px] font-medium",
+                "flex min-h-14 min-w-11 flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium md:text-xs",
                 active ? "text-primary" : "text-muted-foreground"
               )}
             >

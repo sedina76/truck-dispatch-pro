@@ -75,12 +75,12 @@ export function PodUpload({ loadId, status, rejectionReason }: { loadId: string;
             type="button"
             disabled={uploading}
             onClick={() => setScannerOpen(true)}
-            className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card text-xs font-medium text-muted-foreground disabled:opacity-60"
+            className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card text-sm font-medium text-muted-foreground disabled:opacity-60"
           >
             {uploading ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
             Scan POD
           </button>
-          <label className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card text-xs font-medium text-muted-foreground">
+          <label className="flex h-12 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-card text-sm font-medium text-muted-foreground">
             <Upload className="size-4" />
             {status === "rejected" ? "Replace File" : "Choose File"}
             <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={handleChange} disabled={uploading} />

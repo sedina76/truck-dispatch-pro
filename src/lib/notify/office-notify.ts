@@ -101,3 +101,41 @@ export async function notifyOfficeOfDriverFuel(
     console.error("[driver-fuel] notification failed:", err);
   }
 }
+
+/**
+ * A driver used "Forgot PIN" on the Driver Portal sign-in screen: one bell
+ * notification per active owner/admin/dispatcher (the roles that can set a
+ * portal PIN), opening the driver. Tells the office whether a reset code
+ * could be emailed or whether they need to reset the PIN by hand.
+ * Best-effort: never fails the driver's request.
+ */
+export async function notifyOfficeOfPinResetRequest(
+  supabase: ServiceRoleClient,
+  p: { organizationId: string; driverId: string; driverName: string | null; emailed: boolean }
+): Promise<void> {
+  try {
+    const { data: recipients } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("organization_id", p.organizationId)
+      .in("role", ["owner", "admin", "dispatcher"])
+      .eq("is_active", true);
+    if (!recipients || recipients.length === 0) return;
+    const who = p.driverName?.trim() || "A driver";
+    const rows = recipients.map((r) => ({
+      organization_id: p.organizationId,
+      profile_id: r.id,
+      type: "system" as const,
+      title: `${who} forgot their Driver Portal PIN`,
+      body: p.emailed
+        ? "A reset code was emailed to the address on their driver record. Nothing to do unless they call."
+        : "They have no email on file, so no code could be sent. Set a new PIN for them on their driver page.",
+      entity_type: "driver" as const,
+      entity_id: p.driverId,
+    }));
+    const { error } = await supabase.from("notifications").insert(rows);
+    if (error) console.error("[pin-reset] notification insert failed:", error);
+  } catch (err) {
+    console.error("[pin-reset] notification failed:", err);
+  }
+}

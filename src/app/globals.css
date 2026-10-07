@@ -267,3 +267,21 @@ input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
+
+/* Driver Portal on phones and tablets.
+   - iPhone Safari zooms the whole page in when a field with text smaller
+     than 16px is tapped; the shared form fields use 13px. Inside the
+     Driver Portal, fields are 16px on anything narrower than a laptop.
+   - Fields get a 44px minimum height (Apple/Google touch-target size).
+   Unlayered on purpose so it wins over the Tailwind utility classes. */
+@media (max-width: 1023px) {
+  .driver-portal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+  .driver-portal select,
+  .driver-portal textarea {
+    font-size: 16px;
+  }
+  .driver-portal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+  .driver-portal select {
+    min-height: 44px;
+  }
+}

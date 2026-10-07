@@ -6,6 +6,8 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { assembleScannedPdf, scannedFileName, type ScannedPage } from "@/lib/documents/scanner-pdf";
+import { padBox, type Box } from "@/lib/documents/auto-capture";
+import { LiveCapture } from "@/components/documents/live-capture";
 
 // Phase 2Q.1 -- Mobile Document Scanner.
 //
@@ -24,7 +26,15 @@ import { assembleScannedPdf, scannedFileName, type ScannedPage } from "@/lib/doc
 // organization/entity/role/signature-immutability check downstream of
 // "here is a File" is completely unmodified and un-bypassed (Section H).
 //
-// Camera capture itself is the same <input type="file" capture=
+// Hands-free capture (live camera): the capture screen now opens a live
+// camera view (live-capture.tsx + lib/documents/auto-capture.ts) that finds
+// the page, waits until it's steady and in focus, and takes the picture by
+// itself, cropped to the page -- no shutter press. In multi-page mode it
+// keeps going page after page until the driver taps Done. When a live
+// camera can't be opened (permission denied, no camera, unsupported
+// browser, desktop), the screen falls back to the classic flow below.
+//
+// Classic flow: camera capture is the same <input type="file" capture=
 // "environment"> technique already used by
 // src/components/driver-portal/expense-receipt-upload.tsx and
 // trip-document-upload.tsx (confirmed during the Section A audit) -- not
@@ -175,6 +185,10 @@ export function DocumentScanner({ open, onOpenChange, onCapture, multiPage = fal
   const [pages, setPages] = useState<ScannedPage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why the live camera couldn't open (null = try it). Reset when the
+  // scanner closes, so the next open tries again.
+  const [liveUnavailable, setLiveUnavailable] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -226,6 +240,40 @@ export function DocumentScanner({ open, onOpenChange, onCapture, multiPage = fal
     setPages([]);
     setBusy(false);
     setError(null);
+    setLiveUnavailable(null);
+    setNotice(null);
+  }
+
+  // A frame from the live camera (auto or manual shutter), cropped to the
+  // detected page. Multi-page: the page is added and the camera keeps
+  // running for the next one. Single page: straight to the edit screen with
+  // the crop already set, so the driver just checks it and taps Use Scan.
+  async function handleLiveFrame(canvas: HTMLCanvasElement, box: Box | null) {
+    setError(null);
+    const crop: CropRect = box
+      ? (() => {
+          const b = padBox(box, 0.01);
+          return { x: b.x * canvas.width, y: b.y * canvas.height, w: Math.max(MIN_CROP_PX, b.w * canvas.width), h: Math.max(MIN_CROP_PX, b.h * canvas.height) };
+        })()
+      : fullFrame(canvas);
+    if (!multiPage) {
+      setWorkingCanvas(canvas);
+      setCropRect(crop);
+      setEnhanceMode("document");
+      setStage("edit");
+      return;
+    }
+    try {
+      const { blob, width, height } = await renderPage(canvas, crop, "document");
+      const page: ScannedPage = { id: crypto.randomUUID(), blob, width, height };
+      setPages((prev) => {
+        setNotice(`Page ${prev.length + 1} added`);
+        return [...prev, page];
+      });
+      window.setTimeout(() => setNotice(null), 1800);
+    } catch (e) {
+      setError(errorMessage(e, "Could not process that page. Try again."));
+    }
   }
 
   // Revoke every outstanding thumbnail URL on unmount, regardless of how
@@ -419,14 +467,14 @@ export function DocumentScanner({ open, onOpenChange, onCapture, multiPage = fal
           className="fixed inset-0 z-50 flex h-full w-full flex-col bg-background outline-none"
         >
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
-          <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3 pt-[env(safe-area-inset-top)] box-content">
             <span className="text-sm font-medium text-foreground">{title}</span>
             <button
               type="button"
               disabled={busy}
               onClick={() => handleOpenChange(false)}
               aria-label="Close scanner"
-              className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-50"
+              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-50"
             >
               <X className="size-4" />
             </button>
@@ -439,22 +487,50 @@ export function DocumentScanner({ open, onOpenChange, onCapture, multiPage = fal
             </div>
           )}
 
+          {notice && (
+            <div role="status" className="border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[12.5px] font-medium text-emerald-700 dark:text-emerald-300">
+              {notice}
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto p-3">
             {stage === "capture" && (
-              <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-                <p className="max-w-xs text-[13px] text-muted-foreground">
-                  {multiPage ? "Capture each page of the document, one photo at a time." : "Capture a photo of the document."}
-                </p>
-                <div className="flex w-full max-w-xs flex-col gap-2">
-                  <Button type="button" size="lg" disabled={busy} onClick={() => cameraInputRef.current?.click()} className="h-14">
-                    <Camera className="size-5" />
-                    Take Photo
-                  </Button>
-                  <Button type="button" size="lg" variant="outline" disabled={busy} onClick={() => fileInputRef.current?.click()} className="h-14">
-                    <ImageIcon className="size-5" />
-                    Choose Photo
-                  </Button>
-                </div>
+              <div className="flex h-full flex-col">
+                {!liveUnavailable ? (
+                  <LiveCapture
+                    onFrame={handleLiveFrame}
+                    onUnavailable={setLiveUnavailable}
+                    onUseCameraApp={() => cameraInputRef.current?.click()}
+                    onChoosePhoto={() => fileInputRef.current?.click()}
+                    maxDimension={MAX_WORKING_DIMENSION}
+                    multiPage={multiPage}
+                    pageCount={pages.length}
+                    onDone={() => setStage("pages")}
+                    disabled={busy}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+                    <p className="max-w-xs rounded-lg bg-muted px-3 py-2 text-[12.5px] text-muted-foreground">{liveUnavailable}</p>
+                    <p className="max-w-xs text-[13px] text-muted-foreground">
+                      {multiPage ? "Capture each page of the document, one photo at a time." : "Capture a photo of the document."}
+                    </p>
+                    <div className="flex w-full max-w-xs flex-col gap-2">
+                      <Button type="button" size="lg" disabled={busy} onClick={() => cameraInputRef.current?.click()} className="h-14">
+                        <Camera className="size-5" />
+                        Take Photo
+                      </Button>
+                      <Button type="button" size="lg" variant="outline" disabled={busy} onClick={() => fileInputRef.current?.click()} className="h-14">
+                        <ImageIcon className="size-5" />
+                        Choose Photo
+                      </Button>
+                      {multiPage && pages.length > 0 && (
+                        <Button type="button" size="lg" variant="outline" disabled={busy} onClick={() => setStage("pages")} className="h-12">
+                          <Check className="size-5" /> Done ({pages.length})
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <input
                   ref={cameraInputRef}
                   type="file"
@@ -568,7 +644,7 @@ export function DocumentScanner({ open, onOpenChange, onCapture, multiPage = fal
             )}
           </div>
 
-          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border p-3">
+          <div className={cn("flex shrink-0 items-center justify-end gap-2 border-t border-border p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]", stage === "capture" && "hidden")}>
             {stage === "edit" && (
               <>
                 <Button type="button" variant="outline" disabled={busy} onClick={() => { setWorkingCanvas(null); setCropRect(null); setError(null); setStage("capture"); }}>
