@@ -294,3 +294,10 @@ test("D.2.2: route defines a GET handler that returns 405; POST is the delivery 
   assert.ok(/export\s+async\s+function\s+POST\s*\(/.test(ROUTE), "POST handler present");
   assert.ok(ROUTE.includes('export const runtime = "nodejs"'), "nodejs runtime (Stripe crypto)");
 });
+
+test("speed: the per-click sign-in check uses getClaims (local token check), and an unreachable backend still shows the maintenance page", () => {
+  const mw = readFileSync(new URL("./middleware.ts", import.meta.url), "utf8");
+  assert.match(mw, /supabase\.auth\.getClaims\(\)/);
+  assert.doesNotMatch(mw, /supabase\.auth\.getUser\(\)/);
+  assert.match(mw, /catch \{[\s\S]*?\/service-unavailable/);
+});

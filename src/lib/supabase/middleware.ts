@@ -130,13 +130,28 @@ export async function updateSession(request: NextRequest) {
   // "visitor isn't logged in" (which would otherwise just bounce everyone to
   // /login with no explanation, or -- for pages that then try their own
   // Supabase queries -- surface as a raw crash).
-  const { data, error } = await supabase.auth.getUser();
-  if (error && /fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(error.message)) {
+  //
+  // getClaims() instead of getUser(): it checks the sign-in token's signature
+  // and expiry. With Supabase's asymmetric JWT signing keys turned on that
+  // happens right here, with no trip to the Auth server on every click
+  // (pages and actions still call getUser() for the authoritative check).
+  // Without those keys it falls back to the same server call as before.
+  let userId: string | null = null;
+  try {
+    const { data, error } = await supabase.auth.getClaims();
+    if (error && /fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(error.message)) {
+      const maintenanceUrl = request.nextUrl.clone();
+      maintenanceUrl.pathname = "/service-unavailable";
+      return NextResponse.redirect(maintenanceUrl);
+    }
+    userId = typeof data?.claims?.sub === "string" ? data.claims.sub : null;
+  } catch {
+    // e.g. the signing-key list could not be fetched -- backend unreachable.
     const maintenanceUrl = request.nextUrl.clone();
     maintenanceUrl.pathname = "/service-unavailable";
     return NextResponse.redirect(maintenanceUrl);
   }
-  const user = data.user;
+  const user = userId ? { id: userId } : null;
 
   // The public homepage is exactly "/" -- deliberately NOT a PUBLIC_PATHS
   // entry, where matchesPath's prefix rule would make everything public.
