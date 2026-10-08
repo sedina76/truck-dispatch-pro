@@ -1,0 +1,99 @@
+# Nightly off-site backup of production (see docs/BACKUPS.md).
+#   1. Database: roles, schema and data via the Supabase CLI (the format
+#      Supabase's own restore guide uses), packed into one file, ENCRYPTED
+#      with BACKUP_PASSPHRASE, uploaded to Cloudflare R2 under db/<date>/.
+#      Old copies are removed by the bucket's 30-day lifecycle rule.
+#   2. Uploaded files (PODs, W-9s, agreements, photos): every file in
+#      Supabase Storage that is new or changed since the last run is
+#      encrypted one by one and copied to R2 under files/. Files deleted in
+#      the app stay in R2 -- that is the point.
+# Nothing readable leaves GitHub: only encrypted files are uploaded, and the
+# log prints counts, never names or contents. Read-only on the database.
+name: Nightly backup
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # 08:17 UTC = 3:17 AM Chicago (2:17 AM in winter)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Back up database and files to R2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      R2_BUCKET: tdp-backups
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that every secret is set
+        run: |
+          missing=0
+          for v in R2_ACCOUNT_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SUPABASE_DB_URL SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY BACKUP_PASSPHRASE; do
+            if [ -z "${!v}" ]; then echo "::error::GitHub secret for $v is not set (see docs/BACKUPS.md)"; missing=1; fi
+          done
+          if [ "${#BACKUP_PASSPHRASE}" -lt 16 ]; then echo "::error::BACKUP_PASSPHRASE must be at least 16 characters"; missing=1; fi
+          exit $missing
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Install the Postgres client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >/dev/null
+
+      - name: Dump the database (roles, schema, data)
+        run: |
+          set -euo pipefail
+          mkdir -p work/db
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f work/db/roles.sql --role-only
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f work/db/schema.sql
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f work/db/data.sql --use-copy --data-only
+          for f in roles schema data; do
+            test -s "work/db/$f.sql" || { echo "::error::$f.sql is empty -- backup NOT taken"; exit 1; }
+          done
+          # A real dump of this app has loads and organizations in it.
+          grep -q 'COPY "public"."loads"' work/db/data.sql || grep -q 'COPY public.loads' work/db/data.sql \
+            || { echo "::error::data.sql has no loads table -- backup looks wrong"; exit 1; }
+          echo "Database dump sizes (bytes): $(wc -c < work/db/roles.sql) / $(wc -c < work/db/schema.sql) / $(wc -c < work/db/data.sql)"
+
+      - name: Encrypt and upload the database backup
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y-%m-%d_%H%M)"
+          tar -C work -czf work/db.tar.gz db
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --quiet --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 -o work/db.tar.gz.gpg work/db.tar.gz
+          rm -rf work/db work/db.tar.gz
+          aws s3 cp --only-show-errors --endpoint-url "$R2_ENDPOINT" work/db.tar.gz.gpg "s3://$R2_BUCKET/db/$stamp/db.tar.gz.gpg"
+          echo "Uploaded db/$stamp/db.tar.gz.gpg ($(wc -c < work/db.tar.gz.gpg) bytes, encrypted)"
+
+      - name: Copy new and changed uploaded files
+        run: |
+          set -euo pipefail
+          psql "$SUPABASE_DB_URL" -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c \
+            "select bucket_id, name, floor(extract(epoch from coalesce(updated_at, created_at)))::bigint
+               from storage.objects where name is not null order by bucket_id, name" > work/objects.tsv
+          aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket "$R2_BUCKET" --prefix files/ \
+            --query 'Contents[].{Key: Key, LastModified: LastModified}' --output json > work/r2-files.json
+          python3 -I scripts/backup/storage_sync.py work/objects.tsv work/r2-files.json
+
+      - name: Clean up
+        if: always()
+        run: rm -rf work
