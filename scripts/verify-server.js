@@ -12,9 +12,15 @@
 // defect anywhere: a leftover server process served HTML pointing at chunk
 // hashes a newer build had already deleted. This script reproduces that
 // exact check so it's caught here instead of looking like a new app bug.
+// These scripts intentionally remain CommonJS so they can run directly from
+// npm on installations without package-level ESM configuration.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { execSync } = require("node:child_process");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require("node:fs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require("node:path");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const http = require("node:http");
 
 const PORT = process.env.PORT || 3000;
